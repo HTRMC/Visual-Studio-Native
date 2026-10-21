@@ -27,6 +27,7 @@ use gpui_kit::{
 mod debug;
 mod palette;
 mod search;
+mod terminal;
 
 use crate::theme::{action_button, codicon, col, file_icon, icon, language_id, language_label};
 
@@ -224,6 +225,8 @@ pub struct Workbench {
     find: search::Find,
     palette: palette::Palette,
     debug: debug::Debug,
+    /// Spawned when the Terminal tab first shows; the error if the shell didn't start.
+    terminal: Option<Result<terminal::Terminal, String>>,
     commit: Entity<InputState>,
     ext_search: Entity<InputState>,
     pub focus: FocusHandle,
@@ -255,6 +258,7 @@ impl Workbench {
             find: search::Find::new(window, cx),
             palette: palette::Palette::new(window, cx),
             debug: debug::Debug::new(window, cx),
+            terminal: None,
         };
         this.init_search(window, cx);
         this.init_debug(window, cx);
@@ -653,9 +657,16 @@ impl Workbench {
         cx.notify();
     }
 
-    fn toggle_terminal(&mut self, _: &ToggleTerminal, _: &mut Window, cx: &mut Context<Self>) {
-        self.panel = !(self.panel && self.panel_tab == TERMINAL);
-        self.panel_tab = TERMINAL;
+    /// Ctrl+`: hides the focused terminal, else shows and focuses it.
+    fn toggle_terminal(&mut self, _: &ToggleTerminal, window: &mut Window, cx: &mut Context<Self>) {
+        if !(self.panel && self.panel_tab == TERMINAL && self.terminal_focused(window)) {
+            return self.focus_terminal(window, cx);
+        }
+        self.panel = false;
+        match self.docs.get(self.active) {
+            Some(doc) => doc.editor.update(cx, |e, cx| e.focus(window, cx)),
+            None => window.focus(&self.focus, cx),
+        }
         cx.notify();
     }
 
@@ -1088,16 +1099,15 @@ impl Workbench {
         let (tx, mut rx) = futures::channel::mpsc::unbounded::<Vec<PathBuf>>();
         let watcher = notify::recommended_watcher(move |ev: notify::Result<notify::Event>| {
             // Only changes to a folder's entries matter, and launch.json's contents.
-            if let Ok(ev) = ev {
-                if matches!(
+            if let Ok(ev) = ev
+                && (matches!(
                     ev.kind,
                     EventKind::Create(_)
                         | EventKind::Remove(_)
                         | EventKind::Modify(ModifyKind::Name(_))
-                ) || ev.paths.iter().any(|p| p.ends_with(".vscode/launch.json"))
-                {
-                    tx.unbounded_send(ev.paths).ok();
-                }
+                ) || ev.paths.iter().any(|p| p.ends_with(".vscode/launch.json")))
+            {
+                tx.unbounded_send(ev.paths).ok();
             }
         });
         let Ok(mut watcher) = watcher else { return };
@@ -1401,7 +1411,11 @@ impl Workbench {
 
     // ---- panel -------------------------------------------------------------
 
-    fn render_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_panel(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let tabs = PANEL_TABS.iter().enumerate().map(|(ix, name)| {
             let active = ix == self.panel_tab;
             div()
@@ -1442,25 +1456,12 @@ impl Workbench {
             ]
         };
 
-        let cwd = self
-            .root
-            .clone()
-            .or_else(|| std::env::current_dir().ok())
-            .map(|p| p.display().to_string())
-            .unwrap_or_default();
-
         let body = match self.panel_tab {
             0 => div()
                 .px(px(20.))
                 .child("No problems have been detected in the workspace.")
                 .into_any_element(),
-            TERMINAL => h_flex()
-                .px(px(20.))
-                .font_family("Consolas")
-                .text_size(px(14.))
-                .child(format!("PS {cwd}> "))
-                .child(div().w(px(8.)).h(px(17.)).bg(col::fg()))
-                .into_any_element(),
+            TERMINAL => self.render_terminal(window, cx),
             4 => v_flex()
                 .px(px(20.))
                 .gap(px(10.))
@@ -1500,6 +1501,14 @@ impl Workbench {
                                             this.clear_debug_console(cx)
                                         }))
                                     }
+                                    (icon::ADD, TERMINAL) => {
+                                        button.on_click(cx.listener(|this, _, window, cx| {
+                                            this.focus_terminal(window, cx)
+                                        }))
+                                    }
+                                    (icon::TRASH, TERMINAL) => button.on_click(
+                                        cx.listener(|this, _, _, cx| this.kill_terminal(cx)),
+                                    ),
                                     _ => button,
                                 }
                             }))
@@ -1622,7 +1631,7 @@ impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let sidebar = self.render_sidebar(cx);
         let editor = self.render_editor_group(cx);
-        let panel = self.render_panel(cx);
+        let panel = self.render_panel(window, cx);
         let palette = self.render_palette(window, cx);
         let toolbar = self.render_debug_toolbar(window, cx);
 
@@ -1670,12 +1679,9 @@ impl Render for Workbench {
                 this.open_palette(">", window, cx)
             }))
             .on_action(cx.listener(Self::new_text_file))
-            // The terminal is a mock, so a new one is the one there is.
-            .on_action(cx.listener(|this, _: &NewTerminal, _, cx| {
-                this.panel = true;
-                this.panel_tab = TERMINAL;
-                cx.notify();
-            }))
+            .on_action(
+                cx.listener(|this, _: &NewTerminal, window, cx| this.focus_terminal(window, cx)),
+            )
             .on_action(cx.listener(|this, _: &StartDebugging, window, cx| {
                 this.start_debugging(false, window, cx)
             }))
