@@ -1,0 +1,2053 @@
+//! Quick Open (Ctrl+P) and the Command Palette (Ctrl+Shift+P): one popup, and
+//! like VS Code a leading `>` switches it to commands, `@` to symbols in the
+//! active editor and `:` to a line (`file:line:col` jumps into a file).
+
+use std::{
+    cmp::Ordering,
+    collections::{HashMap, HashSet},
+    fs,
+    ops::Range,
+    path::{MAIN_SEPARATOR, Path, PathBuf},
+    sync::{
+        Arc, LazyLock, Mutex,
+        atomic::{AtomicU64, Ordering::Relaxed},
+    },
+    time::{Duration, Instant},
+};
+
+use unicode_segmentation::UnicodeSegmentation as _;
+
+use gpui_kit::base::{actions::Cancel, input::Rope};
+use gpui_kit::component::{
+    IndexPath, Theme,
+    command::{Command, CommandItem, CommandState},
+    highlighter::SyntaxHighlighter,
+    input::{Position, RangeDecoration, RangeDecorationCollection, RangeDecorationStyle},
+    kbd::Kbd,
+};
+
+use super::*;
+use crate::theme::{c, ca, col, file_icon};
+
+/// Workspace files shown at once; the best matches win.
+const SHOWN: usize = 50;
+
+// VS Code's fuzzyScorer thresholds: an exact path beats a file-name prefix
+// match, which beats any other file-name match, which beats path matches.
+const PATH_IDENTITY: i32 = 1 << 18;
+const LABEL_PREFIX: i32 = 1 << 17;
+const LABEL: i32 = 1 << 16;
+
+// VS Code's history lengths: editors per workspace, commands overall.
+const EDITOR_HISTORY: usize = 200;
+const COMMAND_HISTORY: usize = 50;
+
+/// What the palette offers, VS Code's titles. Only commands that do something.
+fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
+    vec![
+        ("File: Open File...", Box::new(OpenFile)),
+        ("File: Open Folder...", Box::new(OpenFolder)),
+        ("File: Save", Box::new(Save)),
+        ("File: Save All", Box::new(SaveAll)),
+        ("Workspaces: Close Workspace", Box::new(CloseFolder)),
+        ("View: Close Editor", Box::new(CloseEditor)),
+        (
+            "View: Toggle Primary Side Bar Visibility",
+            Box::new(ToggleSidebar),
+        ),
+        ("View: Toggle Panel Visibility", Box::new(TogglePanel)),
+        ("View: Toggle Terminal", Box::new(ToggleTerminal)),
+        ("View: Show Explorer", Box::new(ShowExplorer)),
+        ("View: Show Search", Box::new(ShowSearch)),
+        ("View: Show Source Control", Box::new(ShowScm)),
+        ("View: Show Run and Debug", Box::new(ShowRun)),
+        ("View: Show Extensions", Box::new(ShowExtensions)),
+        ("Search: Find in Files", Box::new(ShowSearch)),
+        ("Search: Replace in Files", Box::new(ReplaceInFiles)),
+        ("Debug: Start Debugging", Box::new(StartDebugging)),
+        (
+            "Debug: Start Without Debugging",
+            Box::new(RunWithoutDebugging),
+        ),
+        ("Debug: Stop", Box::new(StopDebugging)),
+        ("Debug: Restart", Box::new(RestartDebugging)),
+        ("Debug: Pause", Box::new(Pause)),
+        ("Debug: Step Over", Box::new(StepOver)),
+        ("Debug: Step Into", Box::new(StepInto)),
+        ("Debug: Step Out", Box::new(StepOut)),
+        ("Debug: Toggle Breakpoint", Box::new(ToggleBreakpoint)),
+        ("File: Exit", Box::new(Quit)),
+    ]
+}
+
+enum Pick {
+    /// Path (relative to the root when inside it), with the byte offsets
+    /// matched in its file name and in its folder.
+    File(String, Vec<usize>, Vec<usize>),
+    /// Index into `commands()` and the matched label offsets.
+    Command(usize, Vec<usize>),
+    /// 0-based line and column in the active editor, and the row's label.
+    Line(u32, u32, String),
+    /// Index into the defs, with the offsets matched in its name and container.
+    Symbol(usize, Vec<usize>, Vec<usize>),
+}
+
+/// A definition in the active editor, for `@`.
+#[derive(Debug, PartialEq)]
+struct Def {
+    name: String,
+    /// VS Code's plural kind label, which also names its `@:` group.
+    kind: &'static str,
+    line: u32,
+    col: u32,
+    /// The whole definition in bytes, highlighted while previewed.
+    range: Range<usize>,
+    /// The definition this one is nested in.
+    container: Option<usize>,
+}
+
+/// Group headers: the row they start at and their label.
+type Groups = Vec<(usize, SharedString)>;
+
+pub(super) struct Palette {
+    state: Entity<CommandState>,
+    open: bool,
+    query: String,
+    /// Workspace files relative to the root, walked again on the next Quick Open
+    /// after the watcher saw something change (`stale`).
+    files: Arc<Vec<String>>,
+    stale: bool,
+    /// Absolute paths of editors in the order they were last active, closed
+    /// ones included, per workspace root (see `root_key`).
+    editors: HashMap<String, Vec<String>>,
+    /// Command labels in the order they were last run.
+    recent: Vec<String>,
+    /// Symbols of the active editor, parsed on the first `@` query.
+    defs: Option<Vec<Def>>,
+    /// 0-based line and column from a `file:line:col` query.
+    goto: Option<(u32, u32)>,
+    shown: Vec<Pick>,
+    groups: Groups,
+    /// The highlighted row, and the one to highlight once the list shows `shown`.
+    selected: usize,
+    preselect: Option<usize>,
+    empty: SharedString,
+    /// The editor's scroll position before `:` or `@` previewed a line.
+    view: Option<Point<Pixels>>,
+    deco: Option<RangeDecorationCollection>,
+    /// Where focus goes back to when the palette closes without moving it.
+    restore: Option<FocusHandle>,
+    focus: FocusHandle,
+    walk: Option<Task<()>>,
+    rank: Option<Task<()>>,
+    /// Parses the active editor for `@` off the UI thread.
+    parse: Option<Task<()>>,
+}
+
+impl Palette {
+    pub(super) fn new(window: &mut Window, cx: &mut App) -> Self {
+        let state: serde_json::Value = state_path()
+            .and_then(|path| fs::read(path).ok())
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        let mut editors: HashMap<String, Vec<String>> =
+            serde_json::from_value(state["editors"].clone()).unwrap_or_default();
+        // VS Code drops deleted files from the history too.
+        for paths in editors.values_mut() {
+            paths.retain(|p| Path::new(p).exists());
+        }
+        Self {
+            state: cx.new(|cx| CommandState::new(window, cx)),
+            open: false,
+            query: String::new(),
+            files: Arc::default(),
+            stale: true,
+            editors,
+            recent: serde_json::from_value(state["commands"].clone()).unwrap_or_default(),
+            defs: None,
+            goto: None,
+            shown: Vec::new(),
+            groups: Vec::new(),
+            selected: 0,
+            preselect: None,
+            empty: SharedString::default(),
+            view: None,
+            deco: None,
+            restore: None,
+            focus: cx.focus_handle(),
+            walk: None,
+            rank: None,
+            parse: None,
+        }
+    }
+
+    /// The workspace's files changed, or with `clear` the workspace itself did.
+    pub(super) fn files_changed(&mut self, clear: bool) {
+        self.stale = true;
+        if clear {
+            self.files = Arc::default();
+            self.walk = None;
+        }
+    }
+
+    /// Moves `path` to the front of the editor history of the workspace at `root`.
+    pub(super) fn remember(&mut self, root: Option<&Path>, path: &Path, cx: &App) {
+        let history = self.editors.entry(root_key(root)).or_default();
+        let path = path.to_string_lossy().into_owned();
+        if history.first() != Some(&path) {
+            history.retain(|p| *p != path);
+            history.insert(0, path);
+            history.truncate(EDITOR_HISTORY);
+            self.save(cx);
+        }
+    }
+
+    /// Writes the histories on a background thread. Writes can finish out of
+    /// order, so each carries a generation and an older one never replaces a
+    /// newer file; the temp file and rename keep a crash from leaving half a file.
+    fn save(&self, cx: &App) {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        static WRITTEN: Mutex<u64> = Mutex::new(0);
+        let Some(path) = state_path() else {
+            return;
+        };
+        let generation = NEXT.fetch_add(1, Relaxed) + 1;
+        let state = serde_json::json!({ "commands": self.recent, "editors": self.editors });
+        cx.background_spawn(async move {
+            let mut written = WRITTEN.lock().unwrap();
+            if generation < *written {
+                return;
+            }
+            let tmp = path.with_extension("json.tmp");
+            fs::create_dir_all(path.parent().unwrap()).ok();
+            if fs::write(&tmp, state.to_string()).is_ok() && fs::rename(&tmp, &path).is_ok() {
+                *written = generation;
+            }
+        })
+        .detach();
+    }
+
+    fn show(&mut self, shown: Vec<Pick>, groups: Groups, select: usize) {
+        self.shown = shown;
+        self.groups = groups;
+        self.selected = select;
+        self.preselect = Some(select);
+    }
+}
+
+/// Where the histories survive restarts: VS Code's user data folder layout
+/// (`%APPDATA%`, `~/Library/Application Support`, `~/.config`).
+fn state_path() -> Option<PathBuf> {
+    Some(dirs::config_dir()?.join("vsn").join("state.json"))
+}
+
+/// The editor history's key: the workspace root, or `""` without a folder.
+fn root_key(root: Option<&Path>) -> String {
+    root.map_or_else(String::new, |r| r.to_string_lossy().into_owned())
+}
+
+/// VS Code's `scoreFuzzy`: the best alignment of `query` in `target`, ignoring
+/// case, rewarding runs, word starts and exact case. Without `allow_gaps` the
+/// query must start where it occurs as a whole. Returns the score and the
+/// matched byte offsets.
+fn score_fuzzy(target: &str, query: &str, allow_gaps: bool) -> Option<(i32, Vec<usize>)> {
+    let lower = |c: char| c.to_lowercase().next().unwrap_or(c);
+    let t: Vec<(usize, char)> = target.char_indices().collect();
+    let q: Vec<char> = query.chars().collect();
+    let (n, m) = (q.len(), t.len());
+    if n == 0 || m < n {
+        return None;
+    }
+    let tl: Vec<char> = t.iter().map(|&(_, c)| lower(c)).collect();
+    let ql: Vec<char> = q.iter().copied().map(lower).collect();
+    let is_sep = |c: char| matches!(c, '/' | '\\');
+
+    let char_score = |qi: usize, ti: usize, run: i32| {
+        if ql[qi] != tl[ti] && !(is_sep(ql[qi]) && is_sep(tl[ti])) {
+            return 0;
+        }
+        let mut score = 1 + run.min(3) * 6 + (run - 3).max(0) * 3;
+        if q[qi] == t[ti].1 {
+            score += 1;
+        }
+        score
+            + match ti.checked_sub(1).map(|i| t[i].1) {
+                None => 8,
+                Some('/' | '\\') => 5,
+                Some('_' | '-' | '.' | ' ' | '\'' | '"' | ':') => 4,
+                _ if run == 0 && t[ti].1.is_ascii_uppercase() => 2,
+                _ => 0,
+            }
+    };
+
+    // scores[q][t]: best score of query[..=q] in target[..=t]; runs[q][t]: the
+    // run length when query[q] matches target[t] in that alignment, else 0.
+    let mut scores = vec![0; n * m];
+    let mut runs = vec![0; n * m];
+    for qi in 0..n {
+        for ti in 0..m {
+            let ix = qi * m + ti;
+            let left = if ti > 0 { scores[ix - 1] } else { 0 };
+            let (diag, run) = if qi > 0 && ti > 0 {
+                (scores[ix - m - 1], runs[ix - m - 1])
+            } else {
+                (0, 0)
+            };
+            let score = if diag == 0 && qi > 0 {
+                0
+            } else {
+                char_score(qi, ti, run)
+            };
+            if score > 0
+                && diag + score >= left
+                && (allow_gaps || qi > 0 || tl[ti..].starts_with(&ql))
+            {
+                runs[ix] = run + 1;
+                scores[ix] = diag + score;
+            } else {
+                scores[ix] = left;
+            }
+        }
+    }
+
+    let mut hits = Vec::with_capacity(n);
+    let (mut qi, mut ti) = (n as isize - 1, m as isize - 1);
+    while qi >= 0 && ti >= 0 {
+        if runs[qi as usize * m + ti as usize] > 0 {
+            hits.push(t[ti as usize].0);
+            qi -= 1;
+        }
+        ti -= 1;
+    }
+    hits.reverse();
+    let score = scores[n * m - 1];
+    (score > 0 && hits.len() == n).then_some((score, hits))
+}
+
+/// A Quick Open query, VS Code's `prepareQuery`.
+struct Query {
+    /// Space-separated pieces that must all match, and whether each was quoted
+    /// (which asks for a contiguous match).
+    pieces: Vec<(String, bool)>,
+    /// The query has a path separator, so it matches folders too.
+    sep: bool,
+    /// The query with `/` as the platform separator, for exact paths.
+    path: String,
+}
+
+fn prepare_query(original: &str) -> Query {
+    let normalize = |s: &str| {
+        let path = if cfg!(windows) {
+            s.replace('/', "\\")
+        } else {
+            s.to_string()
+        };
+        let mut norm: String = path
+            .chars()
+            .filter(|&c| !matches!(c, '*' | '…' | '"') && !c.is_whitespace())
+            .collect();
+        // A trailing `#` is VS Code's go-to-symbol suffix.
+        if norm.len() > 1 && norm.ends_with('#') {
+            norm.pop();
+        }
+        (path, norm)
+    };
+    let quoted = |s: &str| s.len() > 1 && s.starts_with('"') && s.ends_with('"');
+    let (path, whole) = normalize(original);
+    let mut pieces: Vec<_> = original
+        .split(' ')
+        .map(|p| (normalize(p).1, quoted(p)))
+        .filter(|(p, _)| !p.is_empty())
+        .collect();
+    if pieces.len() < 2 {
+        pieces = (!whole.is_empty())
+            .then(|| (whole.clone(), quoted(original)))
+            .into_iter()
+            .collect();
+    }
+    Query {
+        pieces,
+        sep: whole.contains(MAIN_SEPARATOR),
+        path,
+    }
+}
+
+/// A match's score with the byte offsets it matched in the label and description.
+#[derive(Debug, Default)]
+struct Score {
+    score: i32,
+    label: Vec<usize>,
+    desc: Vec<usize>,
+}
+
+/// VS Code's `doScoreItemFuzzySingle`: the label alone (a file name) unless the
+/// query has a path separator or the label doesn't match, then the whole path.
+fn score_piece(piece: &str, label: &str, desc: &str, sep: bool, gaps: bool) -> Option<Score> {
+    if !sep || desc.is_empty() {
+        if let Some((score, hits)) = score_fuzzy(label, piece, gaps) {
+            if label.to_lowercase().starts_with(&piece.to_lowercase()) {
+                let n = piece.chars().count();
+                let boost = (n as f32 / label.chars().count() as f32 * 100.).round() as i32;
+                return Some(Score {
+                    score: LABEL_PREFIX + boost + score,
+                    label: label.char_indices().take(n).map(|(i, _)| i).collect(),
+                    desc: Vec::new(),
+                });
+            }
+            return Some(Score {
+                score: LABEL + score,
+                label: hits,
+                desc: Vec::new(),
+            });
+        }
+    }
+    if desc.is_empty() {
+        return None;
+    }
+    let split = desc.len() + MAIN_SEPARATOR.len_utf8();
+    let (score, hits) = score_fuzzy(&format!("{desc}{MAIN_SEPARATOR}{label}"), piece, gaps)?;
+    let (desc_hits, label_hits): (Vec<usize>, Vec<usize>) =
+        hits.into_iter().partition(|&h| h < split);
+    Some(Score {
+        score,
+        label: label_hits.into_iter().map(|h| h - split).collect(),
+        desc: desc_hits,
+    })
+}
+
+/// VS Code's `scoreItemFuzzy`: every query piece must match; scores add up.
+fn score_item(q: &Query, label: &str, desc: &str, identity: bool, gaps: bool) -> Option<Score> {
+    if identity {
+        let all = |s: &str| s.char_indices().map(|(i, _)| i).collect();
+        return Some(Score {
+            score: PATH_IDENTITY,
+            label: all(label),
+            desc: all(desc),
+        });
+    }
+    let mut total = Score::default();
+    for (piece, quoted) in &q.pieces {
+        let s = score_piece(piece, label, desc, q.sep, gaps && !quoted)?;
+        total.score += s.score;
+        total.label.extend(s.label);
+        total.desc.extend(s.desc);
+    }
+    for hits in [&mut total.label, &mut total.desc] {
+        hits.sort_unstable();
+        hits.dedup();
+    }
+    (!q.pieces.is_empty()).then_some(total)
+}
+
+/// An item being ranked: its label (file name), description (folder) and path.
+struct Scored<'a> {
+    label: &'a str,
+    desc: &'a str,
+    path: &'a str,
+    s: Score,
+}
+
+/// VS Code's `compareItemsByFuzzyScore`.
+fn compare_scored(a: &Scored, b: &Scored) -> Ordering {
+    let (sa, sb) = (a.s.score, b.s.score);
+    if (sa == PATH_IDENTITY || sb == PATH_IDENTITY) && sa != sb {
+        return sb.cmp(&sa);
+    }
+    // First to last matched char.
+    let span = |hits: &[usize]| Some(hits.last()? + 1 - hits.first()?);
+    if sa > LABEL || sb > LABEL {
+        if sa != sb {
+            return sb.cmp(&sa);
+        }
+        // Compact label matches first, unless both are prefixes (longer is better there).
+        if sa < LABEL_PREFIX && sb < LABEL_PREFIX {
+            let ord = match (span(&a.s.label), span(&b.s.label)) {
+                (Some(x), Some(y)) => x.cmp(&y),
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => Ordering::Equal,
+            };
+            if ord.is_ne() {
+                return ord;
+            }
+        }
+        if a.label.len() != b.label.len() {
+            return a.label.len().cmp(&b.label.len());
+        }
+    }
+    if sa != sb {
+        return sb.cmp(&sa);
+    }
+    match (a.s.label.is_empty(), b.s.label.is_empty()) {
+        (false, true) => return Ordering::Less,
+        (true, false) => return Ordering::Greater,
+        _ => {}
+    }
+    // From the first description (else label) match to the last label (else
+    // description) match, the description's length counting when both matched.
+    let distance = |x: &Scored| -> isize {
+        let start = x.s.desc.first().or(x.s.label.first());
+        let end = match (x.s.label.last(), x.s.desc.last()) {
+            (Some(&l), d) => l + 1 + if d.is_some() { x.desc.len() } else { 0 },
+            (None, Some(&d)) => d + 1,
+            (None, None) => return 0,
+        };
+        end as isize - start.map_or(-1, |&s| s as isize)
+    };
+    let (da, db) = (distance(a), distance(b));
+    if da != 0 && db != 0 && da != db {
+        return da.cmp(&db);
+    }
+    let lower = |s: &str| s.to_lowercase();
+    (a.label.len() + a.desc.len())
+        .cmp(&(b.label.len() + b.desc.len()))
+        .then(a.path.len().cmp(&b.path.len()))
+        .then_with(|| lower(a.label).cmp(&lower(b.label)))
+        .then_with(|| lower(a.desc).cmp(&lower(b.desc)))
+        .then_with(|| lower(a.path).cmp(&lower(b.path)))
+}
+
+/// A path's file name and folder.
+fn parts(rel: &str) -> (&str, &str) {
+    match rel.rfind(['/', '\\']) {
+        Some(i) => (&rel[i + 1..], &rel[..i]),
+        None => (rel, ""),
+    }
+}
+
+/// VS Code's Quick Open: editor history matching the query ("recently opened"),
+/// then the best other workspace files ("file results"). Paths are relative to
+/// `root` when inside it. An empty query lists the whole history.
+fn rank_files(
+    query: &str,
+    root: &Path,
+    history: &[String],
+    files: &[String],
+) -> (Vec<Pick>, Groups) {
+    let q = prepare_query(query);
+    if q.pieces.is_empty() {
+        let groups = match history {
+            [] => Vec::new(),
+            _ => vec![(0, "recently opened".into())],
+        };
+        let picks = history
+            .iter()
+            .map(|rel| Pick::File(rel.clone(), Vec::new(), Vec::new()));
+        return (picks.collect(), groups);
+    }
+    // An absolute query naming a file matches it outright.
+    let ident = Path::new(&q.path).is_absolute().then(|| {
+        let path = Path::new(&q.path);
+        path.strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .into_owned()
+    });
+    let is_ident = |rel: &str| {
+        ident
+            .as_deref()
+            .is_some_and(|i| i.eq_ignore_ascii_case(rel))
+    };
+
+    let mut recent: Vec<_> = history
+        .iter()
+        .filter_map(|rel| {
+            // History matches file names only, unless the query has a separator.
+            let (label, desc) = parts(rel);
+            let desc = if q.sep { desc } else { "" };
+            let s = score_item(&q, label, desc, is_ident(rel), false)?;
+            Some(Scored {
+                label,
+                desc,
+                path: rel,
+                s,
+            })
+        })
+        .collect();
+    recent.sort_by(compare_scored);
+
+    let seen: HashSet<&str> = history.iter().map(String::as_str).collect();
+    let mut found: Vec<_> = files
+        .iter()
+        .filter(|rel| !seen.contains(rel.as_str()))
+        .filter_map(|rel| {
+            let (label, desc) = parts(rel);
+            let s = score_item(&q, label, desc, is_ident(rel), true)?;
+            Some(Scored {
+                label,
+                desc,
+                path: rel,
+                s,
+            })
+        })
+        .collect();
+    if found.len() > SHOWN {
+        found.select_nth_unstable_by(SHOWN, compare_scored);
+        found.truncate(SHOWN);
+    }
+    found.sort_by(compare_scored);
+
+    let (mut picks, mut groups) = (Vec::new(), Vec::new());
+    for (title, list) in [("recently opened", recent), ("file results", found)] {
+        if !list.is_empty() {
+            groups.push((picks.len(), title.into()));
+        }
+        picks.extend(list.into_iter().map(|x| {
+            let s = x.s;
+            // Label-only history scores have no folder matches to show.
+            Pick::File(x.path.to_string(), s.label, s.desc)
+        }));
+    }
+    (picks, groups)
+}
+
+/// Splits a 1-based line/column suffix off a file query, returning it 0-based.
+/// VS Code's `extractRangeFromFilter` pattern: `:12:5`, `#12`, `(12,5)`, `:line 12`,
+/// ranges (only the start is used); `file:` alone means line 1.
+fn split_line(query: &str) -> (&str, Option<(u32, u32)>) {
+    static SUFFIX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"\s?[#:\(](?:line )?(\d*)(?:[#:,](\d*))?(?:-(\d*)(?:[#:,](\d*))?)?\)?:?\s*$",
+        )
+        .unwrap()
+    });
+    let Some(m) = SUFFIX.captures(query) else {
+        return (query, None);
+    };
+    let num = |i| {
+        m.get(i)
+            .and_then(|n| n.as_str().parse::<u32>().ok())
+            .map_or(0, |n| n.saturating_sub(1))
+    };
+    (&query[..m.get(0).unwrap().start()], Some((num(1), num(2))))
+}
+
+/// JavaScript's `parseInt(s, 10)`: leading whitespace, a sign and digits,
+/// ignoring whatever follows.
+fn parse_int(s: &str) -> Option<i64> {
+    let s = s.trim_start();
+    let digits = s.strip_prefix(['-', '+']).unwrap_or(s);
+    let len = digits
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(digits.len());
+    let n: i64 = digits[..len].parse().ok()?;
+    Some(if s.starts_with('-') { -n } else { n })
+}
+
+/// VS Code's `_nextVisibleColumn`: where the grapheme after one starting with
+/// `c` shows when it shows at `v`. Tabs reach the next tab stop; CJK and emoji
+/// take two columns (VS Code's `isFullWidthCharacter`/`isEmojiImprecise`).
+fn next_visible(v: usize, c: char) -> usize {
+    let wide = matches!(c as u32,
+        0x2E80..=0xD7AF | 0xF900..=0xFAFF | 0xFF01..=0xFF5E | 0xFFE0..=0xFFE6
+        | 0x1F1E6..=0x1F1FF | 8986 | 8987 | 9200 | 9203 | 9728..=10175 | 11088 | 11093
+        | 127744..=128591 | 128640..=128764 | 128992..=129008 | 129280..=129535
+        | 129648..=129782);
+    match c {
+        '\t' => v / TAB_SIZE * TAB_SIZE + TAB_SIZE,
+        _ if wide => v + 2,
+        _ => v + 1,
+    }
+}
+
+/// `line`'s grapheme clusters with their first character.
+fn graphemes(line: &str) -> impl Iterator<Item = (&str, char)> {
+    line.graphemes(true).map(|g| (g, g.chars().next().unwrap()))
+}
+
+/// VS Code's `visibleColumnFromColumn`: how wide the first `chars` characters
+/// of `line` show.
+fn visible_column(line: &str, chars: usize) -> usize {
+    let end = line
+        .char_indices()
+        .nth(chars)
+        .map_or(line.len(), |(i, _)| i);
+    graphemes(&line[..end]).fold(0, |v, (_, c)| next_visible(v, c))
+}
+
+/// VS Code's `toStatusbarColumn`: the 1-based "Col" for the cursor after
+/// `chars` characters, where only tabs widen.
+pub(super) fn status_column(line: &str, chars: usize) -> usize {
+    let tab = |v: usize, c| if c == '\t' { next_visible(v, c) } else { v + 1 };
+    line.chars().take(chars).fold(0, tab) + 1
+}
+
+/// VS Code's `columnFromVisibleColumn`: the character index showing at
+/// `visible`, the nearer side when it falls inside a tab or wide character.
+fn column_from_visible(line: &str, visible: usize) -> usize {
+    let (mut before, mut col) = (0, 0);
+    for (g, c) in graphemes(line) {
+        let after = next_visible(before, c);
+        let after_col = col + g.chars().count();
+        if after >= visible {
+            return if after - visible < visible - before {
+                after_col
+            } else {
+                col
+            };
+        }
+        (before, col) = (after, after_col);
+    }
+    col
+}
+
+/// VS Code's Go to Line for `:` queries: `line[:,#col]`, 1-based, negative counts
+/// from the end, clamped to the text; `::offset` goes to a character. Columns
+/// are visible ones (tabs expanded). Ok is the 0-based line and character and
+/// the row label; Err is the hint to show instead.
+fn goto_line(query: &str, text: &str) -> Result<(u32, u32, String), String> {
+    let query = query.trim();
+    if let Some(offset) = query.strip_prefix(':') {
+        let max = text.chars().count() as i64;
+        let Some(mut offset) = parse_int(offset) else {
+            return Err(format!(
+                "Type a character position to go to (from 1 to {max})."
+            ));
+        };
+        let reverse = offset < 0;
+        offset -= offset.signum();
+        if reverse {
+            offset += max;
+        }
+        let before: String = text.chars().take(offset.clamp(0, max) as usize).collect();
+        let line = before.matches('\n').count() as u32;
+        let prefix = before.rsplit('\n').next().unwrap_or("");
+        let col = prefix.chars().count() as u32;
+        let label = format!(
+            "Press 'Enter' to go to line {} at column {}.",
+            line + 1,
+            visible_column(prefix, usize::MAX) + 1
+        );
+        return Ok((line, col, label));
+    }
+
+    let lines: Vec<&str> = text.split('\n').collect();
+    let n = lines.len() as i64;
+    let mut parts = query.split([',', ':', '#']);
+    let Some(line) = parts.next().and_then(parse_int) else {
+        return Err(format!("Type a line number to go to (from 1 to {n})."));
+    };
+    let line = if line < 0 { n + 1 + line } else { line }.clamp(1, n);
+    let content = lines[line as usize - 1].trim_end_matches('\r');
+    let max_col = visible_column(content, usize::MAX) as i64 + 1;
+    let (col, label) = match parts.next().map(parse_int) {
+        Some(Some(col)) => {
+            // Unlike lines, -1 is the last character, not past it.
+            let col = if col < 0 { max_col + col } else { col }.clamp(1, max_col);
+            (
+                col,
+                format!("Press 'Enter' to go to line {line} at column {col}."),
+            )
+        }
+        Some(None) => (
+            1,
+            format!(
+                "Press 'Enter' to go to line {line} or enter a column number (from 1 to {max_col})."
+            ),
+        ),
+        None => (
+            1,
+            format!("Press 'Enter' to go to line {line} or enter colon : to add a column number."),
+        ),
+    };
+    let col = column_from_visible(content, col as usize - 1);
+    Ok((line as u32 - 1, col as u32, label))
+}
+
+fn is_word_sep(c: char) -> bool {
+    c.is_whitespace() || "()[]{}<>`'\"-/;:,.?!".contains(c)
+}
+
+/// The first index from `start` that starts or ends a word.
+fn next_word(t: &[char], start: usize) -> usize {
+    (start..t.len())
+        .find(|&i| is_word_sep(t[i]) || i > 0 && is_word_sep(t[i - 1]))
+        .unwrap_or(t.len())
+}
+
+/// VS Code's `_matchesWords`: `w[wi..]` matched from `t[ti]`, each char
+/// continuing the current word or starting a later one. Returns the matched
+/// indices last first; `failed` memoizes dead ends.
+fn match_words(
+    w: &[char],
+    t: &[char],
+    wi: usize,
+    ti: usize,
+    failed: &mut HashSet<(usize, usize)>,
+) -> Option<Vec<usize>> {
+    if wi == w.len() {
+        return Some(Vec::new());
+    }
+    if ti == t.len()
+        || failed.contains(&(wi, ti))
+        || w[wi] != t[ti] && !(is_word_sep(w[wi]) && is_word_sep(t[ti]))
+    {
+        return None;
+    }
+    let mut next = ti + 1;
+    let mut found = match_words(w, t, wi + 1, next, failed);
+    while found.is_none() {
+        next = next_word(t, next);
+        if next >= t.len() {
+            break;
+        }
+        found = match_words(w, t, wi + 1, next, failed);
+        next += 1;
+    }
+    let Some(mut found) = found else {
+        failed.insert((wi, ti));
+        return None;
+    };
+    // Separators match each other but aren't highlighted.
+    if w[wi] == t[ti] {
+        found.push(ti);
+    }
+    Some(found)
+}
+
+/// VS Code's command filter: the query as one substring of the label, else as
+/// word starts and continuations (`vtt` is View: Toggle Terminal). Returns the
+/// matched byte offsets.
+fn command_matches(query: &str, label: &str) -> Option<Vec<usize>> {
+    let lower = |c: char| c.to_lowercase().next().unwrap_or(c);
+    let w: Vec<char> = query.chars().map(lower).collect();
+    let t: Vec<char> = label.chars().map(lower).collect();
+    let offsets: Vec<usize> = label.char_indices().map(|(i, _)| i).collect();
+    if let Some(start) = t.windows(w.len().max(1)).position(|s| s == w) {
+        return Some(offsets[start..start + w.len()].to_vec());
+    }
+    let mut failed = HashSet::new();
+    let mut ti = 0;
+    while ti < t.len() {
+        if let Some(hits) = match_words(&w, &t, 0, ti, &mut failed) {
+            return Some(hits.into_iter().rev().map(|i| offsets[i]).collect());
+        }
+        ti = next_word(&t, ti + 1);
+    }
+    None
+}
+
+/// VS Code's SymbolKind for a tree-sitter definition kind, as the plural label
+/// of its `@:` group. Functions in types are methods.
+fn symbol_kind(kind: &str, container: Option<&str>) -> &'static str {
+    let has = |words: &[&str]| words.iter().any(|w| kind.contains(w));
+    if has(&["constructor"]) {
+        "constructors"
+    } else if has(&["method"]) {
+        "methods"
+    } else if has(&["function", "macro"]) {
+        match container {
+            Some("objects" | "classes" | "interfaces" | "structs") => "methods",
+            _ => "functions",
+        }
+    } else if has(&["class"]) {
+        "classes"
+    } else if has(&["struct", "union"]) {
+        "structs"
+    } else if has(&["enum"]) {
+        "enumerations"
+    } else if has(&["interface", "trait", "protocol"]) {
+        "interfaces"
+    } else if has(&["namespace"]) {
+        "namespaces"
+    } else if has(&["mod", "package"]) {
+        "modules"
+    } else if has(&["impl", "object"]) {
+        "objects"
+    } else if has(&["const"]) {
+        "constants"
+    } else if has(&["field"]) {
+        "fields"
+    } else if has(&["type"]) {
+        "type parameters"
+    } else if has(&["var", "let", "static"]) {
+        "variables"
+    } else {
+        "properties"
+    }
+}
+
+/// A kind's codicon and VS Code's dark `symbolIcon.*Foreground`.
+fn symbol_icon(kind: &str) -> (char, Hsla) {
+    let (ch, color) = match kind {
+        "variables" => ('\u{EA88}', Some(0x75BEFF)),
+        "modules" | "namespaces" | "objects" => ('\u{EA8B}', None),
+        "methods" | "functions" | "constructors" => ('\u{EA8C}', Some(0xB180D7)),
+        "structs" => ('\u{EA91}', None),
+        "type parameters" => ('\u{EA92}', None),
+        "enumerations" => ('\u{EA95}', Some(0xEE9D28)),
+        "classes" => ('\u{EB5B}', Some(0xEE9D28)),
+        "constants" => ('\u{EB5D}', None),
+        "enumeration members" => ('\u{EB5E}', Some(0x75BEFF)),
+        "fields" => ('\u{EB5F}', Some(0x75BEFF)),
+        "interfaces" => ('\u{EB61}', Some(0x75BEFF)),
+        _ => ('\u{EB65}', None),
+    };
+    (ch, color.map_or_else(col::fg, c))
+}
+
+/// The grammar's tags query (`@definition.*` with its `@name`), for languages
+/// whose definitions the naming heuristic in `defs` misses. Compiled once per
+/// language.
+fn tags_query(lang: &str, language: &tree_sitter::Language) -> Option<Arc<tree_sitter::Query>> {
+    static CACHE: LazyLock<Mutex<HashMap<String, Option<Arc<tree_sitter::Query>>>>> =
+        LazyLock::new(Mutex::default);
+    let mut cache = CACHE.lock().unwrap();
+    if let Some(query) = cache.get(lang) {
+        return query.clone();
+    }
+    let query = |src: &str| tree_sitter::Query::new(language, src).ok();
+    let compiled = match lang {
+        "c" => query(tree_sitter_c::TAGS_QUERY),
+        "cpp" => query(tree_sitter_cpp::TAGS_QUERY),
+        "javascript" => query(tree_sitter_javascript::TAGS_QUERY),
+        // TypeScript's own tags only add its extra syntax to JavaScript's.
+        "typescript" | "tsx" => query(&format!(
+            "{}\n{}",
+            tree_sitter_javascript::TAGS_QUERY,
+            tree_sitter_typescript::TAGS_QUERY
+        ))
+        .or_else(|| query(tree_sitter_typescript::TAGS_QUERY)),
+        "ruby" => query(tree_sitter_ruby::TAGS_QUERY),
+        _ => None,
+    }
+    .map(Arc::new);
+    cache.insert(lang.to_string(), compiled.clone());
+    compiled
+}
+
+/// Definitions in `text`, VS Code's "Go to Symbol in Editor" without a language
+/// server: syntax nodes with a `name` whose kind reads like a definition, and
+/// whatever the grammar's tags query calls one.
+fn defs(lang: &str, text: &str) -> Vec<Def> {
+    use tree_sitter::StreamingIterator as _;
+    const KINDS: [&str; 5] = [
+        "_item",
+        "_definition",
+        "_declaration",
+        "_spec",
+        "_signature",
+    ];
+    let mut highlighter = SyntaxHighlighter::new(lang);
+    highlighter.update(None, &Rope::from_str(text), None);
+    let Some(tree) = highlighter.tree() else {
+        return Vec::new();
+    };
+    // Tagged definition nodes by id: their name node and the tag's kind.
+    let mut tags = HashMap::new();
+    let query = tags_query(lang, &tree.language());
+    if let Some(query) = query.as_deref() {
+        let names = query.capture_names();
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let mut matches = cursor.matches(query, tree.root_node(), text.as_bytes());
+        while let Some(m) = matches.next() {
+            let capture = |name: &str| m.captures.iter().find(|c| names[c.index as usize] == name);
+            let def = m
+                .captures
+                .iter()
+                .find_map(|c| Some((c.node, names[c.index as usize].strip_prefix("definition.")?)));
+            if let (Some((node, kind)), Some(name)) = (def, capture("name")) {
+                tags.insert(node.id(), (name.node, kind));
+            }
+        }
+    }
+    let mut out: Vec<Def> = Vec::new();
+    // Definitions enclosing the current node.
+    let mut open: Vec<usize> = Vec::new();
+    let mut cursor = tree.walk();
+    loop {
+        let node = cursor.node();
+        let kind = node.kind();
+        let field = |f| node.child_by_field_name(f);
+        let named = KINDS
+            .iter()
+            .find(|s| kind.ends_with(**s))
+            .and_then(|suffix| {
+                // `impl Foo` has no name; like rust-analyzer, list it by its type.
+                let name = field("name")
+                    .or_else(|| (kind == "impl_item").then(|| field("type")).flatten());
+                Some((name?, kind.trim_end_matches(suffix), None))
+            });
+        let tagged = tags
+            .get(&node.id())
+            .map(|&(name, tag)| (name, kind, Some(tag)));
+        if let Some((name, node_kind, tag)) = tagged.or(named) {
+            while open
+                .last()
+                .is_some_and(|&d| out[d].range.end <= node.start_byte())
+            {
+                open.pop();
+            }
+            let container = open.last().copied();
+            let in_kind = container.map(|c| out[c].kind);
+            let mut def_kind = symbol_kind(node_kind, in_kind);
+            if let (Some(tag), "properties") = (tag, def_kind) {
+                def_kind = symbol_kind(tag, in_kind);
+            }
+            // A C declarator's definition is the declaration around it.
+            let mut whole = node;
+            while whole.kind().ends_with("declarator")
+                && let Some(parent) = whole.parent()
+            {
+                whole = parent;
+            }
+            let mut label = text[name.byte_range()].to_string();
+            if kind == "impl_item" {
+                label = match field("trait") {
+                    Some(t) => format!("impl {} for {label}", &text[t.byte_range()]),
+                    None => format!("impl {label}"),
+                };
+            }
+            let start = name.start_byte();
+            let line_start = start - name.start_position().column;
+            open.push(out.len());
+            out.push(Def {
+                name: label,
+                kind: def_kind,
+                line: name.start_position().row as u32,
+                col: text[line_start..start].chars().count() as u32,
+                range: whole.byte_range(),
+                container,
+            });
+        }
+        // Pre-order walk: down, else across, else up until something is across.
+        if cursor.goto_first_child() || cursor.goto_next_sibling() {
+            continue;
+        }
+        loop {
+            if !cursor.goto_parent() {
+                return out;
+            }
+            if cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+}
+
+/// VS Code's `filters.fuzzyScore` as Go to Symbol calls it (a weak first match
+/// is fine, a full match gets a boost): `pattern` in `word[word_start..]`,
+/// rewarding word starts, camel humps, exact case and runs. Returns the score
+/// and the matched character indices, counted from `word_start`.
+fn fuzzy_score(pattern: &str, word: &str, word_start: usize) -> Option<(i32, Vec<usize>)> {
+    const MAX_LEN: usize = 128;
+    let lower = |c: char| c.to_lowercase().next().unwrap_or(c);
+    let p: Vec<char> = pattern.chars().take(MAX_LEN).collect();
+    let w: Vec<char> = word.chars().take(MAX_LEN).collect();
+    let pl: Vec<char> = p.iter().copied().map(lower).collect();
+    let wl: Vec<char> = w.iter().copied().map(lower).collect();
+    let (plen, wlen) = (p.len(), w.len());
+    if plen == 0 || word_start >= wlen || plen > wlen - word_start {
+        return None;
+    }
+    // The first and last word position each pattern char can match at.
+    let (mut min, mut max) = (vec![0; plen], vec![0; plen]);
+    let mut pi = 0;
+    for wi in word_start..wlen {
+        if pi < plen && pl[pi] == wl[wi] {
+            min[pi] = wi;
+            pi += 1;
+        }
+    }
+    if pi < plen {
+        return None;
+    }
+    for wi in (word_start..wlen).rev() {
+        if pi > 0 && pl[pi - 1] == wl[wi] {
+            pi -= 1;
+            max[pi] = wi;
+        }
+    }
+
+    // Out-of-range positions (`wi - 1` at 0 wraps) are neither.
+    let upper = |i: usize| w.get(i) != wl.get(i);
+    let sep = |i: usize| {
+        wl.get(i)
+            .is_some_and(|c| "_-. /\\'\":$<>()[]{}".contains(*c))
+    };
+    let white = |i: usize| wl.get(i).is_some_and(|c| matches!(c, ' ' | '\t'));
+    let char_score = |pi: usize, wi: usize, new_match: bool| -> Option<i32> {
+        if pl[pi] != wl[wi] {
+            return None;
+        }
+        let case = if p[pi] == w[wi] { 7 } else { 5 };
+        let prev = wi.wrapping_sub(1);
+        let (mut score, mut gap) = if wi == pi {
+            (case, false) // common prefix
+        } else if upper(wi) && !upper(prev) {
+            (case, true) // camel hump
+        } else if sep(wi) && !sep(prev) {
+            (5, false)
+        } else if sep(prev) || white(prev) {
+            (5, true) // word start
+        } else {
+            (1, false)
+        };
+        gap = gap || upper(wi) || sep(prev) || white(prev);
+        if pi == 0 {
+            if wi > word_start {
+                score -= if gap { 3 } else { 5 };
+            }
+        } else if new_match {
+            score += if gap { 2 } else { 0 };
+        } else {
+            score += if gap { 0 } else { 1 };
+        }
+        // As if a gap followed the word, so ending on its last char isn't a bonus.
+        if wi + 1 == wlen {
+            score -= if gap { 3 } else { 5 };
+        }
+        Some(score)
+    };
+
+    // table: best score; diag: run length ending here; arrows: 1 matched
+    // diagonally, 2 skipped one word char, 3 skipped two.
+    let cols = wlen - word_start + 1;
+    let mut table = vec![vec![0i32; cols]; plen + 1];
+    let mut diag = vec![vec![0i32; cols]; plen + 1];
+    let mut arrows = vec![vec![0u8; cols]; plen + 1];
+    for pi in 0..plen {
+        let row = pi + 1;
+        let next_max = if pi + 1 < plen { max[pi + 1] } else { wlen };
+        for wi in min[pi]..next_max {
+            let col = wi - word_start + 1;
+            let diag_score = (wi <= max[pi])
+                .then(|| char_score(pi, wi, diag[row - 1][col - 1] == 0))
+                .flatten()
+                .map(|s| s + table[row - 1][col - 1]);
+            // Leaving a run costs 5.
+            let gap_start = |c: usize| if diag[row][c] > 0 { -5 } else { 0 };
+            let left = (wi > min[pi]).then(|| table[row][col - 1] + gap_start(col - 1));
+            let left_left = (wi > min[pi] + 1 && diag[row][col - 1] > 0)
+                .then(|| table[row][col - 2] + gap_start(col - 2));
+            // Ties go left: an earlier match.
+            let beats = |s: i32, other: Option<i32>| other.is_none_or(|o| s >= o);
+            let (score, arrow, run) = if let Some(ll) =
+                left_left.filter(|&ll| beats(ll, left) && beats(ll, diag_score))
+            {
+                (ll, 3, 0)
+            } else if let Some(l) = left.filter(|&l| beats(l, diag_score)) {
+                (l, 2, 0)
+            } else {
+                (diag_score?, 1, diag[row - 1][col - 1] + 1)
+            };
+            table[row][col] = score;
+            arrows[row][col] = arrow;
+            diag[row][col] = run;
+        }
+    }
+
+    let (mut row, mut col) = (plen, cols - 1);
+    let mut score = table[row][col];
+    let mut hits = Vec::with_capacity(plen);
+    let (mut back, mut max_col) = (0, 0);
+    while row >= 1 {
+        let mut dc = col;
+        loop {
+            match arrows[row][dc] {
+                3 if dc >= 3 => dc -= 2,
+                2 if dc >= 2 => dc -= 1,
+                _ => break,
+            }
+        }
+        // Keep extending the run found walking back when it would be longer.
+        if back > 1
+            && pl[row - 1] == wl[word_start + col - 1]
+            && !upper(dc + word_start - 1)
+            && back + 1 > diag[row][dc]
+        {
+            dc = col;
+        }
+        back = if dc == col { back + 1 } else { 1 };
+        if max_col == 0 {
+            max_col = dc;
+        }
+        row -= 1;
+        col = dc - 1;
+        hits.push(col);
+    }
+    if wlen - word_start == plen {
+        score += 2;
+    }
+    // A point per word char skipped.
+    score -= max_col as i32 - plen as i32;
+    hits.reverse();
+    Some((score, hits))
+}
+
+/// Character indices to byte offsets in `s`.
+fn byte_offsets(s: &str, chars: Vec<usize>) -> Vec<usize> {
+    let offsets: Vec<usize> = s.char_indices().map(|(i, _)| i).collect();
+    chars
+        .into_iter()
+        .filter_map(|i| offsets.get(i).copied())
+        .collect()
+}
+
+/// VS Code's Go to Symbol: `@name` by score, `@:name` grouped by kind. With
+/// spaces, the first word matches the name and the rest the container, unless
+/// the whole query matches the name. Returns the picks, their groups and, for
+/// an empty query, the last row whose definition holds `cursor`.
+fn rank_symbols(query: &str, defs: &[Def], cursor: usize) -> (Vec<Pick>, Groups, Option<usize>) {
+    let (by_kind, q) = match query.strip_prefix(':') {
+        Some(q) => (true, q.trim()),
+        None => (false, query.trim()),
+    };
+    let pieces: Vec<String> = prepare_query(q).pieces.into_iter().map(|p| p.0).collect();
+    let whole = pieces.concat();
+    // VS Code scores `$(icon) name` from the name, so its first char follows a space.
+    let in_name = |d: &Def, pattern: &str| {
+        let (s, hits) = fuzzy_score(pattern, &format!(" {}", d.name), 1)?;
+        Some((s, byte_offsets(&d.name, hits)))
+    };
+    let score = |d: &Def| -> Option<(i32, Vec<usize>, Vec<usize>)> {
+        let Some((first, rest)) = pieces.split_first() else {
+            return Some((0, Vec::new(), Vec::new()));
+        };
+        if !rest.is_empty()
+            && let Some((s, hits)) = in_name(d, &whole)
+        {
+            return Some((s, hits, Vec::new()));
+        }
+        let (mut total, hits) = in_name(d, first)?;
+        let container = d.container.map_or("", |c| defs[c].name.as_str());
+        let mut in_container = Vec::new();
+        for piece in rest {
+            let (s, h) = fuzzy_score(piece, container, 0)?;
+            total += s;
+            in_container.extend(byte_offsets(container, h));
+        }
+        in_container.sort_unstable();
+        in_container.dedup();
+        Some((total, hits, in_container))
+    };
+    let mut scored: Vec<_> = defs
+        .iter()
+        .enumerate()
+        .filter_map(|(ix, d)| score(d).map(|(s, hits, chits)| (s, ix, hits, chits)))
+        .collect();
+    scored.sort_by_key(|&(s, ix, ..)| (by_kind.then(|| defs[ix].kind), -s, ix));
+
+    let mut groups = Vec::new();
+    if by_kind {
+        let mut row = 0;
+        for chunk in scored.chunk_by(|a, b| defs[a.1].kind == defs[b.1].kind) {
+            let kind = defs[chunk[0].1].kind;
+            groups.push((row, format!("{kind} ({})", chunk.len()).into()));
+            row += chunk.len();
+        }
+    } else if !scored.is_empty() {
+        groups.push((0, format!("symbols ({})", scored.len()).into()));
+    }
+    let around = q.is_empty().then(|| {
+        scored.iter().rposition(|&(_, ix, ..)| {
+            let r = &defs[ix].range;
+            (r.start..=r.end).contains(&cursor)
+        })
+    });
+    let picks = scored
+        .into_iter()
+        .map(|(_, ix, hits, chits)| Pick::Symbol(ix, hits, chits))
+        .collect();
+    (picks, groups, around.flatten())
+}
+
+/// Matched characters: VS Code's list.highlightForeground, white in the focused row.
+fn highlights(text: &str, hits: &[usize], selected: bool) -> Vec<(Range<usize>, HighlightStyle)> {
+    let style = HighlightStyle {
+        color: Some(c(if selected { 0xFFFFFF } else { 0x48A0C7 })),
+        font_weight: Some(FontWeight::BOLD),
+        ..Default::default()
+    };
+    hits.iter()
+        .filter_map(|&h| {
+            // A whole-path match can hit the separator past the folder's end.
+            text.get(h..)?
+                .chars()
+                .next()
+                .map(|c| (h..h + c.len_utf8(), style))
+        })
+        .collect()
+}
+
+enum RowIcon {
+    None,
+    File,
+    Symbol(char, Hsla),
+}
+
+/// A list row like VS Code's quick pick: icon, highlighted label, dimmer
+/// description, keybinding, and the group's label on its first row.
+struct Row {
+    icon: RowIcon,
+    label: SharedString,
+    label_hits: Vec<usize>,
+    desc: SharedString,
+    desc_hits: Vec<usize>,
+    action: Option<Box<dyn Action>>,
+    group: Option<SharedString>,
+    selected: bool,
+}
+
+impl Row {
+    fn item(self) -> CommandItem {
+        let item = CommandItem::new().label(self.label.clone());
+        let item = match &self.action {
+            Some(action) => item.action(action.boxed_clone()),
+            None => item,
+        };
+        item.child(move |window, cx| self.render(window, cx))
+    }
+
+    fn render(&self, window: &Window, cx: &App) -> Div {
+        // VS Code dims descriptions to 70% of the row's color.
+        let desc_color = if self.selected {
+            hsla(0., 0., 1., 0.7)
+        } else {
+            col::fg_muted()
+        };
+        let kbd = self
+            .action
+            .as_ref()
+            .and_then(|a| Kbd::binding_for_action(a.as_ref(), None, window));
+        h_flex()
+            .flex_1()
+            .gap(px(6.))
+            .min_w_0()
+            .whitespace_nowrap()
+            // Covers the list's own row (padded px_2 py_1p5) to paint VS Code's
+            // quickInputList.focus colors over the accent it highlights with.
+            .mx(rems(-0.5))
+            .my(rems(-0.375))
+            .px(rems(0.5))
+            .py(rems(0.375))
+            .rounded(Theme::global(cx).radius)
+            .when(self.selected, |this| {
+                this.bg(c(0x297AA0)).text_color(c(0xFFFFFF))
+            })
+            .map(|this| match self.icon {
+                RowIcon::None => this,
+                RowIcon::File => this.child(file_icon(Path::new(self.label.as_ref()))),
+                RowIcon::Symbol(ch, color) => this.child(codicon(ch).text_color(color)),
+            })
+            .child(
+                StyledText::new(self.label.clone()).with_highlights(highlights(
+                    &self.label,
+                    &self.label_hits,
+                    self.selected,
+                )),
+            )
+            .when(!self.desc.is_empty(), |this| {
+                this.child(
+                    div()
+                        .min_w_0()
+                        .text_size(px(12.))
+                        .text_color(desc_color)
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .child(
+                            StyledText::new(self.desc.clone()).with_highlights(highlights(
+                                &self.desc,
+                                &self.desc_hits,
+                                self.selected,
+                            )),
+                        ),
+                )
+            })
+            .child(div().flex_1())
+            .children(kbd)
+            .children(self.group.clone().map(|group| {
+                // pickerGroup.foreground
+                div()
+                    .flex_none()
+                    .text_size(px(12.))
+                    .text_color(c(0xBFBFBF))
+                    .child(group)
+            }))
+    }
+}
+
+impl Workbench {
+    pub(super) fn open_palette(
+        &mut self,
+        query: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let p = &mut self.palette;
+        if !p.open {
+            p.restore = window.focused(cx);
+            p.open = true;
+        }
+        p.defs = None;
+        p.parse = None;
+        p.state
+            .update(cx, |s, cx| s.set_query(query.to_string(), window, cx));
+        p.state.clone().update(cx, |s, cx| s.focus(window, cx));
+        self.palette_query(query.to_string(), cx);
+        self.walk_files(cx);
+        cx.notify();
+    }
+
+    /// Re-lists the workspace's files when the watcher saw them change. The
+    /// first walk shows files as they are found; later ones keep showing the
+    /// previous list until they finish.
+    fn walk_files(&mut self, cx: &mut Context<Self>) {
+        let p = &mut self.palette;
+        let (Some(root), true, None) = (self.root.clone(), p.stale, &p.walk) else {
+            return;
+        };
+        // Changes from here on need another walk.
+        p.stale = false;
+        let stream = p.files.is_empty();
+        let (tx, mut rx) = futures::channel::mpsc::unbounded::<Vec<String>>();
+        cx.background_spawn(async move {
+            let mut batch = Vec::new();
+            let mut sent = Instant::now();
+            let walk = ignore::WalkBuilder::new(&root)
+                .hidden(false)
+                .filter_entry(|e| e.file_name() != ".git")
+                .build();
+            for e in walk.flatten() {
+                if !e.file_type().is_some_and(|t| t.is_file()) {
+                    continue;
+                }
+                if let Ok(rel) = e.path().strip_prefix(&root) {
+                    batch.push(rel.to_string_lossy().into_owned());
+                }
+                if sent.elapsed() > Duration::from_millis(100) {
+                    // The palette closed or the workspace changed; stop walking.
+                    if tx.unbounded_send(std::mem::take(&mut batch)).is_err() {
+                        return;
+                    }
+                    sent = Instant::now();
+                }
+            }
+            tx.unbounded_send(batch).ok();
+        })
+        .detach();
+        p.walk = Some(cx.spawn(async move |this, cx| {
+            let mut files = Vec::new();
+            while let Some(batch) = rx.next().await {
+                let update = this.update(cx, |this, cx| {
+                    let p = &mut this.palette;
+                    if stream {
+                        Arc::make_mut(&mut p.files).extend(batch);
+                        if p.open {
+                            let query = p.query.clone();
+                            this.palette_query(query, cx);
+                        }
+                    } else {
+                        files.extend(batch);
+                    }
+                });
+                if update.is_err() {
+                    return;
+                }
+            }
+            this.update(cx, |this, cx| {
+                let p = &mut this.palette;
+                p.walk = None;
+                if !stream {
+                    p.files = Arc::new(files);
+                    if p.open {
+                        let query = p.query.clone();
+                        this.palette_query(query, cx);
+                    }
+                }
+            })
+            .ok();
+        }));
+    }
+
+    pub(super) fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.palette.open {
+            return;
+        }
+        self.palette_unpreview(true, cx);
+        let p = &mut self.palette;
+        p.open = false;
+        // The walk keeps going: its files are the next open's index.
+        p.rank = None;
+        p.parse = None;
+        // A command may have moved focus (Show Search); only restore it when it is still ours.
+        if p.focus.contains_focused(window, cx) {
+            match p.restore.take() {
+                Some(handle) => window.focus(&handle, cx),
+                None => window.focus(&self.focus, cx),
+            }
+        }
+        cx.notify();
+    }
+
+    fn palette_query(&mut self, query: String, cx: &mut Context<Self>) {
+        self.palette_pick(&query, cx);
+        if !query.starts_with([':', '@']) {
+            self.palette_unpreview(true, cx);
+        } else if self.palette.shown.is_empty() {
+            if let Some(deco) = self.palette.deco.take() {
+                deco.dispose(cx);
+            }
+        } else {
+            self.palette_preview(self.palette.selected, cx);
+        }
+    }
+
+    /// Fills the list for `query`; Quick Open's file ranking finishes in the background.
+    fn palette_pick(&mut self, query: &str, cx: &mut Context<Self>) {
+        let active = self.docs.get(self.active);
+        let p = &mut self.palette;
+        p.query = query.to_string();
+        p.empty = "No matching results".into();
+        p.goto = None;
+        p.rank = None;
+        cx.notify();
+
+        if let Some(q) = query.strip_prefix('>') {
+            // VS Code lists recently used commands, then the rest alphabetically.
+            let commands = commands();
+            let mut shown: Vec<_> = (0..commands.len())
+                .filter_map(|ix| Some((ix, command_matches(q.trim(), commands[ix].0)?)))
+                .collect();
+            let recent = |ix: usize| p.recent.iter().position(|r| r == commands[ix].0);
+            shown.sort_by_key(|&(ix, _)| (recent(ix).unwrap_or(usize::MAX), commands[ix].0));
+            let mut groups = Vec::new();
+            if shown.first().is_some_and(|&(ix, _)| recent(ix).is_some()) {
+                groups.push((0, "recently used".into()));
+                if let Some(row) = shown.iter().position(|&(ix, _)| recent(ix).is_none()) {
+                    groups.push((row, "other commands".into()));
+                }
+            }
+            let shown = shown.into_iter().map(|(ix, hits)| Pick::Command(ix, hits));
+            p.show(shown.collect(), groups, 0);
+            p.empty = "No matching commands".into();
+            return;
+        }
+
+        if let Some(q) = query.strip_prefix('@') {
+            let Some(doc) = active else {
+                p.empty =
+                    "To go to a symbol, first open a text editor with symbol information.".into();
+                p.show(Vec::new(), Vec::new(), 0);
+                return;
+            };
+            let editor = doc.editor.read(cx);
+            let Some(defs) = &p.defs else {
+                // A big file takes a while to parse; the list fills when it is done.
+                if p.parse.is_none() {
+                    let lang = editor_language(&doc.path);
+                    let text = editor.value().to_string();
+                    p.parse = Some(cx.spawn(async move |this, cx| {
+                        let defs = cx.background_spawn(async move { defs(&lang, &text) }).await;
+                        this.update(cx, |this, cx| {
+                            this.palette.defs = Some(defs);
+                            let query = this.palette.query.clone();
+                            this.palette_query(query, cx);
+                        })
+                        .ok();
+                    }));
+                }
+                p.empty = SharedString::default();
+                p.show(Vec::new(), Vec::new(), 0);
+                return;
+            };
+            let (shown, groups, around) = rank_symbols(q, defs, editor.cursor());
+            p.empty = if defs.is_empty() {
+                "No editor symbols"
+            } else {
+                "No matching editor symbols"
+            }
+            .into();
+            p.show(shown, groups, around.unwrap_or(0));
+            return;
+        }
+
+        if let Some(q) = query.strip_prefix(':') {
+            let Some(doc) = active else {
+                p.empty = "Open a text editor first to go to a line or an offset.".into();
+                p.show(Vec::new(), Vec::new(), 0);
+                return;
+            };
+            match goto_line(q, &doc.editor.read(cx).value()) {
+                Ok((line, col, label)) => p.show(vec![Pick::Line(line, col, label)], Vec::new(), 0),
+                Err(hint) => {
+                    p.empty = hint.into();
+                    p.show(Vec::new(), Vec::new(), 0);
+                }
+            }
+            return;
+        }
+
+        let (file_q, goto) = split_line(query);
+        p.goto = goto;
+        let root = self.root.clone().unwrap_or_default();
+        let history: Vec<String> = p
+            .editors
+            .get(&root_key(self.root.as_deref()))
+            .into_iter()
+            .flatten()
+            .map(|path| Path::new(path))
+            .map(|path| path.strip_prefix(&root).unwrap_or(path))
+            .map(|rel| rel.to_string_lossy().into_owned())
+            .collect();
+        let files = p.files.clone();
+        let file_q = file_q.to_string();
+        // Scoring a big repo takes a while; keep typing responsive.
+        p.rank = Some(cx.spawn(async move |this, cx| {
+            let (shown, groups) = cx
+                .background_spawn(async move { rank_files(&file_q, &root, &history, &files) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.palette.show(shown, groups, 0);
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Go to Line/Symbol preview: centers `row`'s line in the active editor and
+    /// highlights it (VS Code's rangeHighlight), keeping the view to restore.
+    fn palette_preview(&mut self, row: usize, cx: &mut Context<Self>) {
+        let p = &self.palette;
+        let (line, range) = match p.shown.get(row) {
+            Some(Pick::Line(line, ..)) => (*line, None),
+            Some(Pick::Symbol(ix, ..)) => {
+                let def = &p.defs.as_ref().unwrap()[*ix];
+                (def.line, Some(def.range.clone()))
+            }
+            _ => return,
+        };
+        let Some(editor) = self.docs.get(self.active).map(|d| d.editor.clone()) else {
+            return;
+        };
+        let (view, range) = editor.update(cx, |e, cx| {
+            let view = e.scroll_offset();
+            let range = range.unwrap_or_else(|| {
+                let text = e.text();
+                text.line_start_offset(line as usize)..text.line_end_offset(line as usize)
+            });
+            if let Some(lh) = e.line_height() {
+                // Wrapped and folded lines make the line's row differ from its number.
+                let row = e.display_map().buffer_line_to_display_row(line as usize) as f32;
+                let rows = e.visible_row_range().map_or(1, |r| r.len()) as f32;
+                let top = lh * row - (lh * rows - lh) / 2.;
+                e.set_scroll_offset(point(view.x, -top.max(px(0.))), cx);
+            }
+            (view, range)
+        });
+        self.palette.view.get_or_insert(view);
+        let deco = vec![
+            RangeDecoration::new(range)
+                .with_style(RangeDecorationStyle::Fill)
+                .with_color(ca(0xFFFFFF13)),
+        ];
+        match &self.palette.deco {
+            Some(d) => d.set(deco, cx),
+            None => {
+                let d = editor.update(cx, |e, cx| e.create_range_decorations_collection(deco, cx));
+                self.palette.deco = Some(d);
+            }
+        }
+    }
+
+    /// Ends a preview, scrolling back to where the editor was unless a pick moved it.
+    fn palette_unpreview(&mut self, restore: bool, cx: &mut Context<Self>) {
+        let p = &mut self.palette;
+        if let Some(deco) = p.deco.take() {
+            deco.dispose(cx);
+        }
+        if let (Some(view), true, Some(doc)) = (p.view.take(), restore, self.docs.get(self.active))
+        {
+            doc.editor.update(cx, |e, cx| e.set_scroll_offset(view, cx));
+        }
+    }
+
+    fn palette_confirm(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let p = &mut self.palette;
+        let (file, pos) = match p.shown.get(row) {
+            Some(Pick::File(rel, ..)) => {
+                let path = match &self.root {
+                    Some(root) => root.join(rel),
+                    None => PathBuf::from(rel),
+                };
+                (Some(path), p.goto)
+            }
+            Some(Pick::Line(line, col, _)) => (None, Some((*line, *col))),
+            Some(Pick::Symbol(ix, ..)) => {
+                let def = &p.defs.as_ref().unwrap()[*ix];
+                (None, Some((def.line, def.col)))
+            }
+            Some(&Pick::Command(ix, _)) => {
+                // The command dispatches its own action.
+                let label = commands()[ix].0;
+                p.recent.retain(|r| r != label);
+                p.recent.insert(0, label.to_string());
+                p.recent.truncate(COMMAND_HISTORY);
+                p.save(cx);
+                (None, None)
+            }
+            None => (None, None),
+        };
+        self.palette_unpreview(false, cx);
+        self.close_palette(window, cx);
+        if let Some(path) = file {
+            self.open_path(path, window, cx);
+        }
+        if let (Some((line, col)), Some(doc)) = (pos, self.docs.get(self.active)) {
+            doc.editor.update(cx, |e, cx| {
+                e.set_cursor_position(Position::new(line, col), window, cx)
+            });
+        }
+    }
+
+    pub(super) fn render_palette(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let p = &mut self.palette;
+        if !p.open {
+            return None;
+        }
+        // The list keeps its highlighted row across updates; VS Code starts over.
+        if let Some(row) = p.preselect.take() {
+            let state = p.state.clone();
+            window.on_next_frame(move |window, cx| {
+                state.update(cx, |s, cx| {
+                    s.set_selected_index(Some(IndexPath::new(row)), window, cx)
+                })
+            });
+        }
+
+        let this = cx.weak_entity();
+        let (this2, this3) = (this.clone(), this.clone());
+        let placeholder = if p.query.starts_with('>') {
+            ""
+        } else {
+            "Search files by name (append : to go to line or @ to go to symbol)"
+        };
+        let empty = p.empty.clone();
+        // VS Code's quickInput sizing: 62% wide up to 600px, list 40% of the
+        // window in whole 44px steps, at most 20 rows of 22px.
+        let viewport = window.viewport_size();
+        let width = (viewport.width.as_f32() * 0.62).min(600.);
+        let list_h = ((viewport.height.as_f32() * 0.4 / 44.).floor() * 44. + 6.).min(440.);
+
+        let mut list = Command::new(&p.state)
+            .bordered(false)
+            .filterable(false)
+            .max_h(px(list_h))
+            .placeholder(placeholder);
+        let commands = commands();
+        let defs = p.defs.as_deref().unwrap_or_default();
+        for (ix, pick) in p.shown.iter().enumerate() {
+            let group = p
+                .groups
+                .iter()
+                .find(|(row, _)| *row == ix)
+                .map(|(_, g)| g.clone());
+            if group.is_some() && ix > 0 {
+                list = list.separator();
+            }
+            let row = |icon, label: &str, label_hits: &Vec<usize>| Row {
+                icon,
+                label: label.to_string().into(),
+                label_hits: label_hits.clone(),
+                desc: SharedString::default(),
+                desc_hits: Vec::new(),
+                action: None,
+                group: group.clone(),
+                selected: ix == p.selected,
+            };
+            list = list.item(match pick {
+                Pick::Line(.., label) => row(RowIcon::None, label, &Vec::new()).item(),
+                Pick::Command(cmd, hits) => {
+                    let (label, action) = &commands[*cmd];
+                    Row {
+                        action: Some(action.boxed_clone()),
+                        ..row(RowIcon::None, label, hits)
+                    }
+                    .item()
+                }
+                Pick::Symbol(def, hits, container_hits) => {
+                    let def = &defs[*def];
+                    let (ch, color) = symbol_icon(def.kind);
+                    let container = def.container.map(|c| defs[c].name.clone());
+                    Row {
+                        desc: container.unwrap_or_default().into(),
+                        desc_hits: container_hits.clone(),
+                        ..row(RowIcon::Symbol(ch, color), &def.name, hits)
+                    }
+                    .item()
+                }
+                Pick::File(rel, label_hits, desc_hits) => {
+                    let (name, dir) = parts(rel);
+                    Row {
+                        desc: dir.to_string().into(),
+                        desc_hits: desc_hits.clone(),
+                        ..row(RowIcon::File, name, label_hits)
+                    }
+                    .item()
+                }
+            });
+        }
+
+        Some(
+            div()
+                .id("palette")
+                .track_focus(&p.focus)
+                .absolute()
+                // Over the command center, as in VS Code.
+                .top(px(6.))
+                .left(relative(0.5))
+                .ml(px(-width / 2.))
+                .w(px(width))
+                .rounded(px(12.))
+                // quickInput.background
+                .bg(c(0x202122))
+                .border_1()
+                .border_color(col::border())
+                .shadow_lg()
+                .text_size(px(13.))
+                // Escape closes straight away, even with a query (the default clears it first).
+                .capture_action(cx.listener(|this, _: &Cancel, window, cx| {
+                    cx.stop_propagation();
+                    this.close_palette(window, cx);
+                }))
+                .on_mouse_down_out(
+                    cx.listener(|this, _, window, cx| this.close_palette(window, cx)),
+                )
+                .child(
+                    list.on_query(move |q, _, cx| {
+                        let q = q.to_string();
+                        this.update(cx, |this, cx| this.palette_query(q, cx)).ok();
+                    })
+                    .on_select(move |ix, _, cx| {
+                        this3
+                            .update(cx, |this, cx| {
+                                this.palette.selected = ix.row;
+                                if this.palette.query.starts_with([':', '@']) {
+                                    this.palette_preview(ix.row, cx);
+                                }
+                                cx.notify();
+                            })
+                            .ok();
+                    })
+                    .on_confirm(move |ix, window, cx| {
+                        this2
+                            .update(cx, |this, cx| this.palette_confirm(ix.row, window, cx))
+                            .ok();
+                    })
+                    .empty(move |_, _, _| {
+                        div()
+                            .p(px(8.))
+                            .text_color(col::fg_muted())
+                            .child(empty.clone())
+                    }),
+                )
+                .into_any_element(),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::{
+        Pick, command_matches, defs, fuzzy_score, goto_line, highlights, prepare_query, rank_files,
+        rank_symbols, score_fuzzy, split_line, status_column,
+    };
+
+    fn ranked(query: &str, history: &[&str], files: &[&str]) -> Vec<String> {
+        let own = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let (picks, _) = rank_files(query, Path::new("C:\\ws"), &own(history), &own(files));
+        picks
+            .into_iter()
+            .map(|p| match p {
+                Pick::File(rel, ..) => rel,
+                _ => unreachable!(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn fuzzy_ranks() {
+        assert_eq!(
+            score_fuzzy("workbench.rs", "wbr", true).unwrap().1,
+            vec![0, 4, 10]
+        );
+        // Contiguous: only where the query occurs whole.
+        assert!(score_fuzzy("workbench.rs", "wbr", false).is_none());
+        assert_eq!(
+            score_fuzzy("workbench.rs", "bench", false).unwrap().1,
+            vec![4, 5, 6, 7, 8]
+        );
+        assert!(score_fuzzy("workbench.rs", "xyz", true).is_none());
+
+        let files = [
+            "src\\some\\each\\archive.rs",
+            "src\\workbench\\search.rs",
+            "src\\main.rs",
+            "format.rs",
+        ];
+        assert_eq!(
+            ranked("search", &[], &files)[0],
+            "src\\workbench\\search.rs"
+        );
+        assert_eq!(ranked("ma", &[], &files)[0], "src\\main.rs");
+        assert_eq!(ranked("src/ma", &[], &files)[0], "src\\main.rs");
+        // Every piece must match; quotes ask for a contiguous match.
+        assert_eq!(ranked("src main", &[], &files), ["src\\main.rs"]);
+        assert!(ranked("\"mn\"", &[], &files).is_empty());
+        assert_eq!(
+            prepare_query("\"ma\" rs").pieces,
+            [("ma".into(), true), ("rs".into(), false)]
+        );
+        // History comes first and is left out of the file results.
+        assert_eq!(ranked("rs", &["format.rs"], &files)[0], "format.rs");
+        assert_eq!(ranked("", &["format.rs"], &files), ["format.rs"]);
+        // An absolute path matches outright.
+        assert_eq!(ranked("C:/ws/src/main.rs", &[], &files)[0], "src\\main.rs");
+        // Hits past the end of the folder (the separator) are skipped.
+        assert!(highlights("src", &[3], false).is_empty());
+
+        assert!(command_matches("tog term", "View: Toggle Terminal").is_some());
+        assert_eq!(
+            command_matches("vtt", "View: Toggle Terminal").unwrap(),
+            vec![0, 6, 13]
+        );
+        assert_eq!(
+            command_matches("save", "File: Save All").unwrap(),
+            vec![6, 7, 8, 9]
+        );
+        assert!(command_matches("xyz", "View: Toggle Terminal").is_none());
+    }
+
+    #[test]
+    fn line_suffix() {
+        assert_eq!(split_line("main.rs:12"), ("main.rs", Some((11, 0))));
+        assert_eq!(split_line("main.rs#12,5"), ("main.rs", Some((11, 4))));
+        assert_eq!(split_line("main.rs(12)"), ("main.rs", Some((11, 0))));
+        assert_eq!(split_line("main.rs:"), ("main.rs", Some((0, 0))));
+        assert_eq!(split_line("a:b"), ("a:b", None));
+        assert_eq!(split_line("C:\\src\\main.rs"), ("C:\\src\\main.rs", None));
+        let text = "one\ntwo\nthree";
+        assert_eq!(goto_line("2", text).unwrap().0, 1);
+        assert_eq!(
+            goto_line("-1:9", text).unwrap(),
+            (2, 5, "Press 'Enter' to go to line 3 at column 6.".into())
+        );
+        assert_eq!(goto_line(" 3:-1", text).unwrap().1, 4);
+        assert_eq!(goto_line("2abc", text).unwrap().0, 1);
+        assert_eq!(
+            goto_line("9,", text).unwrap().2,
+            "Press 'Enter' to go to line 3 or enter a column number (from 1 to 6)."
+        );
+        assert_eq!(
+            goto_line("", text).unwrap_err(),
+            "Type a line number to go to (from 1 to 3)."
+        );
+        // `::offset`, 1-based; negative counts from the end.
+        assert_eq!(
+            goto_line(":5", text).unwrap(),
+            (1, 0, "Press 'Enter' to go to line 2 at column 1.".into())
+        );
+        assert_eq!(goto_line(":-1", text).unwrap().0, 2);
+        assert_eq!(goto_line(":-1", text).unwrap().1, 5);
+        assert_eq!(
+            goto_line(":", text).unwrap_err(),
+            "Type a character position to go to (from 1 to 13)."
+        );
+        // Columns are visible ones, a tab reaching the next multiple of 4.
+        let tabbed = "\tab";
+        assert_eq!(goto_line("1:5", tabbed).unwrap().1, 1);
+        assert_eq!(goto_line("1:3", tabbed).unwrap().1, 0);
+        assert_eq!(
+            goto_line("1,", tabbed).unwrap().2,
+            "Press 'Enter' to go to line 1 or enter a column number (from 1 to 7)."
+        );
+        assert_eq!(
+            goto_line(":2", tabbed).unwrap(),
+            (0, 1, "Press 'Enter' to go to line 1 at column 5.".into())
+        );
+        // CJK and emoji graphemes take two columns; the status bar widens tabs only.
+        assert_eq!(goto_line("1:3", "日本x").unwrap().1, 1);
+        assert_eq!(
+            goto_line("1,", "日本x").unwrap().2,
+            "Press 'Enter' to go to line 1 or enter a column number (from 1 to 6)."
+        );
+        assert_eq!(goto_line("1:3", "👍🏽x").unwrap().1, 2);
+        assert_eq!(status_column(tabbed, 1), 5);
+        assert_eq!(status_column("日x", 1), 2);
+    }
+
+    #[test]
+    fn rust_defs() {
+        let src = "struct Foo;\nimpl Foo {\n    fn bar() {}\n}\nfn baz() {}\n";
+        let defs = defs("rust", src);
+        let got: Vec<_> = defs
+            .iter()
+            .map(|d| (d.name.as_str(), d.kind, d.line, d.col, d.container))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("Foo", "structs", 0, 7, None),
+                ("impl Foo", "objects", 1, 5, None),
+                ("bar", "methods", 2, 7, Some(1)),
+                ("baz", "functions", 4, 3, None),
+            ]
+        );
+        let names = |q: &str| -> Vec<usize> {
+            rank_symbols(q, &defs, 0)
+                .0
+                .into_iter()
+                .map(|p| match p {
+                    Pick::Symbol(ix, ..) => ix,
+                    _ => unreachable!(),
+                })
+                .collect()
+        };
+        // The rest of the query matches the container.
+        assert_eq!(names("ba foo"), [2]);
+        assert_eq!(names("ba"), [2, 3]);
+        let (_, groups, _) = rank_symbols(":", &defs, 0);
+        let groups: Vec<_> = groups
+            .iter()
+            .map(|(row, g)| (*row, g.to_string()))
+            .collect();
+        assert_eq!(groups[0], (0, "functions (1)".into()));
+        // An empty query starts at the innermost symbol around the cursor.
+        assert_eq!(rank_symbols("", &defs, src.find("bar").unwrap()).2, Some(2));
+
+        // Camel humps and word starts beat plain letters.
+        assert_eq!(fuzzy_score("fb", "fooBar", 0).unwrap().1, [0, 3]);
+        assert_eq!(fuzzy_score("b", "abc_bar", 0).unwrap().1, [4]);
+        assert!(fuzzy_score("xb", "fooBar", 0).is_none());
+    }
+
+    #[test]
+    fn tagged_defs() {
+        let src = "struct point { int x; };\ntypedef int num;\nstatic char *name(void) { return 0; }\nint add(int a, int b);\n";
+        let defs = defs("c", src);
+        let got: Vec<_> = defs.iter().map(|d| (d.name.as_str(), d.kind)).collect();
+        assert_eq!(
+            got,
+            [
+                ("point", "structs"),
+                ("num", "type parameters"),
+                ("name", "functions"),
+                ("add", "functions"),
+            ]
+        );
+        // The whole definition, not just its declarator.
+        assert_eq!(defs[2].range.start, src.find("static").unwrap());
+        // TypeScript gets JavaScript's tags too.
+        let ts = super::defs("typescript", "const f = () => 1;\n");
+        assert_eq!(
+            ts.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(),
+            ["f"]
+        );
+    }
+}
