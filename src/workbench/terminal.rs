@@ -57,6 +57,8 @@ pub(super) struct Terminal {
     hover: Option<(u16, u16, u16)>,
     /// Wheel movement not yet a whole line.
     scroll: f32,
+    /// The cell the last mouse report was for, to send motion once per cell.
+    mouse_cell: Option<(u16, u16)>,
     _task: Task<()>,
 }
 
@@ -87,8 +89,10 @@ impl Terminal {
         )
     }
 
-    /// The link under the mouse, if any.
+    /// The link under the mouse, if any. Paths resolve against the shell's
+    /// cwd, else `root`.
     fn link(&self, position: Point<Pixels>, root: Option<&Path>) -> Option<(u16, u16, u16, Link)> {
+        let root = self.parser.callbacks().cwd.as_deref().or(root);
         let screen = self.parser.screen();
         let (row, col) = self.cell(position, false);
         let line: Vec<char> = (0..screen.size().1.get())
@@ -102,12 +106,185 @@ impl Terminal {
         let link = link(&line[a..b].iter().collect::<String>(), root)?;
         Some((row, a as u16, b as u16, link))
     }
+
+    /// Sends a mouse report when the program asked for this kind of event.
+    fn report(&mut self, button: u8, release: bool, position: Point<Pixels>) {
+        use vt100::MouseProtocolMode::*;
+        let screen = self.parser.screen();
+        let wanted = match screen.mouse_protocol_mode() {
+            None => false,
+            Press => !release && button < 32,
+            PressRelease => button < 32,
+            ButtonMotion => button != 35,
+            AnyMotion => true,
+        };
+        let cell = self.cell(position, false);
+        if !wanted || (button >= 32 && self.mouse_cell == Some(cell)) {
+            return;
+        }
+        self.mouse_cell = Some(cell);
+        let bytes = mouse_bytes(button, release, cell, screen.mouse_protocol_encoding());
+        self.write(&bytes);
+    }
+
+    /// Mouse events belong to the program when it asked for them; Shift
+    /// keeps them for selecting, as in xterm.
+    fn mouse_mode(&self, modifiers: Modifiers) -> bool {
+        self.parser.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None
+            && !modifiers.shift
+    }
+
+    /// Re-wraps the lines to a new width; see `reflow`.
+    fn resize(&mut self, rows: u16, cols: u16) {
+        self.selection = None;
+        self.hover = None;
+        reflow(&mut self.parser, rows, cols);
+    }
 }
 
-/// Answers the queries a program waits on. ConPTY asks for the cursor
-/// position before the shell starts.
+/// Re-wraps the lines to a new width, as conhost does on its side of the pty
+/// (it doesn't repaint after a resize). Conhost only holds the screen, so
+/// the screen is re-wrapped from the top on its own, below the scrollback,
+/// and the cursor lands where PSReadLine's absolute moves expect it. The
+/// alternate screen is left to its program to redraw.
+// ponytail: rows below the cursor's line are dropped; fine for a shell.
+fn reflow<C: vt100::Callbacks>(parser: &mut vt100::Parser<C>, rows: u16, cols: u16) {
+    let size = |n: u16| n.max(1).try_into().unwrap();
+    let screen = parser.screen_mut();
+    if screen.alternate_screen() {
+        return screen.set_size(size(rows), size(cols));
+    }
+    let height = screen.size().0.get();
+    let (row, col) = screen.cursor_position();
+    let attrs = screen.attributes_formatted();
+    let (mut back, mut text, mut sgr) = (String::new(), String::new(), String::new());
+    // The scrollback a screenful at a time.
+    let len = screen.scrollback_len();
+    for top in (0..len).step_by(height as usize) {
+        screen.set_scrollback(len - top);
+        for r in 0..(len - top).min(height as usize) as u16 {
+            line(screen, r, &mut sgr, &mut back);
+        }
+    }
+    if !back.is_empty() && !back.ends_with('\n') {
+        back.push_str("\r\n");
+    }
+    screen.set_scrollback(0);
+    for r in 0..row {
+        line(screen, r, &mut sgr, &mut text);
+    }
+    cells(screen, row, 0..col, &mut sgr, &mut text);
+    // What's right of the cursor on its line, e.g. mid-edit.
+    let mut rest = String::new();
+    let (mut r, mut from) = (row, col);
+    loop {
+        let end = line_end(screen, r).max(from);
+        cells(screen, r, from..end, &mut sgr, &mut rest);
+        if !screen.row_wrapped(r) || r + 1 >= height {
+            break;
+        }
+        (r, from) = (r + 1, 0);
+    }
+
+    screen.clear_scrollback();
+    screen.set_size(size(rows), size(cols));
+    parser.process(b"\x1b[0m\x1b[H\x1b[2J");
+    parser.process(back.as_bytes());
+    // Scroll what's above into the scrollback, leaving the screen empty.
+    let (r, _) = parser.screen().cursor_position();
+    let rows = parser.screen().size().0.get();
+    parser.process(format!("\x1b[{rows};1H{}\x1b[H", "\n".repeat(r as usize)).as_bytes());
+    parser.process(text.as_bytes());
+    if !rest.is_empty() {
+        let (r, c) = parser.screen().cursor_position();
+        let before = parser.screen().scrollback_len();
+        parser.process(rest.as_bytes());
+        let scrolled = parser.screen().scrollback_len() - before;
+        let r = r.saturating_sub(scrolled as u16);
+        parser.process(format!("\x1b[{};{}H", r + 1, c + 1).as_bytes());
+    }
+    parser.process(attrs.as_bytes());
+}
+
+/// A row's cells as text with SGR codes, then a newline unless it wraps.
+fn line(screen: &vt100::Screen, row: u16, sgr: &mut String, out: &mut String) {
+    cells(screen, row, 0..line_end(screen, row), sgr, out);
+    if !screen.row_wrapped(row) {
+        out.push_str("\r\n");
+    }
+}
+
+/// Where a row's content ends: its width when it wraps, else after the last
+/// cell that shows something.
+fn line_end(screen: &vt100::Screen, row: u16) -> u16 {
+    let cols = screen.size().1.get();
+    if screen.row_wrapped(row) {
+        return cols;
+    }
+    (0..cols)
+        .rev()
+        .find(|&col| {
+            screen.cell(row, col).is_some_and(|c| {
+                c.has_contents() || c.inverse() || c.bgcolor() != vt100::Color::Default
+            })
+        })
+        .map_or(0, |col| col + 1)
+}
+
+/// Cells as text, with an SGR code wherever the style changes from `sgr`.
+fn cells(
+    screen: &vt100::Screen,
+    row: u16,
+    cols: std::ops::Range<u16>,
+    sgr: &mut String,
+    out: &mut String,
+) {
+    for col in cols {
+        let Some(cell) = screen.cell(row, col) else {
+            break;
+        };
+        if cell.is_wide_continuation() {
+            continue;
+        }
+        let mut s = String::from("\x1b[0");
+        for (on, code) in [
+            (cell.bold(), ";1"),
+            (cell.dim(), ";2"),
+            (cell.italic(), ";3"),
+            (cell.underline(), ";4"),
+            (cell.inverse(), ";7"),
+        ] {
+            if on {
+                s.push_str(code);
+            }
+        }
+        for (color, base) in [(cell.fgcolor(), 38), (cell.bgcolor(), 48)] {
+            match color {
+                vt100::Color::Default => {}
+                vt100::Color::Idx(i) => s.push_str(&format!(";{base};5;{i}")),
+                vt100::Color::Rgb(r, g, b) => s.push_str(&format!(";{base};2;{r};{g};{b}")),
+            }
+        }
+        s.push('m');
+        if s != *sgr {
+            out.push_str(&s);
+            *sgr = s;
+        }
+        out.push_str(if cell.has_contents() {
+            cell.contents()
+        } else {
+            " "
+        });
+    }
+}
+
+/// Answers the queries a program waits on (ConPTY asks for the cursor
+/// position before the shell starts), and tracks the shell's cwd.
 #[derive(Default)]
-struct Replies(Vec<u8>);
+struct Replies {
+    out: Vec<u8>,
+    cwd: Option<PathBuf>,
+}
 
 impl vt100::Callbacks for Replies {
     fn unhandled_csi(
@@ -121,10 +298,18 @@ impl vt100::Callbacks for Replies {
         match (i1, c, params) {
             (None, 'n', [[6]]) => {
                 let (row, col) = screen.cursor_position();
-                write!(self.0, "\x1b[{};{}R", row + 1, col + 1).ok();
+                write!(self.out, "\x1b[{};{}R", row + 1, col + 1).ok();
             }
-            (None, 'c', [] | [[0]]) => self.0.extend_from_slice(b"\x1b[?1;2c"),
+            (None, 'c', [] | [[0]]) => self.out.extend_from_slice(b"\x1b[?1;2c"),
             _ => {}
+        }
+    }
+
+    /// Windows Terminal's cwd sequence, which `PROMPT_HOOK` sends.
+    fn unhandled_osc(&mut self, _: &mut vt100::Screen, params: &[&[u8]]) {
+        if let [b"9", b"9", path @ ..] = params {
+            let path = String::from_utf8_lossy(&path.join(&b';')).into_owned();
+            self.cwd = Some(path.trim_matches('"').into());
         }
     }
 }
@@ -140,6 +325,12 @@ enum Link {
     /// A file with its 1-based line and column.
     File(PathBuf, u32, u32),
 }
+
+/// Wraps the prompt to report the cwd (`OSC 9;9`, which ConPTY passes on),
+/// like VS Code's shell integration. Runs after the profile, so a custom
+/// prompt is wrapped too.
+const PROMPT_HOOK: &str = "$__vsn_prompt = $function:prompt; function global:prompt { \
+    [char]27 + ']9;9;' + $PWD.ProviderPath + [char]7 + (& $__vsn_prompt) }";
 
 /// VS Code's default profile on Windows: PowerShell 7 when it's installed,
 /// else Windows PowerShell.
@@ -168,6 +359,7 @@ impl Workbench {
             .map_err(|e| e.to_string())?;
         let shell = shell();
         let mut cmd = CommandBuilder::new(&shell);
+        cmd.args(["-NoExit", "-Command", PROMPT_HOOK]);
         if let Some(root) = &self.root {
             cmd.cwd(root);
         }
@@ -226,6 +418,7 @@ impl Workbench {
             selecting: false,
             hover: None,
             scroll: 0.,
+            mouse_cell: None,
             _task: task,
         })
     }
@@ -248,7 +441,7 @@ impl Workbench {
         match msg {
             Msg::Out(bytes) => {
                 t.parser.process(&bytes);
-                let replies = std::mem::take(&mut t.parser.callbacks_mut().0);
+                let replies = std::mem::take(&mut t.parser.callbacks_mut().out);
                 if !replies.is_empty() {
                     t.writer.write_all(&replies).ok();
                     t.writer.flush().ok();
@@ -399,19 +592,14 @@ impl Workbench {
         }
     }
 
-    /// Scrolls the prompt line to the top and drops everything above it.
-    // ponytail: ConPTY keeps its own copy of the screen and repaints it on a
-    // resize; sending it a clear too (as VS Code does) when that matters.
+    /// Drops the scrollback and has the shell clear the screen with Ctrl+L,
+    /// so ConPTY's copy of the screen, which it places the cursor by, is
+    /// cleared too. PSReadLine redraws the prompt with what's typed;
+    /// full-screen programs take it as a redraw.
     fn clear_terminal(&mut self, id: u64, cx: &mut Context<Self>) {
         if let Some(t) = self.terminal(id) {
-            let (row, _) = t.parser.screen().cursor_position();
-            if row > 0 {
-                t.parser
-                    .process(format!("\x1b[{row}S\x1b[{row}A").as_bytes());
-            }
             t.parser.screen_mut().clear_scrollback();
-            t.parser.screen_mut().set_scrollback(0);
-            t.selection = None;
+            t.write(b"\x0c");
             cx.notify();
         }
     }
@@ -454,8 +642,9 @@ impl Workbench {
         let up = lines > 0.;
         let n = lines.abs() as usize;
         if screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None {
-            let report = wheel_bytes(
-                up,
+            let report = mouse_bytes(
+                if up { 64 } else { 65 },
+                false,
                 t.cell(ev.position, false),
                 screen.mouse_protocol_encoding(),
             );
@@ -603,9 +792,7 @@ impl Workbench {
             let cols = cols.floor().max(1.) as u16;
             let (r, c) = t.parser.screen().size();
             if (r.get(), c.get()) != (rows, cols) {
-                t.parser
-                    .screen_mut()
-                    .set_size(rows.try_into().unwrap(), cols.try_into().unwrap());
+                t.resize(rows, cols);
                 let size = PtySize {
                     rows,
                     cols,
@@ -736,6 +923,10 @@ impl Workbench {
                         window.prevent_default();
                         return this.open_link(link, window, cx);
                     }
+                    if t.mouse_mode(ev.modifiers) {
+                        t.report(0, false, ev.position);
+                        return this.activate_terminal(id, window, cx);
+                    }
                     t.selection = Some(t.cell(ev.position, true)).map(|c| (c, c));
                     t.selecting = true;
                     this.activate_terminal(id, window, cx);
@@ -750,7 +941,10 @@ impl Workbench {
                 let Some(t) = this.terminal(id) else {
                     return;
                 };
-                if t.selecting
+                if !t.selecting && t.mouse_mode(ev.modifiers) {
+                    let held = ev.pressed_button == Some(MouseButton::Left);
+                    t.report(if held { 32 } else { 35 }, false, ev.position);
+                } else if t.selecting
                     && let Some((a, _)) = t.selection
                 {
                     t.selecting = ev.pressed_button == Some(MouseButton::Left);
@@ -768,8 +962,11 @@ impl Workbench {
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(move |this, _, _, _| {
+                cx.listener(move |this, ev: &MouseUpEvent, _, _| {
                     if let Some(t) = this.terminal(id) {
+                        if !t.selecting && t.mouse_mode(ev.modifiers) {
+                            t.report(0, true, ev.position);
+                        }
                         t.selecting = false;
                     }
                 }),
@@ -881,16 +1078,24 @@ fn link(word: &str, root: Option<&Path>) -> Option<Link> {
     path.is_file().then(|| Link::File(path, at(0), at(1)))
 }
 
-/// A wheel notch as an xterm mouse report at a 0-based (row, col).
-fn wheel_bytes(
-    up: bool,
+/// An xterm mouse report at a 0-based (row, col): `button` 0 is the left
+/// one, +32 for motion (35 with none held), 64/65 the wheel.
+// ponytail: left button and wheel only; the right one keeps the context menu.
+fn mouse_bytes(
+    button: u8,
+    release: bool,
     (row, col): (u16, u16),
     encoding: vt100::MouseProtocolEncoding,
 ) -> Vec<u8> {
-    let button = if up { 64 } else { 65 };
     let (x, y) = (col as u32 + 1, row as u32 + 1);
+    let button = button as u32;
     match encoding {
-        vt100::MouseProtocolEncoding::Sgr => format!("\x1b[<{button};{x};{y}M").into_bytes(),
+        vt100::MouseProtocolEncoding::Sgr => {
+            let end = if release { 'm' } else { 'M' };
+            format!("\x1b[<{button};{x};{y}{end}").into_bytes()
+        }
+        // The older encodings can't say which button was released.
+        _ if release => mouse_bytes(3, false, (row, col), encoding),
         vt100::MouseProtocolEncoding::Utf8 => [button, x, y]
             .iter()
             .map(|&v| char::from_u32(32 + v).unwrap_or(' '))
@@ -996,7 +1201,7 @@ mod tests {
 
     use gpui_kit::Keystroke;
 
-    use super::{Link, key_bytes, link, wheel_bytes, word_at};
+    use super::{Link, key_bytes, link, mouse_bytes, reflow, word_at};
 
     #[test]
     fn keys() {
@@ -1038,9 +1243,31 @@ mod tests {
     }
 
     #[test]
-    fn wheel() {
+    fn mouse() {
         use vt100::MouseProtocolEncoding::*;
-        assert_eq!(wheel_bytes(true, (4, 9), Sgr), b"\x1b[<64;10;5M");
-        assert_eq!(wheel_bytes(false, (0, 0), Default), b"\x1b[M\x61\x21\x21");
+        assert_eq!(mouse_bytes(64, false, (4, 9), Sgr), b"\x1b[<64;10;5M");
+        assert_eq!(mouse_bytes(0, true, (4, 9), Sgr), b"\x1b[<0;10;5m");
+        assert_eq!(
+            mouse_bytes(65, false, (0, 0), Default),
+            b"\x1b[M\x61\x21\x21"
+        );
+        assert_eq!(mouse_bytes(0, true, (0, 0), Default), b"\x1b[M\x23\x21\x21");
+    }
+
+    #[test]
+    fn reflows() {
+        let mut p = vt100::Parser::new(4.try_into().unwrap(), 10.try_into().unwrap(), 100);
+        // Scrollback "old", "", screen "", "", "> abcdefgh", "ijkl"; the
+        // cursor after "> ", mid-edit.
+        p.process(b"old\r\n\r\n\r\n\r\n> abcdefghijkl\x1b[3;3H");
+        reflow(&mut p, 3, 5);
+        let rows: Vec<String> = p.screen().rows(0, 5).collect();
+        assert_eq!(rows, ["> abc", "defgh", "ijkl"]);
+        assert_eq!(p.screen().cursor_position(), (0, 2));
+        reflow(&mut p, 3, 20);
+        assert_eq!(p.screen().contents(), "> abcdefghijkl");
+        assert_eq!(p.screen().cursor_position(), (0, 2));
+        p.screen_mut().set_scrollback(100);
+        assert!(p.screen().contents().starts_with("old"));
     }
 }
