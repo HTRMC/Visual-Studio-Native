@@ -63,12 +63,19 @@ actions!(
         StepOut,
         ToggleBreakpoint,
         NewTerminal,
+        SplitTerminal,
         NewTextFile,
         Noop,
     ]
 );
 
-pub fn key_bindings() -> Vec<KeyBinding> {
+pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
+    // Windows reports shift+symbol keys as the shifted char ("ctrl-%"), so
+    // those go through the platform mapper; `KeyBinding::new` skips it.
+    let shifted = |keys: &str, action: Box<dyn Action>, context: Option<&str>| {
+        let context = context.map(|c| KeyBindingContextPredicate::parse(c).unwrap().into());
+        KeyBinding::load(keys, action, context, false, None, mapper).unwrap()
+    };
     vec![
         KeyBinding::new("ctrl-o", OpenFile, None),
         KeyBinding::new("ctrl-k ctrl-o", OpenFolder, None),
@@ -99,7 +106,8 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("f11", StepInto, None),
         KeyBinding::new("shift-f11", StepOut, None),
         KeyBinding::new("f9", ToggleBreakpoint, None),
-        KeyBinding::new("ctrl-shift-`", NewTerminal, None),
+        shifted("ctrl-shift-`", Box::new(NewTerminal), None),
+        shifted("ctrl-shift-5", Box::new(SplitTerminal), Some("Terminal")),
         KeyBinding::new("ctrl-n", NewTextFile, None),
     ]
 }
@@ -226,7 +234,7 @@ pub struct Workbench {
     palette: palette::Palette,
     debug: debug::Debug,
     /// Spawned when the Terminal tab first shows; the error if the shell didn't start.
-    terminal: Option<Result<terminal::Terminal, String>>,
+    terminals: terminal::Terminals,
     commit: Entity<InputState>,
     ext_search: Entity<InputState>,
     pub focus: FocusHandle,
@@ -258,7 +266,7 @@ impl Workbench {
             find: search::Find::new(window, cx),
             palette: palette::Palette::new(window, cx),
             debug: debug::Debug::new(window, cx),
-            terminal: None,
+            terminals: Default::default(),
         };
         this.init_search(window, cx);
         this.init_debug(window, cx);
@@ -663,11 +671,15 @@ impl Workbench {
             return self.focus_terminal(window, cx);
         }
         self.panel = false;
+        self.focus_editor(window, cx);
+        cx.notify();
+    }
+
+    fn focus_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.docs.get(self.active) {
             Some(doc) => doc.editor.update(cx, |e, cx| e.focus(window, cx)),
             None => window.focus(&self.focus, cx),
         }
-        cx.notify();
     }
 
     // ---- title bar ---------------------------------------------------------
@@ -1503,12 +1515,19 @@ impl Workbench {
                                     }
                                     (icon::ADD, TERMINAL) => {
                                         button.on_click(cx.listener(|this, _, window, cx| {
-                                            this.focus_terminal(window, cx)
+                                            this.new_terminal(false, window, cx)
                                         }))
                                     }
-                                    (icon::TRASH, TERMINAL) => button.on_click(
-                                        cx.listener(|this, _, _, cx| this.kill_terminal(cx)),
-                                    ),
+                                    (icon::SPLIT_HORIZONTAL, TERMINAL) => {
+                                        button.on_click(cx.listener(|this, _, window, cx| {
+                                            this.new_terminal(true, window, cx)
+                                        }))
+                                    }
+                                    (icon::TRASH, TERMINAL) => {
+                                        button.on_click(cx.listener(|this, _, window, cx| {
+                                            this.kill_active_terminal(window, cx)
+                                        }))
+                                    }
                                     _ => button,
                                 }
                             }))
@@ -1680,8 +1699,13 @@ impl Render for Workbench {
             }))
             .on_action(cx.listener(Self::new_text_file))
             .on_action(
-                cx.listener(|this, _: &NewTerminal, window, cx| this.focus_terminal(window, cx)),
+                cx.listener(|this, _: &NewTerminal, window, cx| {
+                    this.new_terminal(false, window, cx)
+                }),
             )
+            .on_action(cx.listener(|this, _: &SplitTerminal, window, cx| {
+                this.new_terminal(true, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &StartDebugging, window, cx| {
                 this.start_debugging(false, window, cx)
             }))
@@ -1983,7 +2007,7 @@ fn app_menu(
             .menu("Toggle Breakpoint", Box::new(ToggleBreakpoint)),
         "Terminal" => menu
             .menu("New Terminal", Box::new(NewTerminal))
-            .menu("Split Terminal", noop())
+            .menu("Split Terminal", Box::new(SplitTerminal))
             .separator()
             .menu("Run Task...", noop())
             .menu("Run Build Task...", noop()),

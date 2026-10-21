@@ -1,5 +1,5 @@
-//! The integrated terminal: the shell on a ConPTY, its output parsed by vt100
-//! into a grid that's drawn one text run per style per row.
+//! The integrated terminals: each a shell on a ConPTY, its output parsed by
+//! vt100 into a grid that's drawn one text run per style per row.
 
 use std::{
     cell::Cell,
@@ -7,6 +7,10 @@ use std::{
     rc::Rc,
 };
 
+use gpui_kit::component::{
+    input::Position,
+    menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem},
+};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 use super::*;
@@ -20,8 +24,24 @@ const PAD_L: f32 = 20.;
 const PAD_R: f32 = 14.;
 /// `terminal.integrated.scrollback`.
 const SCROLLBACK: usize = 1000;
+/// The tab list VS Code shows right of the terminals once there are two.
+const TABS_W: f32 = 160.;
+
+#[derive(Default)]
+pub(super) struct Terminals {
+    /// Split groups are runs of the same `group`, shown side by side.
+    list: Vec<Terminal>,
+    active: usize,
+    /// Why the last terminal failed to launch.
+    error: Option<String>,
+    next_id: u64,
+}
 
 pub(super) struct Terminal {
+    id: u64,
+    /// The id of the terminal its split group started with.
+    group: u64,
+    name: String,
     parser: vt100::Parser<Replies>,
     writer: Box<dyn Write + Send>,
     master: Box<dyn MasterPty + Send>,
@@ -33,6 +53,8 @@ pub(super) struct Terminal {
     /// Drag start and end as cell boundaries (row, col) on the visible screen.
     selection: Option<((u16, u16), (u16, u16))>,
     selecting: bool,
+    /// The link under the mouse: row and column range.
+    hover: Option<(u16, u16, u16)>,
     /// Wheel movement not yet a whole line.
     scroll: f32,
     _task: Task<()>,
@@ -41,6 +63,44 @@ pub(super) struct Terminal {
 impl Drop for Terminal {
     fn drop(&mut self) {
         self.killer.kill().ok();
+    }
+}
+
+impl Terminal {
+    fn write(&mut self, bytes: &[u8]) {
+        self.selection = None;
+        self.parser.screen_mut().set_scrollback(0);
+        self.writer.write_all(bytes).ok();
+        self.writer.flush().ok();
+    }
+
+    /// The cell under the mouse, or with `round` the cell boundary nearest it.
+    fn cell(&self, position: Point<Pixels>, round: bool) -> (u16, u16) {
+        let (rows, cols) = self.parser.screen().size();
+        let at = position - self.bounds.get().origin;
+        let col = (f32::from(at.x) - PAD_L) / self.cell_w;
+        let col = if round { col.round() } else { col.floor() };
+        let row = (f32::from(at.y) / LINE_H).floor();
+        (
+            (row.max(0.) as u16).min(rows.get() - 1),
+            (col.max(0.) as u16).min(cols.get() - !round as u16),
+        )
+    }
+
+    /// The link under the mouse, if any.
+    fn link(&self, position: Point<Pixels>, root: Option<&Path>) -> Option<(u16, u16, u16, Link)> {
+        let screen = self.parser.screen();
+        let (row, col) = self.cell(position, false);
+        let line: Vec<char> = (0..screen.size().1.get())
+            .map(|col| {
+                let cell = screen.cell(row, col);
+                cell.and_then(|c| c.contents().chars().next())
+                    .unwrap_or(' ')
+            })
+            .collect();
+        let (a, b) = word_at(&line, col as usize)?;
+        let link = link(&line[a..b].iter().collect::<String>(), root)?;
+        Some((row, a as u16, b as u16, link))
     }
 }
 
@@ -74,18 +134,29 @@ enum Msg {
     Exit,
 }
 
+#[derive(Debug, PartialEq)]
+enum Link {
+    Url(String),
+    /// A file with its 1-based line and column.
+    File(PathBuf, u32, u32),
+}
+
 /// VS Code's default profile on Windows: PowerShell 7 when it's installed,
 /// else Windows PowerShell.
-fn shell() -> String {
+fn shell() -> PathBuf {
     let path = std::env::var_os("PATH").unwrap_or_default();
     std::env::split_paths(&path)
         .map(|dir| dir.join("pwsh.exe"))
         .find(|p| p.is_file())
-        .map_or("powershell.exe".into(), |p| p.display().to_string())
+        .unwrap_or("powershell.exe".into())
 }
 
 impl Workbench {
-    fn spawn_terminal(&self, cx: &mut Context<Self>) -> Result<Terminal, String> {
+    fn spawn_terminal(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Result<Terminal, String> {
         let size = PtySize {
             rows: 24,
             cols: 80,
@@ -95,7 +166,8 @@ impl Workbench {
         let pair = native_pty_system()
             .openpty(size)
             .map_err(|e| e.to_string())?;
-        let mut cmd = CommandBuilder::new(shell());
+        let shell = shell();
+        let mut cmd = CommandBuilder::new(&shell);
         if let Some(root) = &self.root {
             cmd.cwd(root);
         }
@@ -120,9 +192,12 @@ impl Workbench {
             child.wait().ok();
             tx.unbounded_send(Msg::Exit).ok();
         });
-        let task = cx.spawn(async move |this, cx| {
+        let id = self.terminals.next_id;
+        self.terminals.next_id += 1;
+        let task = cx.spawn_in(window, async move |this, cx| {
             while let Some(msg) = rx.next().await {
-                let done = this.update(cx, |this, cx| this.on_terminal(msg, cx));
+                let done =
+                    this.update_in(cx, |this, window, cx| this.on_terminal(id, msg, window, cx));
                 if done.unwrap_or(true) {
                     break;
                 }
@@ -130,6 +205,11 @@ impl Workbench {
         });
 
         Ok(Terminal {
+            id,
+            group: id,
+            name: shell
+                .file_stem()
+                .map_or("shell".into(), |s| s.to_string_lossy().into()),
             parser: vt100::Parser::new_with_callbacks(
                 24.try_into().unwrap(),
                 80.try_into().unwrap(),
@@ -144,14 +224,25 @@ impl Workbench {
             cell_w: 8.,
             selection: None,
             selecting: false,
+            hover: None,
             scroll: 0.,
             _task: task,
         })
     }
 
-    /// Output from the shell; true once it exited.
-    fn on_terminal(&mut self, msg: Msg, cx: &mut Context<Self>) -> bool {
-        let Some(Ok(t)) = &mut self.terminal else {
+    fn terminal(&mut self, id: u64) -> Option<&mut Terminal> {
+        self.terminals.list.iter_mut().find(|t| t.id == id)
+    }
+
+    /// Output from a shell; true once it exited.
+    fn on_terminal(
+        &mut self,
+        id: u64,
+        msg: Msg,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(t) = self.terminal(id) else {
             return true;
         };
         match msg {
@@ -166,80 +257,180 @@ impl Workbench {
                 false
             }
             Msg::Exit => {
-                self.kill_terminal(cx);
+                self.kill_terminal(id, window, cx);
                 true
             }
         }
     }
 
-    /// The trash button, or the shell exited: VS Code closes the panel with
-    /// its last terminal.
-    pub(super) fn kill_terminal(&mut self, cx: &mut Context<Self>) {
-        self.terminal = None;
-        if self.panel_tab == TERMINAL {
-            self.panel = false;
-        }
-        cx.notify();
+    /// Starts a shell beside the active one, or in a new group, and makes it
+    /// active. False when it failed to launch.
+    fn add_terminal(&mut self, split: bool, window: &Window, cx: &mut Context<Self>) -> bool {
+        let mut t = match self.spawn_terminal(window, cx) {
+            Ok(t) => t,
+            Err(err) => {
+                self.terminals.error = Some(err);
+                return false;
+            }
+        };
+        self.terminals.error = None;
+        let list = &mut self.terminals.list;
+        let ix = match list.get(self.terminals.active) {
+            Some(active) if split => {
+                t.group = active.group;
+                list.iter().rposition(|u| u.group == t.group).unwrap() + 1
+            }
+            _ => list.len(),
+        };
+        list.insert(ix, t);
+        self.terminals.active = ix;
+        true
     }
 
-    /// Ctrl+Shift+` and the + button.
-    // ponytail: one terminal; + focuses it rather than adding a second, and
-    // split does nothing. A Vec and VS Code's tab list on the right when needed.
+    /// The + button, Ctrl+Shift+`, and split (Ctrl+Shift+5).
+    pub(super) fn new_terminal(
+        &mut self,
+        split: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.add_terminal(split, window, cx);
+        self.focus_terminal(window, cx);
+    }
+
+    /// Ctrl+`: shows the panel and focuses the active terminal, starting one
+    /// if there's none.
     pub(super) fn focus_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.panel = true;
         self.panel_tab = TERMINAL;
-        if !matches!(self.terminal, Some(Ok(_))) {
-            self.terminal = Some(self.spawn_terminal(cx));
+        if self.terminals.list.is_empty() {
+            self.add_terminal(false, window, cx);
         }
-        if let Some(Ok(t)) = &self.terminal {
+        if let Some(t) = self.terminals.list.get(self.terminals.active) {
             window.focus(&t.focus, cx);
         }
         cx.notify();
     }
 
+    fn activate_terminal(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ix) = self.terminals.list.iter().position(|t| t.id == id) {
+            self.terminals.active = ix;
+            window.focus(&self.terminals.list[ix].focus, cx);
+            cx.notify();
+        }
+    }
+
+    pub(super) fn kill_active_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(t) = self.terminals.list.get(self.terminals.active) {
+            self.kill_terminal(t.id, window, cx);
+        }
+    }
+
+    /// The trash button, or the shell exited: VS Code closes the panel with
+    /// its last terminal.
+    fn kill_terminal(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ix) = self.terminals.list.iter().position(|t| t.id == id) else {
+            return;
+        };
+        let focused = self.terminal_focused(window);
+        self.terminals.list.remove(ix);
+        let list = &self.terminals.list;
+        let active = &mut self.terminals.active;
+        if *active > ix || *active == list.len() {
+            *active = active.saturating_sub(1);
+        }
+        if list.is_empty() && self.panel_tab == TERMINAL {
+            self.panel = false;
+        }
+        if focused {
+            match list.get(*active) {
+                Some(t) => window.focus(&t.focus, cx),
+                None => self.focus_editor(window, cx),
+            }
+        }
+        cx.notify();
+    }
+
     pub(super) fn terminal_focused(&self, window: &Window) -> bool {
-        matches!(&self.terminal, Some(Ok(t)) if t.focus.is_focused(window))
+        self.terminals
+            .list
+            .iter()
+            .any(|t| t.focus.is_focused(window))
     }
 
-    fn write_terminal(&mut self, bytes: &[u8]) {
-        let Some(Ok(t)) = &mut self.terminal else {
-            return;
+    fn copy_terminal(&mut self, id: u64, cx: &mut Context<Self>) -> bool {
+        let Some(t) = self.terminal(id) else {
+            return false;
         };
+        let Some(((r0, c0), (r1, c1))) = t.selection.filter(|(a, b)| a != b).map(sorted) else {
+            return false;
+        };
+        let text = t.parser.screen().contents_between(r0, c0, r1, c1);
         t.selection = None;
-        t.parser.screen_mut().set_scrollback(0);
-        t.writer.write_all(bytes).ok();
-        t.writer.flush().ok();
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        cx.notify();
+        true
     }
 
-    fn terminal_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
-        let Some(Ok(t)) = &mut self.terminal else {
+    fn paste_terminal(&mut self, id: u64, cx: &mut Context<Self>) {
+        let text = cx.read_from_clipboard().and_then(|c| c.text());
+        let Some(t) = self.terminal(id) else {
             return;
         };
+        let text = text
+            .unwrap_or_default()
+            .replace("\r\n", "\r")
+            .replace('\n', "\r");
+        let bytes = if t.parser.screen().bracketed_paste() {
+            format!("\x1b[200~{text}\x1b[201~")
+        } else {
+            text
+        };
+        t.write(bytes.as_bytes());
+        cx.notify();
+    }
+
+    // ponytail: the visible screen only, not the scrollback.
+    fn select_all_terminal(&mut self, id: u64, cx: &mut Context<Self>) {
+        if let Some(t) = self.terminal(id) {
+            let (rows, cols) = t.parser.screen().size();
+            t.selection = Some(((0, 0), (rows.get() - 1, cols.get())));
+            cx.notify();
+        }
+    }
+
+    /// Scrolls the prompt line to the top and drops everything above it.
+    // ponytail: ConPTY keeps its own copy of the screen and repaints it on a
+    // resize; sending it a clear too (as VS Code does) when that matters.
+    fn clear_terminal(&mut self, id: u64, cx: &mut Context<Self>) {
+        if let Some(t) = self.terminal(id) {
+            let (row, _) = t.parser.screen().cursor_position();
+            if row > 0 {
+                t.parser
+                    .process(format!("\x1b[{row}S\x1b[{row}A").as_bytes());
+            }
+            t.parser.screen_mut().clear_scrollback();
+            t.parser.screen_mut().set_scrollback(0);
+            t.selection = None;
+            cx.notify();
+        }
+    }
+
+    fn terminal_key(&mut self, id: u64, ev: &KeyDownEvent, cx: &mut Context<Self>) {
         let ks = &ev.keystroke;
         let ctrl = ks.modifiers.control && !ks.modifiers.alt;
         // Ctrl+C copies when there's a selection, else interrupts.
-        if ctrl && ks.key == "c" && t.selection.is_some_and(|(a, b)| a != b) {
-            let ((r0, c0), (r1, c1)) = t.selection.take().map(sorted).unwrap();
-            let text = t.parser.screen().contents_between(r0, c0, r1, c1);
-            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        if ctrl && ks.key == "c" && self.copy_terminal(id, cx) {
         } else if ctrl && ks.key == "v" {
-            let text = cx.read_from_clipboard().and_then(|c| c.text());
-            let text = text
-                .unwrap_or_default()
-                .replace("\r\n", "\r")
-                .replace('\n', "\r");
-            let bytes = if t.parser.screen().bracketed_paste() {
-                format!("\x1b[200~{text}\x1b[201~")
-            } else {
-                text
-            };
-            self.write_terminal(bytes.as_bytes());
-        } else if let Some(bytes) = key_bytes(
-            ks,
-            ev.prefer_character_input,
-            t.parser.screen().application_cursor(),
-        ) {
-            self.write_terminal(&bytes);
+            self.paste_terminal(id, cx);
+        } else if let Some(t) = self.terminal(id)
+            && let Some(bytes) = key_bytes(
+                ks,
+                ev.prefer_character_input,
+                t.parser.screen().application_cursor(),
+            )
+        {
+            t.write(&bytes);
         } else {
             return;
         }
@@ -247,19 +438,60 @@ impl Workbench {
         cx.notify();
     }
 
-    /// The cell boundary nearest the mouse.
-    fn terminal_cell(&self, position: Point<Pixels>) -> Option<(u16, u16)> {
-        let Some(Ok(t)) = &self.terminal else {
-            return None;
+    /// The wheel goes to a full-screen program: as mouse reports when it
+    /// asked for the mouse, else as arrow keys like xterm's alternateScroll.
+    fn terminal_wheel(&mut self, id: u64, ev: &ScrollWheelEvent, cx: &mut Context<Self>) {
+        let Some(t) = self.terminal(id) else {
+            return;
         };
-        let (rows, cols) = t.parser.screen().size();
-        let at = position - t.bounds.get().origin;
-        let col = ((f32::from(at.x) - PAD_L) / t.cell_w).round();
-        let row = (f32::from(at.y) / LINE_H).floor();
-        Some((
-            (row.max(0.) as u16).min(rows.get() - 1),
-            (col.max(0.) as u16).min(cols.get()),
-        ))
+        t.scroll += f32::from(ev.delta.pixel_delta(px(LINE_H)).y) / LINE_H;
+        let lines = t.scroll.trunc();
+        t.scroll -= lines;
+        if lines == 0. {
+            return;
+        }
+        let screen = t.parser.screen();
+        let up = lines > 0.;
+        let n = lines.abs() as usize;
+        if screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None {
+            let report = wheel_bytes(
+                up,
+                t.cell(ev.position, false),
+                screen.mouse_protocol_encoding(),
+            );
+            t.write(&report.repeat(n));
+        // Windows' own ConPTY swallows the switch to the alternate screen, but
+        // passes on the cursor-key mode full-screen programs like less set.
+        // ponytail: a shell that sets it too loses wheel scrollback; ship
+        // OpenConsole's conpty.dll like VS Code if that bites.
+        } else if screen.alternate_screen() || screen.application_cursor() {
+            let arrow = match (screen.application_cursor(), up) {
+                (false, true) => "\x1b[A",
+                (false, false) => "\x1b[B",
+                (true, true) => "\x1bOA",
+                (true, false) => "\x1bOB",
+            };
+            t.write(arrow.repeat(n).as_bytes());
+        } else {
+            let screen = t.parser.screen_mut();
+            let top = (screen.scrollback() as f32 + lines).max(0.) as usize;
+            screen.set_scrollback(top);
+        }
+        cx.notify();
+    }
+
+    fn open_link(&mut self, link: Link, window: &mut Window, cx: &mut Context<Self>) {
+        match link {
+            Link::Url(url) => cx.open_url(&url),
+            Link::File(path, line, col) => {
+                self.open_path(path, window, cx);
+                if let Some(doc) = self.docs.get(self.active) {
+                    let at = Position::new(line.saturating_sub(1), col.saturating_sub(1));
+                    doc.editor
+                        .update(cx, |e, cx| e.set_cursor_position(at, window, cx));
+                }
+            }
+        }
     }
 
     pub(super) fn render_terminal(
@@ -267,20 +499,99 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if self.terminal.is_none() {
-            self.terminal = Some(self.spawn_terminal(cx));
+        if self.terminals.list.is_empty() && self.terminals.error.is_none() {
+            self.add_terminal(false, window, cx);
         }
-        let t = match &mut self.terminal {
-            Some(Ok(t)) => t,
-            Some(Err(err)) => {
-                return div()
-                    .px(px(PAD_L))
-                    .child(format!("The terminal process failed to launch: {err}."))
-                    .into_any_element();
-            }
-            None => unreachable!(),
-        };
+        if self.terminals.list.is_empty() {
+            let err = self.terminals.error.clone().unwrap_or_default();
+            return div()
+                .px(px(PAD_L))
+                .child(format!("The terminal process failed to launch: {err}."))
+                .into_any_element();
+        }
 
+        let group = self.terminals.list[self.terminals.active].group;
+        let shown: Vec<usize> = (0..self.terminals.list.len())
+            .filter(|&ix| self.terminals.list[ix].group == group)
+            .collect();
+        let panes: Vec<_> = shown
+            .into_iter()
+            .enumerate()
+            .map(|(i, ix)| {
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .when(i > 0, |d| d.border_l_1().border_color(col::border()))
+                    .child(self.render_one(ix, window, cx))
+            })
+            .collect();
+
+        h_flex()
+            .size_full()
+            .child(h_flex().flex_1().min_w_0().h_full().children(panes))
+            .when(self.terminals.list.len() > 1, |d| {
+                d.child(self.render_terminal_tabs(cx))
+            })
+            .into_any_element()
+    }
+
+    /// VS Code's list of terminals, with split groups drawn as a tree.
+    fn render_terminal_tabs(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let list = &self.terminals.list;
+        let rows = list.iter().enumerate().map(|(ix, t)| {
+            let id = t.id;
+            let same = |j: Option<usize>| {
+                j.and_then(|j| list.get(j))
+                    .is_some_and(|u| u.group == t.group)
+            };
+            let tree = match (same(ix.checked_sub(1)), same(Some(ix + 1))) {
+                (false, false) => "",
+                (false, true) => "┌",
+                (true, true) => "├",
+                (true, false) => "└",
+            };
+            let active = ix == self.terminals.active;
+            h_flex()
+                .id(("terminal-tab", id as usize))
+                .h(px(22.))
+                .flex_none()
+                .pl(px(8.))
+                .pr(px(4.))
+                .gap(px(6.))
+                .cursor_pointer()
+                .when(active, |d| d.bg(col::selected()))
+                .when(!active, |d| d.hover(|s| s.bg(col::hover())))
+                .child(div().w(px(8.)).text_color(col::fg_muted()).child(tree))
+                .child(codicon(icon::TERMINAL))
+                .child(div().flex_1().min_w_0().truncate().child(t.name.clone()))
+                .when(active, |d| {
+                    d.child(
+                        action_button(("terminal-kill", id as usize), icon::TRASH).on_click(
+                            cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.kill_terminal(id, window, cx)
+                            }),
+                        ),
+                    )
+                })
+                .on_click(
+                    cx.listener(move |this, _, window, cx| this.activate_terminal(id, window, cx)),
+                )
+        });
+        v_flex()
+            .w(px(TABS_W))
+            .flex_none()
+            .h_full()
+            .border_l_1()
+            .border_color(col::border())
+            .children(rows)
+    }
+
+    fn render_one(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let wb = cx.weak_entity();
+        let t = &mut self.terminals.list[ix];
+        let id = t.id;
         let font = font(FONT);
         let ts = window.text_system();
         let cell_w = ts.advance(ts.resolve_font(&font), px(FONT_SIZE), 'm');
@@ -309,6 +620,7 @@ impl Workbench {
         let (rows, cols) = screen.size();
         let (fg0, bg0) = (c(0xCCCCCC), col::bg());
         let selection = t.selection.map(sorted);
+        let hover = t.hover;
         let lines = (0..rows.get()).map(|row| {
             let mut text = String::new();
             let mut runs: Vec<TextRun> = Vec::new();
@@ -337,6 +649,7 @@ impl Workbench {
                 if selection.is_some_and(|(a, b)| a <= (row, col) && (row, col) < b) {
                     bg = Some(c(0x264F78));
                 }
+                let link = hover.is_some_and(|(r, a, b)| r == row && (a..b).contains(&col));
                 let run = TextRun {
                     len: s.len(),
                     font: Font {
@@ -354,7 +667,7 @@ impl Workbench {
                     },
                     color: fg,
                     background_color: bg,
-                    underline: cell.underline().then_some(UnderlineStyle {
+                    underline: (cell.underline() || link).then_some(UnderlineStyle {
                         thickness: px(1.),
                         color: Some(fg),
                         wavy: false,
@@ -398,61 +711,70 @@ impl Workbench {
 
         let bounds = t.bounds.clone();
         div()
-            .id("terminal")
+            .id(("terminal", id as usize))
             .relative()
             .size_full()
             .overflow_hidden()
             .track_focus(&t.focus)
             .key_context("Terminal")
-            .font_family(FONT)
-            .text_size(px(FONT_SIZE))
-            .line_height(px(LINE_H))
-            .text_color(fg0)
-            .cursor_text()
-            .on_key_down(cx.listener(|this, ev, _, cx| this.terminal_key(ev, cx)))
+            .map(|d| match hover {
+                Some(_) => d.cursor_pointer(),
+                None => d.cursor_text(),
+            })
+            .on_key_down(cx.listener(move |this, ev, _, cx| this.terminal_key(id, ev, cx)))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, ev: &MouseDownEvent, window, cx| {
-                    let cell = this.terminal_cell(ev.position);
-                    if let Some(Ok(t)) = &mut this.terminal {
-                        window.focus(&t.focus, cx);
-                        t.selection = cell.map(|c| (c, c));
-                        t.selecting = true;
-                        cx.notify();
+                cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                    let root = this.root.clone();
+                    let Some(t) = this.terminal(id) else {
+                        return;
+                    };
+                    if ev.modifiers.control
+                        && let Some((.., link)) = t.link(ev.position, root.as_deref())
+                    {
+                        // Keep the opened editor focused.
+                        window.prevent_default();
+                        return this.open_link(link, window, cx);
                     }
+                    t.selection = Some(t.cell(ev.position, true)).map(|c| (c, c));
+                    t.selecting = true;
+                    this.activate_terminal(id, window, cx);
                 }),
             )
-            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
-                let cell = this.terminal_cell(ev.position);
-                if let Some(Ok(t)) = &mut this.terminal
-                    && t.selecting
-                    && let (Some((a, _)), Some(b)) = (t.selection, cell)
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, _, window, cx| this.activate_terminal(id, window, cx)),
+            )
+            .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _, cx| {
+                let root = this.root.clone();
+                let Some(t) = this.terminal(id) else {
+                    return;
+                };
+                if t.selecting
+                    && let Some((a, _)) = t.selection
                 {
                     t.selecting = ev.pressed_button == Some(MouseButton::Left);
-                    t.selection = Some((a, b));
+                    t.selection = Some((a, t.cell(ev.position, true)));
                     cx.notify();
+                } else if ev.pressed_button.is_none() {
+                    let hover = t
+                        .link(ev.position, root.as_deref())
+                        .map(|(r, a, b, _)| (r, a, b));
+                    if t.hover != hover {
+                        t.hover = hover;
+                        cx.notify();
+                    }
                 }
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _, _, _| {
-                    if let Some(Ok(t)) = &mut this.terminal {
+                cx.listener(move |this, _, _, _| {
+                    if let Some(t) = this.terminal(id) {
                         t.selecting = false;
                     }
                 }),
             )
-            .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _, cx| {
-                let Some(Ok(t)) = &mut this.terminal else {
-                    return;
-                };
-                t.scroll += f32::from(ev.delta.pixel_delta(px(LINE_H)).y) / LINE_H;
-                let lines = t.scroll.trunc();
-                t.scroll -= lines;
-                let screen = t.parser.screen_mut();
-                let top = (screen.scrollback() as f32 + lines).max(0.) as usize;
-                screen.set_scrollback(top);
-                cx.notify();
-            }))
+            .on_scroll_wheel(cx.listener(move |this, ev, _, cx| this.terminal_wheel(id, ev, cx)))
             .child(
                 canvas(
                     move |b, window, _| {
@@ -465,14 +787,123 @@ impl Workbench {
                 .absolute()
                 .size_full(),
             )
-            .child(v_flex().pl(px(PAD_L)).children(lines))
-            .children(cursor)
+            // Styled inside so the context menu keeps the UI font.
+            .child(
+                div()
+                    .font_family(FONT)
+                    .text_size(px(FONT_SIZE))
+                    .line_height(px(LINE_H))
+                    .text_color(fg0)
+                    .child(v_flex().pl(px(PAD_L)).children(lines))
+                    .children(cursor),
+            )
+            .context_menu(move |menu: PopupMenu, _, _| {
+                type Act = fn(&mut Workbench, u64, &mut Window, &mut Context<Workbench>);
+                let item = |label: &'static str, act: Act| {
+                    let wb = wb.clone();
+                    PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                        wb.update(cx, |this, cx| act(this, id, window, cx)).ok();
+                    })
+                };
+                menu.item(item("Split Terminal", |this, _, w, cx| {
+                    this.new_terminal(true, w, cx)
+                }))
+                .item(item("New Terminal", |this, _, w, cx| {
+                    this.new_terminal(false, w, cx)
+                }))
+                .separator()
+                .item(item("Copy", |this, id, _, cx| {
+                    this.copy_terminal(id, cx);
+                }))
+                .item(item("Paste", |this, id, _, cx| this.paste_terminal(id, cx)))
+                .item(item("Select All", |this, id, _, cx| {
+                    this.select_all_terminal(id, cx)
+                }))
+                .separator()
+                .item(item("Clear Terminal", |this, id, _, cx| {
+                    this.clear_terminal(id, cx)
+                }))
+                .separator()
+                .item(item("Kill Terminal", Workbench::kill_terminal))
+            })
             .into_any_element()
     }
 }
 
 fn sorted<T: Ord>((a, b): (T, T)) -> (T, T) {
     if a <= b { (a, b) } else { (b, a) }
+}
+
+/// The run of characters around `col` that could be a link, without the
+/// punctuation that usually ends a sentence.
+// ponytail: one screen row; a link wrapped onto the next row is cut there.
+fn word_at(line: &[char], col: usize) -> Option<(usize, usize)> {
+    let sep = |c: char| c.is_whitespace() || "\"'<>()[]{}|`".contains(c);
+    if sep(*line.get(col)?) {
+        return None;
+    }
+    let mut a = col;
+    while a > 0 && !sep(line[a - 1]) {
+        a -= 1;
+    }
+    let mut b = col + 1;
+    while b < line.len() && !sep(line[b]) {
+        b += 1;
+    }
+    while b > a && ".,;:!?".contains(line[b - 1]) {
+        b -= 1;
+    }
+    (col < b).then_some((a, b))
+}
+
+/// A URL, or an existing file with an optional `:line:col`.
+// ponytail: relative paths resolve against the workspace root, not the
+// shell's cwd; track the cwd via shell integration (OSC 633) when it matters.
+fn link(word: &str, root: Option<&Path>) -> Option<Link> {
+    if word.starts_with("https://") || word.starts_with("http://") {
+        return Some(Link::Url(word.into()));
+    }
+    let mut path = word;
+    let mut at = Vec::new();
+    while at.len() < 2
+        && let Some((p, n)) = path.rsplit_once(':')
+        && let Ok(n) = n.parse::<u32>()
+    {
+        at.insert(0, n);
+        path = p;
+    }
+    let path = Path::new(path);
+    let path = match root {
+        Some(root) if path.is_relative() => root.join(path),
+        _ => path.to_path_buf(),
+    };
+    let at = |i: usize| at.get(i).copied().unwrap_or(1);
+    path.is_file().then(|| Link::File(path, at(0), at(1)))
+}
+
+/// A wheel notch as an xterm mouse report at a 0-based (row, col).
+fn wheel_bytes(
+    up: bool,
+    (row, col): (u16, u16),
+    encoding: vt100::MouseProtocolEncoding,
+) -> Vec<u8> {
+    let button = if up { 64 } else { 65 };
+    let (x, y) = (col as u32 + 1, row as u32 + 1);
+    match encoding {
+        vt100::MouseProtocolEncoding::Sgr => format!("\x1b[<{button};{x};{y}M").into_bytes(),
+        vt100::MouseProtocolEncoding::Utf8 => [button, x, y]
+            .iter()
+            .map(|&v| char::from_u32(32 + v).unwrap_or(' '))
+            .fold("\x1b[M".to_string(), |mut s, c| {
+                s.push(c);
+                s
+            })
+            .into_bytes(),
+        vt100::MouseProtocolEncoding::Default => {
+            let byte = |v: u32| (32 + v).min(255) as u8;
+            vec![0x1b, b'[', b'M', byte(button), byte(x), byte(y)]
+        }
+    }
 }
 
 /// VS Code's dark terminal colors; `bold` brightens the first eight like its
@@ -561,9 +992,11 @@ fn key_bytes(ks: &Keystroke, text: bool, app_cursor: bool) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use gpui_kit::Keystroke;
 
-    use super::key_bytes;
+    use super::{Link, key_bytes, link, wheel_bytes, word_at};
 
     #[test]
     fn keys() {
@@ -576,5 +1009,38 @@ mod tests {
         assert_eq!(key("f1"), Some(b"\x1bOP".to_vec()));
         let up = Keystroke::parse("up").unwrap();
         assert_eq!(key_bytes(&up, false, true), Some(b"\x1bOA".to_vec()));
+    }
+
+    #[test]
+    fn links() {
+        let line: Vec<char> = "see (https://code.visualstudio.com/docs). or src/main.rs:12:5: err"
+            .chars()
+            .collect();
+        let word = |col| word_at(&line, col).map(|(a, b)| line[a..b].iter().collect::<String>());
+        assert_eq!(
+            word(10).as_deref(),
+            Some("https://code.visualstudio.com/docs")
+        );
+        assert_eq!(word(48).as_deref(), Some("src/main.rs:12:5"));
+        assert_eq!(word(3), None);
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        assert_eq!(
+            link("src/main.rs:12:5", Some(root)),
+            Some(Link::File(root.join("src/main.rs"), 12, 5))
+        );
+        assert_eq!(
+            link("Cargo.toml", Some(root)),
+            Some(Link::File(root.join("Cargo.toml"), 1, 1))
+        );
+        assert_eq!(link("nope.rs:3", Some(root)), None);
+        assert!(matches!(link("http://x.y/z", None), Some(Link::Url(_))));
+    }
+
+    #[test]
+    fn wheel() {
+        use vt100::MouseProtocolEncoding::*;
+        assert_eq!(wheel_bytes(true, (4, 9), Sgr), b"\x1b[<64;10;5M");
+        assert_eq!(wheel_bytes(false, (0, 0), Default), b"\x1b[M\x61\x21\x21");
     }
 }

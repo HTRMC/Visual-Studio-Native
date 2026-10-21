@@ -39,7 +39,8 @@ fn main() {
             }
             Theme::change(ThemeMode::Dark, None, cx);
 
-            cx.bind_keys(workbench::key_bindings());
+            let keys = workbench::key_bindings(cx.keyboard_mapper().as_ref());
+            cx.bind_keys(keys);
 
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::centered(size(px(1280.), px(800.)), cx)),
