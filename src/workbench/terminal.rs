@@ -341,8 +341,7 @@ enum Link {
 /// Code's shell integration.
 const POWERSHELL_HOOK: &str = "\
     if ($PSVersionTable.PSEdition -eq 'Core') { \"PowerShell $($PSVersionTable.PSVersion)\" } \
-    else { \"Windows PowerShell`nCopyright (C) Microsoft Corporation. All rights reserved.`n`n\
-    Install the latest PowerShell for new features and improvements! https://aka.ms/PSWindows`n\" }; \
+    else { \"Windows PowerShell`nCopyright (C) Microsoft Corporation. All rights reserved.`n\" }; \
     foreach ($__vsn_p in $PROFILE.AllUsersAllHosts, $PROFILE.AllUsersCurrentHost, \
     $PROFILE.CurrentUserAllHosts, $PROFILE.CurrentUserCurrentHost) { if (Test-Path $__vsn_p) { . $__vsn_p } }; \
     $__vsn_prompt = $function:prompt; function global:prompt { \
@@ -353,14 +352,16 @@ const POWERSHELL_ARGS: &[&str] = &["-NoProfile", "-NoExit", "-Command", POWERSHE
 /// reports its cwd with `OSC 9;9`.
 #[derive(Clone)]
 pub(super) struct Profile {
-    pub(super) name: &'static str,
+    pub(super) name: SharedString,
     program: PathBuf,
-    args: &'static [&'static str],
-    env: &'static [(&'static str, &'static str)],
+    args: Vec<String>,
+    env: Vec<(String, String)>,
 }
 
-/// The profiles VS Code detects on Windows; the first is the default.
-// ponytail: no WSL (its env doesn't cross over) and no picking the default.
+/// VS Code's setting for which profile new terminals start with.
+const DEFAULT_PROFILE: &str = "terminal.integrated.defaultProfile.windows";
+
+/// The profiles VS Code detects on Windows, the default first.
 pub(super) fn profiles() -> Vec<Profile> {
     let find = |exe: &str| {
         let path = std::env::var_os("PATH").unwrap_or_default();
@@ -368,16 +369,36 @@ pub(super) fn profiles() -> Vec<Profile> {
             .map(|dir| dir.join(exe))
             .find(|p| p.is_file())
     };
-    let git_bash = find("git.exe")
-        .and_then(|git| Some(git.parent()?.parent()?.join("bin").join("bash.exe")))
-        .filter(|bash| bash.is_file());
-    let profile = |name, program, args, env| Profile {
-        name,
+    // Git's own bin\bash.exe, from cmd\git.exe or mingw64\bin\git.exe.
+    let git_bash = find("git.exe").and_then(|git| {
+        (git.ancestors().skip(2).take(2))
+            .map(|dir| dir.join("bin").join("bash.exe"))
+            .find(|bash| bash.is_file())
+    });
+    let profile = |name: &str, program: PathBuf, args: &[&str], env: &[(&str, &str)]| Profile {
+        name: name.to_string().into(),
         program,
-        args,
-        env,
+        args: args.iter().map(|a| a.to_string()).collect(),
+        env: env.iter().map(|&(k, v)| (k.into(), v.into())).collect(),
     };
-    [
+    let bash_cwd = |to_windows: &str| format!(r#"printf '\e]9;9;%s\a' "$({to_windows} "$PWD")""#);
+    // WSLENV carries PROMPT_COMMAND over into the distro.
+    // ponytail: only bash runs PROMPT_COMMAND; with zsh or fish as the
+    // distro's shell, links fall back to the project folder.
+    let wslenv = match std::env::var("WSLENV") {
+        Ok(v) if !v.is_empty() => format!("{v}:PROMPT_COMMAND/u"),
+        _ => "PROMPT_COMMAND/u".into(),
+    };
+    let wsl = wsl_distros().iter().map(|distro| Profile {
+        name: format!("{distro} (WSL)").into(),
+        program: "wsl.exe".into(),
+        args: vec!["-d".into(), distro.clone()],
+        env: vec![
+            ("PROMPT_COMMAND".into(), bash_cwd("wslpath -w")),
+            ("WSLENV".into(), wslenv.clone()),
+        ],
+    });
+    let mut list: Vec<Profile> = [
         find("pwsh.exe").map(|p| profile("PowerShell", p, POWERSHELL_ARGS, &[])),
         Some(profile(
             "Windows PowerShell",
@@ -392,20 +413,72 @@ pub(super) fn profiles() -> Vec<Profile> {
             &[("PROMPT", "$e]9;9;$P$e\\$P$G")],
         )),
         git_bash.map(|p| {
-            profile(
-                "Git Bash",
-                p,
-                &["--login", "-i"],
-                &[(
-                    "PROMPT_COMMAND",
-                    r#"printf '\e]9;9;%s\a' "$(cygpath -w "$PWD")""#,
-                )],
-            )
+            let mut git_bash = profile("Git Bash", p, &["--login", "-i"], &[]);
+            git_bash
+                .env
+                .push(("PROMPT_COMMAND".into(), bash_cwd("cygpath -w")));
+            git_bash
         }),
     ]
     .into_iter()
     .flatten()
-    .collect()
+    .chain(wsl)
+    .collect();
+    let default = settings()[DEFAULT_PROFILE].as_str().map(str::to_owned);
+    if let Some(ix) = list
+        .iter()
+        .position(|p| Some(&*p.name) == default.as_deref())
+    {
+        let default = list.remove(ix);
+        list.insert(0, default);
+    }
+    list
+}
+
+/// The installed WSL distros, as `wsl -l -q` lists them (in UTF-16), minus
+/// Docker's internal ones, which VS Code hides too. Asked once.
+fn wsl_distros() -> &'static [String] {
+    static DISTROS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    DISTROS.get_or_init(|| {
+        let mut wsl = std::process::Command::new("wsl.exe");
+        wsl.args(["-l", "-q"]);
+        #[cfg(windows)]
+        std::os::windows::process::CommandExt::creation_flags(&mut wsl, 0x0800_0000); // CREATE_NO_WINDOW
+        let Some(out) = wsl.output().ok().filter(|o| o.status.success()) else {
+            return Vec::new();
+        };
+        let utf16: Vec<u16> = (out.stdout.as_chunks().0.iter())
+            .map(|&b| u16::from_le_bytes(b))
+            .collect();
+        (String::from_utf16_lossy(&utf16).lines())
+            .map(|l| l.trim_matches(|c: char| c.is_whitespace() || c == '\0'))
+            .filter(|l| !l.is_empty() && !l.starts_with("docker-desktop"))
+            .map(Into::into)
+            .collect()
+    })
+}
+
+/// User settings, a subset of VS Code's `settings.json`.
+fn settings_path() -> Option<PathBuf> {
+    Some(dirs::config_dir()?.join("vsn").join("settings.json"))
+}
+
+fn settings() -> serde_json::Value {
+    settings_path()
+        .and_then(|p| fs::read(p).ok())
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+fn set_default_profile(name: &str) {
+    let Some(path) = settings_path() else { return };
+    let mut settings = settings();
+    if !settings.is_object() {
+        settings = serde_json::json!({});
+    }
+    settings[DEFAULT_PROFILE] = name.into();
+    fs::create_dir_all(path.parent().unwrap()).ok();
+    fs::write(path, serde_json::to_string_pretty(&settings).unwrap()).ok();
 }
 
 impl Workbench {
@@ -425,8 +498,8 @@ impl Workbench {
             .openpty(size)
             .map_err(|e| e.to_string())?;
         let mut cmd = CommandBuilder::new(&profile.program);
-        cmd.args(profile.args);
-        for (k, v) in profile.env {
+        cmd.args(&profile.args);
+        for (k, v) in &profile.env {
             cmd.env(k, v);
         }
         if let Some(root) = &self.root {
@@ -861,17 +934,34 @@ impl Workbench {
             .size(px(22.))
             .text_color(col::fg())
             .child(codicon(icon::CHEVRON_DOWN))
-            .dropdown_menu(move |mut menu, _, _| {
-                for profile in profiles() {
+            .dropdown_menu(move |mut menu, window, cx| {
+                let profiles = profiles();
+                for profile in profiles.clone() {
                     let wb = wb.clone();
-                    let name = profile.name;
+                    let name = profile.name.clone();
                     menu = menu.item(PopupMenuItem::new(name).on_click(move |_, window, cx| {
                         let profile = profile.clone();
                         wb.update(cx, |this, cx| this.launch_profile(profile, window, cx))
                             .ok();
                     }));
                 }
-                menu
+                // ponytail: a submenu where VS Code opens a quick pick.
+                menu.separator().submenu(
+                    "Select Default Profile",
+                    window,
+                    cx,
+                    move |mut menu, _, _| {
+                        for (ix, profile) in profiles.iter().enumerate() {
+                            let name = profile.name.clone();
+                            menu = menu.item(
+                                PopupMenuItem::new(name.clone())
+                                    .checked(ix == 0)
+                                    .on_click(move |_, _, _| set_default_profile(&name)),
+                            );
+                        }
+                        menu
+                    },
+                )
             })
     }
 
