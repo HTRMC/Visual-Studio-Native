@@ -42,6 +42,8 @@ pub(super) struct Terminal {
     /// The id of the terminal its split group started with.
     group: u64,
     name: String,
+    /// What it was started with, for splits of it.
+    profile: Profile,
     parser: vt100::Parser<Replies>,
     writer: Box<dyn Write + Send>,
     master: Box<dyn MasterPty + Send>,
@@ -147,7 +149,6 @@ impl Terminal {
 /// the screen is re-wrapped from the top on its own, below the scrollback,
 /// and the cursor lands where PSReadLine's absolute moves expect it. The
 /// alternate screen is left to its program to redraw.
-// ponytail: rows below the cursor's line are dropped; fine for a shell.
 fn reflow<C: vt100::Callbacks>(parser: &mut vt100::Parser<C>, rows: u16, cols: u16) {
     let size = |n: u16| n.max(1).try_into().unwrap();
     let screen = parser.screen_mut();
@@ -174,16 +175,24 @@ fn reflow<C: vt100::Callbacks>(parser: &mut vt100::Parser<C>, rows: u16, cols: u
         line(screen, r, &mut sgr, &mut text);
     }
     cells(screen, row, 0..col, &mut sgr, &mut text);
-    // What's right of the cursor on its line, e.g. mid-edit.
+    // What's right of and below the cursor, e.g. mid-edit or a status line.
+    let last = (row..height)
+        .rev()
+        .find(|&r| line_end(screen, r) > 0)
+        .unwrap_or(row);
     let mut rest = String::new();
-    let (mut r, mut from) = (row, col);
-    loop {
-        let end = line_end(screen, r).max(from);
-        cells(screen, r, from..end, &mut sgr, &mut rest);
-        if !screen.row_wrapped(r) || r + 1 >= height {
-            break;
+    for r in row..=last {
+        let from = if r == row { col } else { 0 };
+        cells(
+            screen,
+            r,
+            from..line_end(screen, r).max(from),
+            &mut sgr,
+            &mut rest,
+        );
+        if r < last && !screen.row_wrapped(r) {
+            rest.push_str("\r\n");
         }
-        (r, from) = (r + 1, 0);
     }
 
     screen.clear_scrollback();
@@ -326,25 +335,83 @@ enum Link {
     File(PathBuf, u32, u32),
 }
 
-/// Wraps the prompt to report the cwd (`OSC 9;9`, which ConPTY passes on),
-/// like VS Code's shell integration. Runs after the profile, so a custom
-/// prompt is wrapped too.
-const PROMPT_HOOK: &str = "$__vsn_prompt = $function:prompt; function global:prompt { \
+/// PowerShell's startup, done by hand so the prompt can be wrapped after the
+/// profiles load: the banner `-Command` suppresses, the profiles, then a
+/// prompt that reports the cwd (`OSC 9;9`, which ConPTY passes on) like VS
+/// Code's shell integration.
+const POWERSHELL_HOOK: &str = "\
+    if ($PSVersionTable.PSEdition -eq 'Core') { \"PowerShell $($PSVersionTable.PSVersion)\" } \
+    else { \"Windows PowerShell`nCopyright (C) Microsoft Corporation. All rights reserved.`n`n\
+    Install the latest PowerShell for new features and improvements! https://aka.ms/PSWindows`n\" }; \
+    foreach ($__vsn_p in $PROFILE.AllUsersAllHosts, $PROFILE.AllUsersCurrentHost, \
+    $PROFILE.CurrentUserAllHosts, $PROFILE.CurrentUserCurrentHost) { if (Test-Path $__vsn_p) { . $__vsn_p } }; \
+    $__vsn_prompt = $function:prompt; function global:prompt { \
     [char]27 + ']9;9;' + $PWD.ProviderPath + [char]7 + (& $__vsn_prompt) }";
+const POWERSHELL_ARGS: &[&str] = &["-NoProfile", "-NoExit", "-Command", POWERSHELL_HOOK];
 
-/// VS Code's default profile on Windows: PowerShell 7 when it's installed,
-/// else Windows PowerShell.
-fn shell() -> PathBuf {
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    std::env::split_paths(&path)
-        .map(|dir| dir.join("pwsh.exe"))
-        .find(|p| p.is_file())
-        .unwrap_or("powershell.exe".into())
+/// A shell the terminal can start, like VS Code's terminal profiles. Each
+/// reports its cwd with `OSC 9;9`.
+#[derive(Clone)]
+pub(super) struct Profile {
+    pub(super) name: &'static str,
+    program: PathBuf,
+    args: &'static [&'static str],
+    env: &'static [(&'static str, &'static str)],
+}
+
+/// The profiles VS Code detects on Windows; the first is the default.
+// ponytail: no WSL (its env doesn't cross over) and no picking the default.
+pub(super) fn profiles() -> Vec<Profile> {
+    let find = |exe: &str| {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        std::env::split_paths(&path)
+            .map(|dir| dir.join(exe))
+            .find(|p| p.is_file())
+    };
+    let git_bash = find("git.exe")
+        .and_then(|git| Some(git.parent()?.parent()?.join("bin").join("bash.exe")))
+        .filter(|bash| bash.is_file());
+    let profile = |name, program, args, env| Profile {
+        name,
+        program,
+        args,
+        env,
+    };
+    [
+        find("pwsh.exe").map(|p| profile("PowerShell", p, POWERSHELL_ARGS, &[])),
+        Some(profile(
+            "Windows PowerShell",
+            "powershell.exe".into(),
+            POWERSHELL_ARGS,
+            &[],
+        )),
+        Some(profile(
+            "Command Prompt",
+            "cmd.exe".into(),
+            &[],
+            &[("PROMPT", "$e]9;9;$P$e\\$P$G")],
+        )),
+        git_bash.map(|p| {
+            profile(
+                "Git Bash",
+                p,
+                &["--login", "-i"],
+                &[(
+                    "PROMPT_COMMAND",
+                    r#"printf '\e]9;9;%s\a' "$(cygpath -w "$PWD")""#,
+                )],
+            )
+        }),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 impl Workbench {
     fn spawn_terminal(
         &mut self,
+        profile: Profile,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Result<Terminal, String> {
@@ -357,9 +424,11 @@ impl Workbench {
         let pair = native_pty_system()
             .openpty(size)
             .map_err(|e| e.to_string())?;
-        let shell = shell();
-        let mut cmd = CommandBuilder::new(&shell);
-        cmd.args(["-NoExit", "-Command", PROMPT_HOOK]);
+        let mut cmd = CommandBuilder::new(&profile.program);
+        cmd.args(profile.args);
+        for (k, v) in profile.env {
+            cmd.env(k, v);
+        }
         if let Some(root) = &self.root {
             cmd.cwd(root);
         }
@@ -399,9 +468,11 @@ impl Workbench {
         Ok(Terminal {
             id,
             group: id,
-            name: shell
+            name: profile
+                .program
                 .file_stem()
                 .map_or("shell".into(), |s| s.to_string_lossy().into()),
+            profile,
             parser: vt100::Parser::new_with_callbacks(
                 24.try_into().unwrap(),
                 80.try_into().unwrap(),
@@ -457,9 +528,20 @@ impl Workbench {
     }
 
     /// Starts a shell beside the active one, or in a new group, and makes it
-    /// active. False when it failed to launch.
-    fn add_terminal(&mut self, split: bool, window: &Window, cx: &mut Context<Self>) -> bool {
-        let mut t = match self.spawn_terminal(window, cx) {
+    /// active. A split runs the active one's profile, else the default.
+    /// False when it failed to launch.
+    fn add_terminal(
+        &mut self,
+        split: bool,
+        profile: Option<Profile>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let active = self.terminals.list.get(self.terminals.active);
+        let profile = profile
+            .or_else(|| active.filter(|_| split).map(|t| t.profile.clone()))
+            .unwrap_or_else(|| profiles().remove(0));
+        let mut t = match self.spawn_terminal(profile, window, cx) {
             Ok(t) => t,
             Err(err) => {
                 self.terminals.error = Some(err);
@@ -487,7 +569,18 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.add_terminal(split, window, cx);
+        self.add_terminal(split, None, window, cx);
+        self.focus_terminal(window, cx);
+    }
+
+    /// The profile list beside the + button.
+    pub(super) fn launch_profile(
+        &mut self,
+        profile: Profile,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.add_terminal(false, Some(profile), window, cx);
         self.focus_terminal(window, cx);
     }
 
@@ -497,7 +590,7 @@ impl Workbench {
         self.panel = true;
         self.panel_tab = TERMINAL;
         if self.terminals.list.is_empty() {
-            self.add_terminal(false, window, cx);
+            self.add_terminal(false, None, window, cx);
         }
         if let Some(t) = self.terminals.list.get(self.terminals.active) {
             window.focus(&t.focus, cx);
@@ -669,6 +762,40 @@ impl Workbench {
         cx.notify();
     }
 
+    /// The middle and right buttons: to the program in mouse mode, where the
+    /// right one doesn't open the context menu.
+    fn terminal_press(
+        &mut self,
+        id: u64,
+        ev: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(t) = self.terminal(id)
+            && t.mouse_mode(ev.modifiers)
+            && let Some(button) = button_code(ev.button)
+        {
+            t.report(button, false, ev.position);
+            cx.stop_propagation();
+        }
+        self.activate_terminal(id, window, cx);
+    }
+
+    fn terminal_release(&mut self, id: u64, ev: &MouseUpEvent) {
+        let Some(t) = self.terminal(id) else {
+            return;
+        };
+        if !t.selecting
+            && t.mouse_mode(ev.modifiers)
+            && let Some(button) = button_code(ev.button)
+        {
+            t.report(button, true, ev.position);
+        }
+        if ev.button == MouseButton::Left {
+            t.selecting = false;
+        }
+    }
+
     fn open_link(&mut self, link: Link, window: &mut Window, cx: &mut Context<Self>) {
         match link {
             Link::Url(url) => cx.open_url(&url),
@@ -689,7 +816,7 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if self.terminals.list.is_empty() && self.terminals.error.is_none() {
-            self.add_terminal(false, window, cx);
+            self.add_terminal(false, None, window, cx);
         }
         if self.terminals.list.is_empty() {
             let err = self.terminals.error.clone().unwrap_or_default();
@@ -723,6 +850,29 @@ impl Workbench {
                 d.child(self.render_terminal_tabs(cx))
             })
             .into_any_element()
+    }
+
+    /// The chevron beside +: starts a terminal with a chosen profile.
+    pub(super) fn profile_menu(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let wb = cx.weak_entity();
+        Button::new("terminal-profiles")
+            .ghost()
+            .compact()
+            .size(px(22.))
+            .text_color(col::fg())
+            .child(codicon(icon::CHEVRON_DOWN))
+            .dropdown_menu(move |mut menu, _, _| {
+                for profile in profiles() {
+                    let wb = wb.clone();
+                    let name = profile.name;
+                    menu = menu.item(PopupMenuItem::new(name).on_click(move |_, window, cx| {
+                        let profile = profile.clone();
+                        wb.update(cx, |this, cx| this.launch_profile(profile, window, cx))
+                            .ok();
+                    }));
+                }
+                menu
+            })
     }
 
     /// VS Code's list of terminals, with split groups drawn as a tree.
@@ -933,8 +1083,12 @@ impl Workbench {
                 }),
             )
             .on_mouse_down(
+                MouseButton::Middle,
+                cx.listener(move |this, ev, window, cx| this.terminal_press(id, ev, window, cx)),
+            )
+            .on_mouse_down(
                 MouseButton::Right,
-                cx.listener(move |this, _, window, cx| this.activate_terminal(id, window, cx)),
+                cx.listener(move |this, ev, window, cx| this.terminal_press(id, ev, window, cx)),
             )
             .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _, cx| {
                 let root = this.root.clone();
@@ -942,8 +1096,8 @@ impl Workbench {
                     return;
                 };
                 if !t.selecting && t.mouse_mode(ev.modifiers) {
-                    let held = ev.pressed_button == Some(MouseButton::Left);
-                    t.report(if held { 32 } else { 35 }, false, ev.position);
+                    let held = ev.pressed_button.and_then(button_code);
+                    t.report(held.map_or(35, |b| b + 32), false, ev.position);
                 } else if t.selecting
                     && let Some((a, _)) = t.selection
                 {
@@ -962,14 +1116,15 @@ impl Workbench {
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(move |this, ev: &MouseUpEvent, _, _| {
-                    if let Some(t) = this.terminal(id) {
-                        if !t.selecting && t.mouse_mode(ev.modifiers) {
-                            t.report(0, true, ev.position);
-                        }
-                        t.selecting = false;
-                    }
-                }),
+                cx.listener(move |this, ev, _, _| this.terminal_release(id, ev)),
+            )
+            .on_mouse_up(
+                MouseButton::Middle,
+                cx.listener(move |this, ev, _, _| this.terminal_release(id, ev)),
+            )
+            .on_mouse_up(
+                MouseButton::Right,
+                cx.listener(move |this, ev, _, _| this.terminal_release(id, ev)),
             )
             .on_scroll_wheel(cx.listener(move |this, ev, _, cx| this.terminal_wheel(id, ev, cx)))
             .child(
@@ -1078,9 +1233,18 @@ fn link(word: &str, root: Option<&Path>) -> Option<Link> {
     path.is_file().then(|| Link::File(path, at(0), at(1)))
 }
 
-/// An xterm mouse report at a 0-based (row, col): `button` 0 is the left
-/// one, +32 for motion (35 with none held), 64/65 the wheel.
-// ponytail: left button and wheel only; the right one keeps the context menu.
+/// The xterm number of a mouse button.
+fn button_code(button: MouseButton) -> Option<u8> {
+    match button {
+        MouseButton::Left => Some(0),
+        MouseButton::Middle => Some(1),
+        MouseButton::Right => Some(2),
+        _ => None,
+    }
+}
+
+/// An xterm mouse report at a 0-based (row, col): `button` from
+/// `button_code`, +32 for motion (35 with none held), 64/65 the wheel.
 fn mouse_bytes(
     button: u8,
     release: bool,
@@ -1260,6 +1424,11 @@ mod tests {
         // Scrollback "old", "", screen "", "", "> abcdefgh", "ijkl"; the
         // cursor after "> ", mid-edit.
         p.process(b"old\r\n\r\n\r\n\r\n> abcdefghijkl\x1b[3;3H");
+        let mut q = vt100::Parser::new(3.try_into().unwrap(), 10.try_into().unwrap(), 100);
+        q.process(b"> \r\nbelow\x1b[1;3H");
+        reflow(&mut q, 3, 5);
+        assert_eq!(q.screen().contents(), "> \nbelow");
+        assert_eq!(q.screen().cursor_position(), (0, 2));
         reflow(&mut p, 3, 5);
         let rows: Vec<String> = p.screen().rows(0, 5).collect();
         assert_eq!(rows, ["> abc", "defgh", "ijkl"]);

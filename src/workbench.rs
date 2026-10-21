@@ -1454,6 +1454,7 @@ impl Workbench {
         let actions: &[char] = if self.panel_tab == TERMINAL {
             &[
                 icon::ADD,
+                icon::CHEVRON_DOWN,
                 icon::SPLIT_HORIZONTAL,
                 icon::TRASH,
                 icon::ELLIPSIS,
@@ -1507,6 +1508,9 @@ impl Workbench {
                             .gap(px(4.))
                             .children(actions.iter().enumerate().map(|(i, &ch)| {
                                 let button = action_button(("panel-act", i), ch);
+                                if (ch, self.panel_tab) == (icon::CHEVRON_DOWN, TERMINAL) {
+                                    return self.profile_menu(cx).into_any_element();
+                                }
                                 match (ch, self.panel_tab) {
                                     (icon::CLEAR_ALL, debug::DEBUG_CONSOLE) => {
                                         button.on_click(cx.listener(|this, _, _, cx| {
@@ -1530,6 +1534,7 @@ impl Workbench {
                                     }
                                     _ => button,
                                 }
+                                .into_any_element()
                             }))
                             .child(action_button("panel-close", icon::CLOSE).on_click(
                                 cx.listener(|this, _, w, cx| {
