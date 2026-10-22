@@ -46,6 +46,9 @@ const LABEL: i32 = 1 << 16;
 const EDITOR_HISTORY: usize = 200;
 const COMMAND_HISTORY: usize = 50;
 
+/// Change Icon's grid columns, about 32px each at the palette's full width.
+const ICON_COLS: usize = 18;
+
 /// What the palette offers, VS Code's titles. Only commands that do something.
 fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
     vec![
@@ -128,8 +131,8 @@ enum Pick {
     Profile(usize, Vec<usize>),
     /// Index into the terminal colors, or None to reset, and the matched offsets.
     Color(Option<usize>, Vec<usize>),
-    /// A codicon's name and glyph, and the matched offsets.
-    Icon(&'static str, char, Vec<usize>),
+    /// A row of Change Icon's grid: codicon names and glyphs.
+    Icons(Vec<(&'static str, char)>),
 }
 
 /// A definition in the active editor, for `@`.
@@ -176,6 +179,8 @@ pub(super) struct Palette {
     goto: Option<(u32, u32)>,
     shown: Vec<Pick>,
     groups: Groups,
+    /// The highlighted icon in Change Icon's highlighted grid row.
+    col: usize,
     /// The highlighted row, and the one to highlight once the list shows `shown`.
     selected: usize,
     preselect: Option<usize>,
@@ -220,6 +225,7 @@ impl Palette {
             goto: None,
             shown: Vec::new(),
             groups: Vec::new(),
+            col: 0,
             selected: 0,
             preselect: None,
             empty: SharedString::default(),
@@ -1418,6 +1424,46 @@ impl Row {
     }
 }
 
+/// A row of Change Icon's grid, the icon at `at` highlighted. Pressing one
+/// highlights it, so the list's click confirms that icon.
+fn icon_row(
+    icons: &[(&str, char)],
+    at: Option<usize>,
+    row: usize,
+    this: WeakEntity<Workbench>,
+) -> Div {
+    let cell = |i: usize, ch: char| {
+        let this = this.clone();
+        div()
+            .flex_1()
+            .h(px(28.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(4.))
+            .text_size(px(16.))
+            .when(at == Some(i), |d| d.bg(c(0x297AA0)).text_color(c(0xFFFFFF)))
+            .child(codicon(ch))
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                this.update(cx, |w, _| {
+                    w.palette.col = i;
+                    w.palette.selected = row;
+                })
+                .ok();
+            })
+    };
+    h_flex()
+        .flex_1()
+        // Covers the list's row padding and its own highlight, as `Row` does.
+        .mx(rems(-0.5))
+        .my(rems(-0.375))
+        .px(rems(0.25))
+        .py(px(2.))
+        .bg(c(0x202122))
+        .children(icons.iter().enumerate().map(|(i, &(_, ch))| cell(i, ch)))
+        .children((icons.len()..ICON_COLS).map(|_| div().flex_1()))
+}
+
 impl Workbench {
     pub(super) fn open_palette(
         &mut self,
@@ -1483,9 +1529,8 @@ impl Workbench {
         self.palette_query(String::new(), cx);
     }
 
-    /// VS Code's Terminal: Change Icon: the palette lists every codicon for
-    /// the active terminal's tab.
-    // ponytail: a list by name; VS Code's picker is a grid of icons.
+    /// VS Code's Terminal: Change Icon: the palette shows every codicon in a
+    /// grid for the active terminal's tab.
     pub(super) fn change_terminal_icon(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((id, _)) = self.terminal_name() else {
             return;
@@ -1637,12 +1682,13 @@ impl Workbench {
             return;
         }
         if p.iconing.is_some() {
-            let shown = codicons()
-                .filter_map(|(name, ch)| {
-                    Some(Pick::Icon(name, ch, command_matches(query.trim(), name)?))
-                })
+            let icons: Vec<_> = codicons()
+                .filter(|(name, _)| command_matches(query.trim(), name).is_some())
                 .collect();
-            p.show(shown, Vec::new(), 0);
+            let shown = icons.chunks(ICON_COLS).map(|r| Pick::Icons(r.to_vec()));
+            p.col = 0;
+            p.empty = "No results".into();
+            p.show(shown.collect(), Vec::new(), 0);
             return;
         }
         if p.renaming.is_some() {
@@ -1839,8 +1885,8 @@ impl Workbench {
                 set_default_profile(&p.profiles.as_ref().unwrap()[ix].name);
                 (None, None)
             }
-            Some(&Pick::Icon(_, ch, _)) => {
-                if let Some(id) = p.iconing {
+            Some(Pick::Icons(icons)) => {
+                if let (Some(id), Some(&(_, ch))) = (p.iconing, icons.get(p.col)) {
                     self.set_terminal_icon(id, ch, cx);
                 }
                 (None, None)
@@ -1904,6 +1950,11 @@ impl Workbench {
             "Search files by name (append : to go to line or @ to go to symbol)"
         };
         let empty = p.empty.clone();
+        // VS Code names the highlighted icon under the grid.
+        let icon_name = p.iconing.and_then(|_| match p.shown.get(p.selected) {
+            Some(Pick::Icons(icons)) => icons.get(p.col).map(|i| i.0),
+            _ => None,
+        });
         // VS Code's quickInput sizing: 62% wide up to 600px, list 40% of the
         // window in whole 44px steps, at most 20 rows of 22px.
         let viewport = window.viewport_size();
@@ -1944,8 +1995,12 @@ impl Workbench {
                     let icon = RowIcon::Symbol(icon::CIRCLE_FILLED, c(ANSI[*ix]));
                     row(icon, COLORS[*ix], hits).item()
                 }
-                Pick::Icon(name, ch, hits) => {
-                    row(RowIcon::Symbol(*ch, col::fg()), name, hits).item()
+                Pick::Icons(icons) => {
+                    let (icons, sel, this) = (icons.clone(), ix == p.selected, this.clone());
+                    let at = if sel { Some(p.col) } else { None };
+                    CommandItem::new()
+                        .label(icons[0].0)
+                        .child(move |_, _| icon_row(&icons, at, ix, this.clone()))
                 }
                 Pick::Color(None, hits) => row(RowIcon::None, "Reset to default", hits).item(),
                 Pick::Command(cmd, hits) => {
@@ -2013,6 +2068,32 @@ impl Workbench {
                 .on_mouse_down_out(
                     cx.listener(|this, _, window, cx| this.close_palette(window, cx)),
                 )
+                // Left and right walk Change Icon's grid, wrapping across rows.
+                .capture_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {
+                    let p = &mut this.palette;
+                    let step = match e.keystroke.key.as_str() {
+                        "left" => -1,
+                        "right" => 1,
+                        _ => return,
+                    };
+                    let Some(Pick::Icons(icons)) = p.shown.get(p.selected) else {
+                        return;
+                    };
+                    cx.stop_propagation();
+                    let total = (p.shown.len() - 1) * ICON_COLS
+                        + match p.shown.last() {
+                            Some(Pick::Icons(last)) => last.len(),
+                            _ => 0,
+                        };
+                    let at = (p.selected * ICON_COLS + p.col.min(icons.len() - 1)) as isize;
+                    let at = (at + step).clamp(0, total as isize - 1) as usize;
+                    p.col = at % ICON_COLS;
+                    if at / ICON_COLS != p.selected {
+                        p.selected = at / ICON_COLS;
+                        p.preselect = Some(p.selected);
+                    }
+                    cx.notify();
+                }))
                 .child(
                     list.on_query(move |q, _, cx| {
                         let q = q.to_string();
@@ -2033,6 +2114,15 @@ impl Workbench {
                         this2
                             .update(cx, |this, cx| this.palette_confirm(ix.row, window, cx))
                             .ok();
+                    })
+                    .when_some(icon_name, |list, name| {
+                        list.footer(move |_, _, _| {
+                            div()
+                                .px(px(10.))
+                                .py(px(6.))
+                                .text_color(col::fg_muted())
+                                .child(name)
+                        })
                     })
                     .empty(move |_, _, _| {
                         div()

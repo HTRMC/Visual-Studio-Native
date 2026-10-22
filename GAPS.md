@@ -40,7 +40,9 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Clicking the single terminal's title-bar tab focuses the terminal.
 - [x] Change a terminal's color (Terminal: Change Color..., or on a tab).
 - [x] Change a terminal's icon (Terminal: Change Icon..., or on a tab).
-- [ ] Change Icon's picker is a grid of icons, not a list of names.
+- [x] Change Icon's picker is a grid of icons, not a list of names.
+- [ ] Change Icon's grid opens in a hover by the terminal's tab, as in
+      VS Code, not where the palette opens.
 - [x] Terminal: Kill the Active Terminal Instance in the palette.
 - [x] Terminal: Focus Next/Previous Terminal Group (Ctrl+PageDown/Up) and
       Terminal in Terminal Group.
