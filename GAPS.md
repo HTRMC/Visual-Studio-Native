@@ -107,7 +107,11 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] The bell's tooltip ("No Notifications", "1 New Notification").
 - [x] Tooltips on the status bar items.
 - [ ] Tooltips on the activity bar and the title-bar/panel action buttons.
-- [ ] Clicking a status bar item does what its tooltip says: Ln/Col opens
-      Go to Line, Spaces/encoding/EOL/language open their pickers.
+- [x] Clicking Ln/Col opens Go to Line; so do Ctrl+G and the Go menu
+      (Ctrl+Shift+O and the menu open Go to Symbol in Editor). In the
+      terminal both keys still reach the shell, as in VS Code.
+- [ ] Clicking Spaces/encoding/EOL/language opens their pickers.
+- [ ] Go menu: Back/Forward (Alt+Left/Right), Last Edit Location and
+      Go to Symbol in Workspace (Ctrl+T) are still placeholders.
 - [ ] Do Not Disturb (the center's bell-slash button).
 - [ ] Notifications: several toasts stacked (only one warning exists so far).

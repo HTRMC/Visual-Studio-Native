@@ -55,6 +55,8 @@ actions!(
         ShowExtensions,
         CommandPalette,
         QuickOpen,
+        GoToLine,
+        GoToSymbol,
         StartDebugging,
         RunWithoutDebugging,
         StopDebugging,
@@ -123,6 +125,11 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-shift-p", CommandPalette, None),
         KeyBinding::new("f1", CommandPalette, None),
         KeyBinding::new("ctrl-p", QuickOpen, None),
+        KeyBinding::new("ctrl-g", GoToLine, None),
+        KeyBinding::new("ctrl-shift-o", GoToSymbol, None),
+        // VS Code sends these two to the shell rather than skipping it.
+        KeyBinding::new("ctrl-g", NoAction, Some("Terminal")),
+        KeyBinding::new("ctrl-shift-o", NoAction, Some("Terminal")),
         KeyBinding::new("f5", StartDebugging, None),
         KeyBinding::new("ctrl-f5", RunWithoutDebugging, None),
         KeyBinding::new("shift-f5", StopDebugging, None),
@@ -1657,6 +1664,7 @@ impl Workbench {
             let lang = language_label(language_id(&doc.path));
             right.extend([
                 item("sb-pos", "Go to Line/Column")
+                    .on_click(cx.listener(|this, _, window, cx| this.open_palette(":", window, cx)))
                     .child(format!("Ln {}, Col {col}", pos.line + 1))
                     .into_any_element(),
                 item("sb-indent", "Select Indentation")
@@ -1986,6 +1994,12 @@ impl Render for Workbench {
             )
             .on_action(
                 cx.listener(|this, _: &QuickOpen, window, cx| this.open_palette("", window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &GoToLine, window, cx| this.open_palette(":", window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &GoToSymbol, window, cx| this.open_palette("@", window, cx)),
             )
             .on_action(cx.listener(|this, _: &CommandPalette, window, cx| {
                 this.open_palette(">", window, cx)
@@ -2363,9 +2377,9 @@ fn app_menu(
             .menu("Go to File...", Box::new(QuickOpen))
             .menu("Go to Symbol in Workspace...", noop())
             .separator()
-            .menu("Go to Symbol in Editor...", noop())
+            .menu("Go to Symbol in Editor...", Box::new(GoToSymbol))
             .menu("Go to Definition", Box::new(input::GoToDefinition))
-            .menu("Go to Line/Column...", noop()),
+            .menu("Go to Line/Column...", Box::new(GoToLine)),
         "Run" => menu
             .menu("Start Debugging", Box::new(StartDebugging))
             .menu("Run Without Debugging", Box::new(RunWithoutDebugging))

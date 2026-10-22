@@ -64,6 +64,8 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ),
         ("View: Toggle Panel Visibility", Box::new(TogglePanel)),
         ("View: Toggle Terminal", Box::new(ToggleTerminal)),
+        ("Go to Line/Column...", Box::new(GoToLine)),
+        ("Go to Symbol in Editor...", Box::new(GoToSymbol)),
         (
             "Notifications: Show Notifications",
             Box::new(ShowNotifications),
