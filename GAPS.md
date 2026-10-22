@@ -112,8 +112,12 @@ Differences from VS Code still to close, smallest first within each area.
       and the debug toolbar (Windows shows the window controls' own).
 - [x] The window's taskbar title stays fixed; VS Code's is "{file} - {folder}
       - Visual Studio Code", with a dot while dirty.
+- [x] Maximize/Restore Panel Size (the panel's chevron, View: Toggle
+      Maximized Panel) fills the editor's space with the panel.
 - [ ] Most title actions are inert (Customize Layout, Split Editor, More
-      Actions, Maximize Panel Size, the side bars' Views and More Actions).
+      Actions, the side bars' Views and More Actions).
+- [ ] A gpui tooltip stays on screen when its button moves away under a
+      still mouse (e.g. after Restore Panel Size) until the mouse moves.
 - [x] Activity bar tooltips show under the mouse; VS Code puts them to the
       right of the bar with a pointer.
 - [ ] Other tooltips (status bar, title bar, action buttons) still follow the

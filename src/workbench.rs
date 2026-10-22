@@ -48,6 +48,7 @@ actions!(
         Quit,
         ToggleSidebar,
         TogglePanel,
+        ToggleMaximizedPanel,
         ToggleTerminal,
         ShowExplorer,
         ShowSearch,
@@ -412,6 +413,8 @@ pub struct Workbench {
     view: View,
     sidebar: bool,
     panel: bool,
+    /// The panel fills the editor's space too (Maximize Panel Size).
+    panel_max: bool,
     panel_tab: usize,
     search: Entity<InputState>,
     find: search::Find,
@@ -466,6 +469,7 @@ impl Workbench {
             view: View::Explorer,
             sidebar: true,
             panel: true,
+            panel_max: false,
             panel_tab: TERMINAL,
             search: input("Search", window, cx),
             commit: input("Message (Ctrl+Enter to commit)", window, cx),
@@ -1030,6 +1034,13 @@ impl Workbench {
 
     fn toggle_panel(&mut self, _: &TogglePanel, _: &mut Window, cx: &mut Context<Self>) {
         self.panel = !self.panel;
+        cx.notify();
+    }
+
+    /// Maximize or Restore Panel Size; a hidden panel shows maximized.
+    fn toggle_max_panel(&mut self, cx: &mut Context<Self>) {
+        self.panel_max = !self.panel || !self.panel_max;
+        self.panel = true;
         cx.notify();
     }
 
@@ -1925,15 +1936,13 @@ impl Workbench {
                 icon::SPLIT_HORIZONTAL,
                 icon::TRASH,
                 icon::ELLIPSIS,
-                icon::CHEVRON_UP,
             ]
         } else {
-            &[
-                icon::FILTER,
-                icon::CLEAR_ALL,
-                icon::ELLIPSIS,
-                icon::CHEVRON_UP,
-            ]
+            &[icon::FILTER, icon::CLEAR_ALL, icon::ELLIPSIS]
+        };
+        let (max_icon, max_tip) = match self.panel_max {
+            false => (icon::CHEVRON_UP, "Maximize Panel Size"),
+            true => (icon::CHEVRON_DOWN, "Restore Panel Size"),
         };
 
         let body = match self.panel_tab {
@@ -2012,6 +2021,13 @@ impl Workbench {
                                 }
                                 .into_any_element()
                             }))
+                            .child(
+                                action_button("panel-max", max_icon)
+                                    .tooltip(tip(max_tip))
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.toggle_max_panel(cx)),
+                                    ),
+                            )
                             .child(
                                 action_button("panel-close", icon::CLOSE)
                                     .tooltip(tip("Hide Panel (Ctrl+J)"))
@@ -2498,6 +2514,9 @@ impl Render for Workbench {
             .on_action(cx.listener(Self::quit))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::toggle_panel))
+            .on_action(
+                cx.listener(|this, _: &ToggleMaximizedPanel, _, cx| this.toggle_max_panel(cx)),
+            )
             .on_action(cx.listener(Self::toggle_terminal))
             .on_action(cx.listener(|this, _: &ShowExplorer, _, cx| this.show(View::Explorer, cx)))
             .on_action(cx.listener(|this, _: &ShowSearch, window, cx| {
@@ -2690,7 +2709,11 @@ impl Render for Workbench {
                             .child(
                                 resizable_panel().child(
                                     v_resizable("editor-panel")
-                                        .child(resizable_panel().child(editor))
+                                        .child(
+                                            resizable_panel()
+                                                .visible(!(self.panel && self.panel_max))
+                                                .child(editor),
+                                        )
                                         .child(
                                             resizable_panel()
                                                 .size(px(260.))
@@ -3032,7 +3055,6 @@ fn action_tip(ch: char) -> &'static str {
         icon::ADD => "New Terminal (Ctrl+Shift+`)",
         icon::SPLIT_HORIZONTAL => "Split Terminal (Ctrl+Shift+5)",
         icon::TRASH => "Kill Terminal",
-        icon::CHEVRON_UP => "Maximize Panel Size",
         _ => "Views and More Actions...",
     }
 }
