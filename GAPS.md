@@ -144,7 +144,11 @@ Differences from VS Code still to close, smallest first within each area.
       toasts through Do Not Disturb).
 - [x] Explorer failures (Unable to copy/move/create, paste into itself) were
       warnings; they're now errors, as in VS Code.
-- [ ] Notifications have no source line ("Source: ...") or info severity.
+- [ ] Notifications have no info severity (nothing reports one yet); the
+      "Source:" line is for extensions only.
+- [x] Join Terminals with a single terminal said "All terminals are joined
+      already"; it now says VS Code's "Insufficient terminals for the join
+      action".
 - [x] Notification buttons used gpui-component's primary colour; they now
       use button.background (#0078D4) and button.hoverBackground.
 - [ ] Notification buttons aren't in the keyboard focus order (VS Code tabs
@@ -287,7 +291,8 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Search and the explorer ignore the `files.exclude` and `search.exclude`
       settings (VS Code hides `.git` etc. and skips `node_modules` by default).
 - [ ] `files.exclude` ignores `{"when": ...}` sibling conditions, and an edit
-      to settings.json shows in the explorer only after a refresh (no watcher).- [x] A right-click in the explorer's empty area doesn't move the focus
+      to settings.json shows in the explorer only after a refresh (no watcher).
+- [x] A right-click in the explorer's empty area doesn't move the focus
       outline off the last row the way VS Code clears it.
 - [ ] The explorer handles one item at a time: no Ctrl/Shift+click
       multi-select for drag, cut, copy or paste.

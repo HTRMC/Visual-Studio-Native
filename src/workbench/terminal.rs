@@ -1400,6 +1400,10 @@ impl Workbench {
     }
 
     /// Join Terminals' picks: every other terminal alone in its group.
+    pub(super) fn terminal_count(&self) -> usize {
+        self.terminals.list.len()
+    }
+
     pub(super) fn joinable(&self) -> Vec<(u64, String, char, Hsla)> {
         let list = &self.terminals.list;
         let active = list.get(self.terminals.active).map(|t| t.group);

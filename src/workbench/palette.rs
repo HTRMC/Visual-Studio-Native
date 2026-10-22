@@ -1732,6 +1732,9 @@ impl Workbench {
         if self.terminal_name().is_none() {
             return;
         }
+        if self.terminal_count() <= 1 {
+            return self.warn("Insufficient terminals for the join action", cx);
+        }
         if self.joinable().is_empty() {
             return self.warn("All terminals are joined already", cx);
         }
