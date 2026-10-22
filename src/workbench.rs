@@ -3268,7 +3268,14 @@ impl Workbench {
             .gap(px(8.))
             // notificationsWarningIcon.foreground
             .child(codicon(icon::WARNING).text_color(c(0xCCA700)))
-            .child(div().flex_1().child(message.clone()))
+            // min width 0 lets a long message wrap instead of pushing out the close button.
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .py(px(6.))
+                    .child(message.clone()),
+            )
             .child(
                 action_button(id, icon::CLOSE).on_click(cx.listener(move |this, _, _, cx| {
                     this.clear_note(&gone, cx);

@@ -140,6 +140,11 @@ Differences from VS Code still to close, smallest first within each area.
       parse failed silently (VS Code: "Unable to write into user settings...").
 - [ ] That notification lacks VS Code's "Open Settings" button and error
       severity (toasts are warnings only, without actions).
+- [x] A long notification ran past the toast's edge, pushing its close
+      button out of view; it now wraps.
+- [ ] A notification's icon and close button centre on a wrapped message;
+      VS Code keeps them on its first line, and collapses long messages
+      behind a details chevron in the center.
 - [ ] A settings.json that doesn't parse is ignored whole; VS Code's lenient
       JSONC parser keeps the values it can read and underlines the errors.
 - [x] The explorer draws indent guides while the mouse is over the tree.
