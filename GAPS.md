@@ -135,7 +135,11 @@ Differences from VS Code still to close, smallest first within each area.
       VS Code's is.
 - [x] The explorer's selected row hugged its name instead of spanning the
       side bar's width (long names now end in an ellipsis too).
-- [ ] A folder row has no selection of its own (clicking only toggles it).
+- [x] Clicking a folder selects it; the selection goes back to the file on
+      the next editor switch.
+- [ ] The explorer has no keyboard focus: no arrow keys, Enter/Space to
+      open, or focused-vs-unfocused selection colors; no Ctrl/Shift
+      multi-select.
 - [x] The explorer's files and folders have a right-click menu: Open,
       Reveal in File Explorer, Open in Integrated Terminal (a new shell in
       that folder), Copy Path, Copy Relative Path.

@@ -419,6 +419,9 @@ pub struct Workbench {
     root: Option<PathBuf>,
     expanded: HashSet<PathBuf>,
     tree_scroll: UniformListScrollHandle,
+    /// The explorer's selected row: the active editor's file, or a folder
+    /// clicked since.
+    tree_sel: Option<PathBuf>,
     /// Explorer listings (folders first, then name), dropped when the watcher sees them change.
     dirs: HashMap<PathBuf, Vec<(PathBuf, bool)>>,
     watcher: Option<(notify::RecommendedWatcher, Task<()>)>,
@@ -478,6 +481,7 @@ impl Workbench {
             root,
             expanded: HashSet::new(),
             tree_scroll: UniformListScrollHandle::new(),
+            tree_sel: None,
             dirs: HashMap::new(),
             watcher: None,
             quitting: false,
@@ -1779,6 +1783,7 @@ impl Workbench {
     /// `show` also brings up the explorer (Reveal in Explorer View), else it
     /// follows the active editor as VS Code's `explorer.autoReveal` does.
     fn reveal_in_tree(&mut self, path: &Path, show: bool, cx: &mut Context<Self>) {
+        self.tree_sel = Some(path.to_path_buf());
         let Some(root) = self.root.clone().filter(|r| path.starts_with(r)) else {
             return;
         };
@@ -1841,7 +1846,7 @@ impl Workbench {
             .to_string_lossy()
             .to_string();
         let open = is_dir && self.expanded.contains(path);
-        let active = self.docs.get(self.active).is_some_and(|d| &d.path == path);
+        let active = self.tree_sel.as_ref() == Some(path);
         let click_path = path.clone();
         let (wb, menu_path) = (cx.weak_entity(), path.clone());
         h_flex()
@@ -1884,6 +1889,7 @@ impl Workbench {
             .child(div().overflow_hidden().text_ellipsis().child(name))
             .on_click(cx.listener(move |this, _, window, cx| {
                 if is_dir {
+                    this.tree_sel = Some(click_path.clone());
                     if !this.expanded.remove(&click_path) {
                         this.expanded.insert(click_path.clone());
                     }
