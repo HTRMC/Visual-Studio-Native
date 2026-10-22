@@ -1224,6 +1224,9 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<EditorState> {
+        if let Some(config) = extensions::editing(lang) {
+            gpui_kit::base::input::set_language_config(editor_language(lang), config, cx);
+        }
         let lang = editor_language(lang);
         let editor = cx.new(|cx| {
             EditorState::new(window, cx)

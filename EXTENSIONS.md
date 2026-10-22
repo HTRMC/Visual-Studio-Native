@@ -121,8 +121,9 @@ there.
    *Done:* Install from VSIX..., Installed with search (`@installed`),
    Disable and Uninstall; search and install from Open VSX; Preferences: Color Theme (Ctrl+K Ctrl+T) applies and saves
    `workbench.colorTheme`; Snippets: Insert Snippet; languages' ids, file
-   extensions and comments. *Left:* the details page, icon themes, snippet tab stops after the first and
-   completion by prefix, brackets and indent rules.
+   extensions and comments; language configurations' brackets,
+   auto-closing pairs and indentation rules. *Left:* the details page, icon
+   themes, snippet tab stops after the first and completion by prefix.
 2. **Core API and command registry.** Extension commands in the palette,
    menus and keybindings; activation events (`onCommand`, `onLanguage`,
    `workspaceContains`, `onStartupFinished`, `*`).

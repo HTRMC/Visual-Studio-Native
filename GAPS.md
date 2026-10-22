@@ -476,7 +476,10 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [ ] Only the first WASM plugin for a language answers its requests; VS Code merges every provider's.
 - [x] The WIT API had no file or network access; `vsn.permissions` asks the user for it.
 - [ ] A WASM plugin's permission answers last until vsn closes, and there's no list of them to revoke.
-- [ ] Icon themes, brackets and indent rules from extensions.
+- [x] Brackets, auto-closing pairs and indent rules from extensions' language configurations.
+- [ ] Icon themes from extensions.
+- [ ] Extension indentation patterns with lookaround (JS regex) are skipped; the editor's regex has none.
+- [ ] A line matching the decrease-indent pattern outdents only on Enter, not as it's typed (gpui-base).
 - [x] JS extensions run in a Node (or Bun) host: commands in the palette and keys, messages, status bar items, configuration defaults, activation events, restart on crash.
 - [x] Extension keybindings took effect only after a restart; they're rebound on install, uninstall and enable.
 - [x] Extension keybindings with a `when` clause were skipped; focus keys, `editorLangId` and the platform are matched now.

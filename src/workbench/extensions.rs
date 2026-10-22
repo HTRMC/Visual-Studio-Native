@@ -18,6 +18,8 @@ use std::{
 
 use serde_json::{Map, Value, json};
 
+use gpui_kit::base::input::language_config::LanguageConfig;
+use gpui_kit::base::input::{AutoClosingPair, BracketPair, IndentationRules, SyntaxContext};
 use gpui_kit::component::{Theme, ThemeConfig, ThemeMode, ThemeRegistry};
 
 use super::debug::strip_jsonc;
@@ -345,7 +347,8 @@ pub(crate) fn set_enabled(id: &str, enabled: bool) -> Result<(), String> {
 
 // ---- languages -------------------------------------------------------------
 
-/// A language from `contributes.languages`, with its configuration's comments.
+/// A language from `contributes.languages`, with its configuration's comments
+/// and editing rules.
 #[derive(Default)]
 struct Lang {
     id: &'static str,
@@ -355,6 +358,8 @@ struct Lang {
     filenames: Vec<String>,
     line_comment: Option<&'static str>,
     block_comment: Option<(&'static str, &'static str)>,
+    /// Its language-configuration.json, for [`editing`].
+    config: Option<Value>,
 }
 
 static LANGS: LazyLock<RwLock<Vec<Lang>>> = LazyLock::new(Default::default);
@@ -414,6 +419,7 @@ fn languages_of(list: &[Extension]) -> Vec<Lang> {
                 ) {
                     lang.block_comment = Some((leak(open), leak(close)));
                 }
+                lang.config = Some(config);
             }
         }
     }
@@ -452,6 +458,63 @@ pub(crate) fn comments(id: &str) -> Option<(Option<&'static str>, Option<BlockCo
     let l = langs.iter().find(|l| l.id == id)?;
     (l.line_comment.is_some() || l.block_comment.is_some())
         .then_some((l.line_comment, l.block_comment))
+}
+
+/// An extension language's brackets, auto-closing pairs and indentation
+/// rules, over the editor's defaults.
+pub(crate) fn editing(id: &str) -> Option<LanguageConfig> {
+    let langs = LANGS.read().unwrap();
+    Some(editing_of(
+        langs.iter().find(|l| l.id == id)?.config.as_ref()?,
+    ))
+}
+
+// ponytail: the regex crate has no lookaround, which some VS Code
+// indentation patterns use; those patterns are skipped (fancy-regex if it
+// matters). Pattern flags are ignored too.
+fn editing_of(config: &Value) -> LanguageConfig {
+    // `["(", ")"]` or `{ "open": "(", "close": ")" }`
+    let pair = |p: &Value| {
+        let open = p[0].as_str().or(p["open"].as_str())?;
+        let close = p[1].as_str().or(p["close"].as_str())?;
+        Some((open.to_string(), close.to_string()))
+    };
+    let mut out = LanguageConfig::default();
+    if let Some(list) = config["brackets"].as_array() {
+        out = out.brackets(
+            list.iter()
+                .filter_map(pair)
+                .map(|(o, c)| BracketPair::new(o, c)),
+        );
+    }
+    if let Some(list) = config["autoClosingPairs"].as_array() {
+        out = out.auto_closing_pairs(list.iter().filter_map(|p| {
+            let (open, close) = pair(p)?;
+            let not_in =
+                (p["notIn"].as_array().into_iter().flatten()).filter_map(|c| match c.as_str()? {
+                    "string" => Some(SyntaxContext::String),
+                    "comment" => Some(SyntaxContext::Comment),
+                    _ => None,
+                });
+            Some(AutoClosingPair::new(open, close).not_in(not_in))
+        }));
+    }
+    if let Some(chars) = config["autoCloseBefore"].as_str() {
+        out = out.auto_close_before(chars.to_string());
+    }
+    let rules = &config["indentationRules"];
+    if rules.is_object() {
+        let pattern = |key: &str| {
+            let p = &rules[key];
+            let p = p.as_str().or(p["pattern"].as_str())?;
+            regex::Regex::new(p).ok().map(std::sync::Arc::new)
+        };
+        let mut r = IndentationRules::default();
+        r.increase_indent_pattern = pattern("increaseIndentPattern");
+        r.decrease_indent_pattern = pattern("decreaseIndentPattern");
+        out = out.indentation_rules(r);
+    }
+    out
 }
 
 // ---- snippets --------------------------------------------------------------
@@ -1521,7 +1584,43 @@ impl Workbench {
 mod tests {
     use serde_json::Value;
 
-    use super::{expand, hex, token_style};
+    use super::{editing_of, expand, hex, token_style};
+
+    #[test]
+    fn language_configuration() {
+        let config = serde_json::json!({
+            "brackets": [["<", ">"]],
+            "autoClosingPairs": [
+                ["<", ">"],
+                { "open": "`", "close": "`", "notIn": ["string", "comment"] },
+            ],
+            "autoCloseBefore": ";",
+            "indentationRules": {
+                "increaseIndentPattern": r"<\w+>$",
+                "decreaseIndentPattern": { "pattern": r"^\s*</" },
+            },
+        });
+        let c = editing_of(&config);
+        assert_eq!((c.brackets.len(), &*c.brackets[0].open), (1, "<"));
+        let pairs = c.auto_closing_pairs.unwrap();
+        assert_eq!(pairs.len(), 2);
+        assert_eq!((&*pairs[1].close, pairs[1].not_in.len()), ("`", 2));
+        assert_eq!(&*c.auto_close_before, ";");
+        let rules = c.indentation_rules.unwrap();
+        assert!(rules.increase_indent_pattern.unwrap().is_match("<div>"));
+        assert!(rules.decrease_indent_pattern.unwrap().is_match("  </div>"));
+        // Lookaround isn't supported: the pattern is skipped.
+        let config =
+            serde_json::json!({ "indentationRules": { "increaseIndentPattern": "(?!x)" } });
+        let c = editing_of(&config);
+        assert!(
+            c.indentation_rules
+                .unwrap()
+                .increase_indent_pattern
+                .is_none()
+        );
+        assert_eq!(c.brackets.len(), 3);
+    }
 
     #[test]
     fn expands_snippets() {
