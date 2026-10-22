@@ -49,6 +49,18 @@ pub(super) struct Terminals {
     finding: bool,
     /// Match case, whole word, regex.
     find_opts: [bool; 3],
+    /// Counts activations, for each terminal's `seen`.
+    clock: u64,
+}
+
+impl Terminals {
+    /// Marks the active terminal as the one last focused in its group.
+    fn stamp(&mut self) {
+        self.clock += 1;
+        if let Some(t) = self.list.get_mut(self.active) {
+            t.seen = self.clock;
+        }
+    }
 }
 
 pub(super) struct Terminal {
@@ -60,6 +72,8 @@ pub(super) struct Terminal {
     color: Option<usize>,
     /// The tab icon, from Change Icon.
     icon: char,
+    /// When it was last made active, so its group returns to it.
+    seen: u64,
     /// What it was started with, for splits of it.
     profile: Profile,
     parser: vt100::Parser<Replies>,
@@ -670,6 +684,7 @@ impl Workbench {
             name: shell_name(&profile),
             color: None,
             icon: icon::TERMINAL,
+            seen: 0,
             profile,
             parser: vt100::Parser::new_with_callbacks(
                 24.try_into().unwrap(),
@@ -1060,6 +1075,7 @@ impl Workbench {
         let list = &mut self.terminals.list;
         list.insert(ix, t);
         self.terminals.active = ix;
+        self.terminals.stamp();
         self.find_follows(was, cx);
         true
     }
@@ -1104,6 +1120,7 @@ impl Workbench {
         if let Some(ix) = self.terminals.list.iter().position(|t| t.id == id) {
             let was = self.active_id();
             self.terminals.active = ix;
+            self.terminals.stamp();
             self.find_follows(was, cx);
             window.focus(&self.terminals.list[ix].focus, cx);
             cx.notify();
@@ -1111,9 +1128,8 @@ impl Workbench {
     }
 
     /// VS Code's Focus Next/Previous Terminal Group (`groups`), or Terminal
-    /// in Terminal Group, wrapping around.
-    // ponytail: a group is entered at its first terminal; VS Code returns to
-    // the one last focused in it.
+    /// in Terminal Group, wrapping around. A group is entered at the
+    /// terminal last focused in it.
     pub(super) fn focus_next_terminal(
         &mut self,
         groups: bool,
@@ -1139,11 +1155,14 @@ impl Workbench {
         };
         let at = ids.iter().position(|&i| i == at).unwrap();
         let next = ids[(at + if back { ids.len() - 1 } else { 1 }) % ids.len()];
-        let id = list
-            .iter()
-            .find(|u| u.id == next || groups && u.group == next)
-            .unwrap()
-            .id;
+        let id = match groups {
+            true => list
+                .iter()
+                .filter(|u| u.group == next)
+                .max_by_key(|u| u.seen),
+            false => list.iter().find(|u| u.id == next),
+        };
+        let id = id.unwrap().id;
         self.activate_terminal(id, window, cx);
         self.focus_terminal(window, cx);
     }
