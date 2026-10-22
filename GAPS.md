@@ -114,8 +114,10 @@ Differences from VS Code still to close, smallest first within each area.
       - Visual Studio Code", with a dot while dirty.
 - [ ] Most title actions are inert (Customize Layout, Split Editor, More
       Actions, Maximize Panel Size, the side bars' Views and More Actions).
-- [ ] Activity bar tooltips show under the mouse; VS Code puts them to the
+- [x] Activity bar tooltips show under the mouse; VS Code puts them to the
       right of the bar with a pointer.
+- [ ] Other tooltips (status bar, title bar, action buttons) still follow the
+      mouse; VS Code centres them on the item, above or below, with a pointer.
 - [x] Clicking Ln/Col opens Go to Line; so do Ctrl+G and the Go menu
       (Ctrl+Shift+O and the menu open Go to Symbol in Editor). In the
       terminal both keys still reach the shell, as in VS Code.

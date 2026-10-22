@@ -6,6 +6,7 @@ use std::{
     fs,
     ops::Range,
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 use futures::StreamExt as _;
@@ -426,6 +427,12 @@ pub struct Workbench {
     unseen: usize,
     /// Whether the bell's notification center is open.
     center: bool,
+    /// The activity bar item whose hover shows, the one waiting to, and when
+    /// a hover last hid (moving to the next item within a moment shows its
+    /// hover at once, as VS Code does).
+    act_hover: Option<&'static str>,
+    act_wait: Option<(&'static str, Task<()>)>,
+    act_hid: Option<Instant>,
     /// The OS window's title, as last set.
     title: String,
     /// Go Back/Forward's history of editor locations, and the current one.
@@ -471,6 +478,9 @@ impl Workbench {
             crumbs: ScrollHandle::new(),
             unseen: 0,
             center: false,
+            act_hover: None,
+            act_wait: None,
+            act_hid: None,
             title: String::new(),
             nav: Vec::new(),
             nav_at: 0,
@@ -1309,7 +1319,23 @@ impl Workbench {
                     )
                 })
                 .child(codicon(ch).text_size(px(24.)).line_height(px(24.)))
-                .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
+                .when(self.act_hover == Some(id), |d| {
+                    d.child(
+                        div().absolute().left_0().top_0().child(deferred(
+                            anchored()
+                                .position_mode(AnchoredPositionMode::Local)
+                                .position(point(px(48.), px(0.)))
+                                .child(activity_hover(tip)),
+                        )),
+                    )
+                })
+                .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                    this.hover_activity(id, *hovered, cx)
+                }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| this.hover_activity(id, false, cx)),
+                )
                 .when_some(view, |d, view| {
                     d.on_click(cx.listener(move |this, _, _, cx| this.show(view, cx)))
                 })
@@ -2191,6 +2217,37 @@ impl Workbench {
         cx.notify();
     }
 
+    /// Shows an activity bar item's hover after VS Code's delay, or at once
+    /// while moving from one item to the next; leaving or clicking hides it.
+    fn hover_activity(&mut self, id: &'static str, hovered: bool, cx: &mut Context<Self>) {
+        if !hovered {
+            if self.act_hover.take_if(|h| *h == id).is_some() {
+                self.act_hid = Some(Instant::now());
+                cx.notify();
+            }
+            self.act_wait.take_if(|(w, _)| *w == id);
+            return;
+        }
+        let moving = self.act_hover.is_some()
+            || (self.act_hid).is_some_and(|t| t.elapsed() < Duration::from_millis(300));
+        if moving {
+            self.act_hover = Some(id);
+            return cx.notify();
+        }
+        let wait = cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(500))
+                .await;
+            this.update(cx, |this, cx| {
+                this.act_hover = Some(id);
+                this.act_wait = None;
+                cx.notify();
+            })
+            .ok();
+        });
+        self.act_wait = Some((id, wait));
+    }
+
     /// Toggle Do Not Disturb Mode; turning it on hides the toast. It
     /// survives restarts, as in VS Code.
     fn toggle_dnd(&mut self, cx: &mut Context<Self>) {
@@ -2338,6 +2395,56 @@ impl Workbench {
                 })),
         )
     }
+}
+
+/// VS Code's hover beside the activity bar: a box with a beak pointing back
+/// at the item, centred on its 48px row.
+fn activity_hover(text: &'static str) -> impl IntoElement {
+    let (bg, border) = (c(0x202122), col::input_border());
+    div()
+        .relative()
+        .flex()
+        .items_center()
+        .h(px(48.))
+        .child(
+            div()
+                .ml(px(6.))
+                .px(px(8.))
+                .py(px(4.))
+                .bg(bg)
+                .border_1()
+                .border_color(border)
+                .rounded(px(4.))
+                .shadow_md()
+                .text_size(px(13.))
+                .text_color(col::fg())
+                .whitespace_nowrap()
+                .child(text),
+        )
+        .child(
+            // The border's triangle, then the fill's one pixel in, over the
+            // box's left border.
+            canvas(
+                |_, _, _| {},
+                move |b, _, window, _| {
+                    for (inset, color) in [(0., border), (1.4, bg)] {
+                        let mut path = PathBuilder::fill();
+                        path.move_to(point(b.left() + px(inset), b.center().y));
+                        path.line_to(point(b.right(), b.top() + px(inset * 0.7)));
+                        path.line_to(point(b.right(), b.bottom() - px(inset * 0.7)));
+                        path.close();
+                        if let Ok(path) = path.build() {
+                            window.paint_path(path, color);
+                        }
+                    }
+                },
+            )
+            .absolute()
+            .left_0()
+            .top(px(18.))
+            .w(px(7.))
+            .h(px(12.)),
+        )
 }
 
 impl Render for Workbench {
