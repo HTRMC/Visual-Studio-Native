@@ -784,7 +784,6 @@ impl Workbench {
             .filter(|_| self.terminals.finding)?;
         let query = input.read(cx).value();
         let [case, word, regex] = self.terminals.find_opts;
-        // ponytail: a bad regex just finds nothing; VS Code also reddens the box.
         (!query.is_empty())
             .then(|| super::search::build_regex(&query, case, word, regex).ok())
             .flatten()
@@ -849,6 +848,8 @@ impl Workbench {
                 .size(px(20.))
                 .on_click(cx.listener(move |this, _, w, cx| act(this, w, cx)))
         };
+        // A query that won't compile reddens the box, as in VS Code.
+        let bad = !input.read(cx).value().is_empty() && self.find_regex(cx).is_none();
         let opts = [
             ("terminal-find-case", icon::CASE_SENSITIVE),
             ("terminal-find-word", icon::WHOLE_WORD),
@@ -895,7 +896,7 @@ impl Workbench {
                     div()
                         .w(px(280.))
                         .border_1()
-                        .border_color(col::accent())
+                        .border_color(if bad { c(0xBE1100) } else { col::accent() })
                         .bg(col::input())
                         .child(
                             Input::new(input)
