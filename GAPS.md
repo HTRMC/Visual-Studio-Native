@@ -7,7 +7,7 @@ Differences from VS Code still to close, smallest first within each area.
 
 - [x] Select All covers the scrollback, not only the visible screen.
 - [x] Double-click selects a word, triple-click a line.
-- [ ] Dragging after a double or triple click extends by whole words or lines.
+- [x] Dragging after a double or triple click extends by whole words or lines.
 - [x] Shift+click extends the selection.
 - [ ] Alt+drag selects a column block.
 - [x] Dragging past the top or bottom edge scrolls while selecting.

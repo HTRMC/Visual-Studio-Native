@@ -27,6 +27,9 @@ const SCROLLBACK: usize = 1000;
 /// The tab list VS Code shows right of the terminals once there are two.
 const TABS_W: f32 = 160.;
 
+/// A selection's start and end, as (line, col) cell boundaries.
+type Span = ((usize, u16), (usize, u16));
+
 #[derive(Default)]
 pub(super) struct Terminals {
     /// Split groups are runs of the same `group`, shown side by side.
@@ -56,8 +59,11 @@ pub(super) struct Terminal {
     /// the oldest in the scrollback, so a selection scrolls with its text.
     // ponytail: once the scrollback is full, output trims its oldest lines
     // and shifts a standing selection up; count trimmed lines if that bites.
-    selection: Option<((usize, u16), (usize, u16))>,
+    selection: Option<Span>,
     selecting: bool,
+    /// The word, or with true the line, a double or triple click selected;
+    /// a drag from it extends by whole words or lines.
+    unit: Option<(bool, Span)>,
     /// The mouse while dragging, and whether a timer scrolls toward it.
     drag_at: Point<Pixels>,
     autoscrolling: bool,
@@ -122,7 +128,7 @@ impl Terminal {
     }
 
     /// The word under the mouse or, with `line`, its whole wrapped line.
-    fn unit_at(&self, position: Point<Pixels>, line: bool) -> ((usize, u16), (usize, u16)) {
+    fn unit_at(&self, position: Point<Pixels>, line: bool) -> Span {
         let screen = self.parser.screen();
         let (row, col) = self.cell(position, false);
         let top = self.top();
@@ -142,6 +148,17 @@ impl Terminal {
             (top + row as usize, a as u16),
             (top + row as usize, b as u16),
         )
+    }
+
+    /// The selection with its end dragged to the mouse.
+    fn dragged(&self) -> Option<Span> {
+        let (a, _) = self.selection?;
+        let Some((line, (start, end))) = self.unit else {
+            return Some((a, self.selection_end(self.drag_at)));
+        };
+        // Whole units, keeping the clicked one.
+        let (c, d) = self.unit_at(self.drag_at, line);
+        Some(if c < start { (end, c) } else { (start, d) })
     }
 
     /// Lines to scroll while a drag is above (+) or below (-) the terminal,
@@ -654,6 +671,7 @@ impl Workbench {
             cell_w: 8.,
             selection: None,
             selecting: false,
+            unit: None,
             drag_at: Point::default(),
             autoscrolling: false,
             hover: None,
@@ -958,12 +976,12 @@ impl Workbench {
         let Some(t) = self.terminal(id) else {
             return;
         };
-        let Some((a, _)) = t.selection else {
+        if t.selection.is_none() {
             return;
-        };
+        }
         t.selecting = ev.pressed_button == Some(MouseButton::Left);
         t.drag_at = ev.position;
-        t.selection = Some((a, t.selection_end(ev.position)));
+        t.selection = t.dragged();
         if t.selecting && t.overshoot() != 0 && !t.autoscrolling {
             t.autoscrolling = true;
             cx.spawn(async move |this, cx| {
@@ -994,9 +1012,7 @@ impl Workbench {
         }
         let screen = t.parser.screen_mut();
         screen.set_scrollback(screen.scrollback().saturating_add_signed(n));
-        if let Some((a, _)) = t.selection {
-            t.selection = Some((a, t.selection_end(t.drag_at)));
-        }
+        t.selection = t.dragged();
         cx.notify();
         true
     }
@@ -1301,15 +1317,15 @@ impl Workbench {
                         t.report(0, false, ev.position);
                         return this.activate_terminal(id, window, cx);
                     }
-                    // ponytail: dragging after a double or triple click
-                    // keeps the word or line; extend by whole units if missed.
-                    t.selecting = ev.click_count < 2;
+                    t.selecting = true;
+                    let line = ev.click_count > 2;
+                    t.unit = (ev.click_count > 1).then(|| (line, t.unit_at(ev.position, line)));
                     let end = t.selection_end(ev.position);
-                    t.selection = Some(match ev.click_count {
+                    t.selection = Some(match t.unit {
+                        Some((_, unit)) => unit,
                         // Shift+click extends from the selection's anchor.
-                        0 | 1 if ev.modifiers.shift => (t.selection.map_or(end, |(a, _)| a), end),
-                        0 | 1 => (end, end),
-                        n => t.unit_at(ev.position, n > 2),
+                        None if ev.modifiers.shift => (t.selection.map_or(end, |(a, _)| a), end),
+                        None => (end, end),
                     });
                     this.activate_terminal(id, window, cx);
                 }),
