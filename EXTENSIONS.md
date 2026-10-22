@@ -150,8 +150,10 @@ there.
    doesn't break activation. `showQuickPick`, `showInputBox` (the palette)
    and message buttons (the notification's). `globalState` and
    `workspaceState` kept in JSON files under `~/.vsn`, and a per-folder
-   `storageUri`. *Left:* VS Code's built-in
-   commands, `activeTextEditor`, a
+   `storageUri`. VS Code's built-in commands extensions run most
+   (`vscode.open`, `workbench.action.files.save`, `workbench.view.*`, ...)
+   run vsn's actions; `workbench.action.reloadWindow` restarts the
+   extensions. *Left:* the rest of the built-in commands, `activeTextEditor`, a
    bundled runtime in the installer (today: `runtime\` next to vsn.exe, then
    PATH).
 4. **LSP client** into the provider registries; `vscode-languageclient`-based

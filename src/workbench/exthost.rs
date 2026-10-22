@@ -214,6 +214,47 @@ pub(super) fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBindin
     list
 }
 
+/// vsn's action for VS Code built-in command `id`.
+// ponytail: the commands extensions run most; others log "not found".
+fn builtin_action(id: &str) -> Option<Box<dyn Action>> {
+    Some(match id {
+        "workbench.action.files.save" => Box::new(Save),
+        "workbench.action.files.saveAll" => Box::new(SaveAll),
+        "workbench.action.files.openFile" => Box::new(OpenFile),
+        "workbench.action.files.openFolder" => Box::new(OpenFolder),
+        "workbench.action.files.newUntitledFile" => Box::new(NewTextFile),
+        "workbench.action.closeActiveEditor" => Box::new(CloseEditor),
+        "workbench.action.closeAllEditors" => Box::new(CloseAllEditors),
+        "workbench.action.closeWindow" => Box::new(CloseWindow),
+        "workbench.action.toggleSidebarVisibility" => Box::new(ToggleSidebar),
+        "workbench.action.togglePanel" => Box::new(TogglePanel),
+        "workbench.action.terminal.toggleTerminal" => Box::new(ToggleTerminal),
+        "workbench.action.terminal.new" => Box::new(NewTerminal),
+        "workbench.actions.view.problems" => Box::new(ToggleProblems),
+        "workbench.action.output.toggleOutput" => Box::new(ToggleOutput),
+        "workbench.view.explorer" => Box::new(ShowExplorer),
+        "workbench.view.search" => Box::new(ShowSearch),
+        "workbench.view.scm" => Box::new(ShowScm),
+        "workbench.view.debug" => Box::new(ShowRun),
+        "workbench.view.extensions" => Box::new(ShowExtensions),
+        "workbench.action.showCommands" => Box::new(CommandPalette),
+        "workbench.action.quickOpen" => Box::new(QuickOpen),
+        "workbench.action.gotoLine" => Box::new(GoToLine),
+        "workbench.action.navigateBack" => Box::new(GoBack),
+        "workbench.action.navigateForward" => Box::new(GoForward),
+        "workbench.action.openSettings" => Box::new(OpenSettings),
+        "workbench.action.openSettingsJson" => Box::new(OpenSettingsJson),
+        "workbench.action.selectTheme" => Box::new(SelectColorTheme),
+        "workbench.action.debug.start" => Box::new(StartDebugging),
+        "workbench.action.debug.stop" => Box::new(StopDebugging),
+        "editor.action.formatDocument" => Box::new(FormatDocument),
+        "editor.action.formatSelection" => Box::new(FormatSelection),
+        "editor.action.rename" => Box::new(RenameSymbol),
+        "editor.action.commentLine" => Box::new(ToggleLineComment),
+        _ => return None,
+    })
+}
+
 /// A status bar label, its `$(name)` codicons drawn.
 fn status_label(text: &str) -> Vec<AnyElement> {
     let mut parts = Vec::new();
@@ -565,11 +606,31 @@ impl Workbench {
                     self.settings_error(err, cx);
                 }
             }
-            // ponytail: VS Code's own commands (vscode.open, workbench.*) aren't
-            // mapped onto vsn's actions yet.
+            // VS Code's own commands, run as vsn's actions in the window.
             "execute" => {
-                let text = format!("command '{}' not found", text("command"));
-                self.log("Extension Host", &text, cx);
+                let command = text("command");
+                let path = msg["args"][0]["fsPath"].as_str().map(PathBuf::from);
+                if command == "workbench.action.reloadWindow" {
+                    return self.restart_extension_host(cx);
+                }
+                let action = builtin_action(&command);
+                let (Some(window), true) = (
+                    self.ext.window,
+                    action.is_some() || (command == "vscode.open" && path.is_some()),
+                ) else {
+                    let text = format!("command '{command}' not found");
+                    return self.log("Extension Host", &text, cx);
+                };
+                let this = cx.entity();
+                cx.defer(move |cx| {
+                    (window.update(cx, |_, window, cx| match action {
+                        Some(action) => window.dispatch_action(action, cx),
+                        None => this.update(cx, |this, cx| {
+                            this.open_path(path.unwrap_or_default(), window, cx)
+                        }),
+                    }))
+                    .ok();
+                });
             }
             _ => {}
         }

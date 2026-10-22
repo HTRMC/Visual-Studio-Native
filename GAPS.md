@@ -477,6 +477,8 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [ ] `when` clauses and `menus` (editor title, context menus) for extension commands.
 - [x] Quick pick, input box and message buttons for extensions, in the palette and the notification.
 - [x] `globalState`/`workspaceState` persist (JSON under `~/.vsn/globalStorage` and `workspaceStorage`); `storageUri` is per folder.
+- [x] `executeCommand` runs ~35 of VS Code's built-in commands (`vscode.open`, saves, views, panels, formatting, ...) as vsn's actions.
+- [ ] Other built-in commands log "not found"; built-ins return nothing (`vscode.executeHoverProvider` and friends), and `getCommands` lists only extensions' commands.
 - [ ] `secrets` is a stub that stores nothing; `setKeysForSync` does nothing (no settings sync).
 - [ ] Extension quick picks pick one even with `canPickMany`, `createQuickPick`/`createInputBox` are stubs, input boxes don't run `validateInput`, show `prompt` only as the placeholder, and a password box reads as cancelled; `modal` messages are toasts.
 - [x] Output channels, the extension host's console and language server logs
