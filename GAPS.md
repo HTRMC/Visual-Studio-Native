@@ -104,6 +104,8 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Notifications: Show, Hide and Clear All Notifications in the palette.
 - [ ] Notifications: Focus Notification Toast, and arrow keys through the
       center's list.
-- [ ] The bell's tooltip ("No Notifications", "1 New Notification").
+- [x] The bell's tooltip ("No Notifications", "1 New Notification").
+- [ ] Tooltips on the other status bar items, the activity bar, and the
+      title-bar/panel action buttons (only the bell has one).
 - [ ] Do Not Disturb (the center's bell-slash button).
 - [ ] Notifications: several toasts stacked (only one warning exists so far).

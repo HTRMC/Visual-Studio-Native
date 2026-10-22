@@ -16,7 +16,9 @@ use gpui_kit::component::{
     h_resizable,
     input::{self, Editor, EditorState, Input, InputEvent, InputState, RopeExt as _, TabSize},
     menu::{DropdownMenu as _, PopupMenu},
-    resizable_panel, v_resizable,
+    resizable_panel,
+    tooltip::Tooltip,
+    v_resizable,
 };
 use gpui_kit::{
     base::{h_flex, v_flex},
@@ -1669,6 +1671,14 @@ impl Workbench {
                     .into_any_element(),
             ]);
         }
+        // VS Code's notificationsStatus tooltips.
+        let bell_tip: SharedString = match (self.center, self.notes.len(), self.unseen) {
+            (true, ..) => "Hide Notifications".into(),
+            (_, 0, _) => "No Notifications".into(),
+            (_, _, 0) => "No New Notifications".into(),
+            (_, _, 1) => "1 New Notification".into(),
+            (_, _, n) => format!("{n} New Notifications").into(),
+        };
         right.push(
             item("sb-bell")
                 .child(
@@ -1680,6 +1690,7 @@ impl Workbench {
                     .text_size(px(14.)),
                 )
                 .on_click(cx.listener(|this, _, _, cx| this.show_center(!this.center, cx)))
+                .tooltip(move |window, cx| Tooltip::new(bell_tip.clone()).build(window, cx))
                 .into_any_element(),
         );
 
