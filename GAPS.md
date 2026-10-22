@@ -28,7 +28,8 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Find in terminal (Ctrl+F).
 - [x] Ctrl+F with find already open selects the query, so typing replaces it.
 - [ ] Find's case, whole word and regex toggles.
-- [ ] Find re-searches output that arrives while it's open.
+- [x] Find re-searches output that arrives while it's open.
+- [ ] Switching terminals with find open searches the newly active one.
 - [x] Rename a terminal (Terminal: Rename..., or Rename... on a tab).
 - [x] Rename's input starts with the old name selected, so typing replaces it.
 - [x] With one terminal, the panel's title bar shows its icon and name.

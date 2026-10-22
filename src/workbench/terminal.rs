@@ -85,8 +85,6 @@ pub(super) struct Terminal {
     /// The cell the last mouse report was for, to send motion once per cell.
     mouse_cell: Option<(u16, u16)>,
     /// Find's matches, oldest first, and the one selected.
-    // ponytail: found when the query changes; output after that isn't
-    // searched until it changes again.
     matches: Vec<Span>,
     current: Option<usize>,
     _task: Task<()>,
@@ -739,19 +737,10 @@ impl Workbench {
 
     /// Finds the query in the active terminal and selects the newest match.
     fn search_terminal(&mut self, cx: &mut Context<Self>) {
-        let Some(input) = &self.terminals.find else {
-            return;
-        };
-        let query = input.read(cx).value().to_string();
+        let re = self.find_regex(cx);
         let Some(t) = self.terminals.list.get_mut(self.terminals.active) else {
             return;
         };
-        // ponytail: case-insensitive text only; no case, word or regex toggles.
-        let re = regex::RegexBuilder::new(&regex::escape(&query))
-            .case_insensitive(true)
-            .build()
-            .ok()
-            .filter(|_| !query.is_empty());
         t.matches = re.map_or(Vec::new(), |re| find_all(t.parser.screen_mut(), &re));
         // The old match's selection goes with it.
         if t.current.is_some() {
@@ -759,6 +748,23 @@ impl Workbench {
         }
         t.current = t.matches.len().checked_sub(1);
         self.show_match(cx);
+    }
+
+    /// Find's query as a regex, while find is open with one.
+    fn find_regex(&self, cx: &App) -> Option<regex::Regex> {
+        let input = self
+            .terminals
+            .find
+            .as_ref()
+            .filter(|_| self.terminals.finding)?;
+        let query = input.read(cx).value();
+        // ponytail: case-insensitive text only; no case, word or regex toggles.
+        (!query.is_empty()).then(|| {
+            regex::RegexBuilder::new(&regex::escape(&query))
+                .case_insensitive(true)
+                .build()
+                .unwrap()
+        })
     }
 
     /// Selects the match above (`up`) or below the current one, wrapping.
@@ -805,7 +811,8 @@ impl Workbench {
         let t = self.terminals.list.get(self.terminals.active)?;
         let count = match t.current {
             Some(i) => format!("{} of {}", i + 1, t.matches.len()),
-            None => "No results".into(),
+            None if t.matches.is_empty() => "No results".into(),
+            None => format!("? of {}", t.matches.len()),
         };
         type Act = fn(&mut Workbench, &mut Window, &mut Context<Workbench>);
         let button = |id: &'static str, ch: char, act: Act| {
@@ -892,12 +899,22 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        // Find keeps up with the active terminal's output.
+        let active = self.terminals.list.get(self.terminals.active).map(|t| t.id);
+        let re = self.find_regex(cx).filter(|_| active == Some(id));
         let Some(t) = self.terminal(id) else {
             return true;
         };
         match msg {
             Msg::Out(bytes) => {
                 t.parser.process(&bytes);
+                if let Some(re) = re {
+                    // ponytail: the whole scrollback again per chunk of
+                    // output; search only the lines it touched if that lags.
+                    let current = t.current.map(|i| t.matches[i]);
+                    t.matches = find_all(t.parser.screen_mut(), &re);
+                    t.current = current.and_then(|m| t.matches.iter().position(|&n| n == m));
+                }
                 let replies = std::mem::take(&mut t.parser.callbacks_mut().out);
                 if !replies.is_empty() {
                     t.writer.write_all(&replies).ok();
