@@ -26,6 +26,7 @@ use gpui_kit::component::{
     kbd::Kbd,
 };
 
+use super::terminal::{Profile, profiles, set_default_profile};
 use super::*;
 use crate::theme::{c, ca, col, file_icon};
 
@@ -59,6 +60,10 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("View: Toggle Terminal", Box::new(ToggleTerminal)),
         ("Terminal: Create New Terminal", Box::new(NewTerminal)),
         ("Terminal: Split Terminal", Box::new(SplitTerminal)),
+        (
+            "Terminal: Select Default Profile",
+            Box::new(SelectDefaultProfile),
+        ),
         ("View: Show Explorer", Box::new(ShowExplorer)),
         ("View: Show Search", Box::new(ShowSearch)),
         ("View: Show Source Control", Box::new(ShowScm)),
@@ -92,6 +97,8 @@ enum Pick {
     Line(u32, u32, String),
     /// Index into the defs, with the offsets matched in its name and container.
     Symbol(usize, Vec<usize>, Vec<usize>),
+    /// Index into the profiles of Select Default Profile, and the matched offsets.
+    Profile(usize, Vec<usize>),
 }
 
 /// A definition in the active editor, for `@`.
@@ -126,6 +133,8 @@ pub(super) struct Palette {
     recent: Vec<String>,
     /// Symbols of the active editor, parsed on the first `@` query.
     defs: Option<Vec<Def>>,
+    /// Set while the palette is Select Default Profile's pick list.
+    profiles: Option<Vec<Profile>>,
     /// 0-based line and column from a `file:line:col` query.
     goto: Option<(u32, u32)>,
     shown: Vec<Pick>,
@@ -167,6 +176,7 @@ impl Palette {
             editors,
             recent: serde_json::from_value(state["commands"].clone()).unwrap_or_default(),
             defs: None,
+            profiles: None,
             goto: None,
             shown: Vec::new(),
             groups: Vec::new(),
@@ -1293,12 +1303,11 @@ struct Row {
 
 impl Row {
     fn item(self) -> CommandItem {
-        let item = CommandItem::new().label(self.label.clone());
-        let item = match &self.action {
-            Some(action) => item.action(action.boxed_clone()),
-            None => item,
-        };
-        item.child(move |window, cx| self.render(window, cx))
+        // No `.action`: the list would run it before the palette closes, and a
+        // command that reopens the palette (Select Default Profile) would close.
+        CommandItem::new()
+            .label(self.label.clone())
+            .child(move |window, cx| self.render(window, cx))
     }
 
     fn render(&self, window: &Window, cx: &App) -> Div {
@@ -1382,6 +1391,7 @@ impl Workbench {
             p.open = true;
         }
         p.defs = None;
+        p.profiles = None;
         p.parse = None;
         p.state
             .update(cx, |s, cx| s.set_query(query.to_string(), window, cx));
@@ -1389,6 +1399,14 @@ impl Workbench {
         self.palette_query(query.to_string(), cx);
         self.walk_files(cx);
         cx.notify();
+    }
+
+    /// VS Code's Select Default Profile: the palette lists the profiles, the
+    /// default first, and the one picked becomes the default.
+    pub(super) fn select_default_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_palette("", window, cx);
+        self.palette.profiles = Some(profiles());
+        self.palette_query(String::new(), cx);
     }
 
     /// Re-lists the workspace's files when the watcher saw them change. The
@@ -1472,6 +1490,7 @@ impl Workbench {
         // The walk keeps going: its files are the next open's index.
         p.rank = None;
         p.parse = None;
+        p.profiles = None;
         // A command may have moved focus (Show Search); only restore it when it is still ours.
         if p.focus.contains_focused(window, cx) {
             match p.restore.take() {
@@ -1504,6 +1523,16 @@ impl Workbench {
         p.goto = None;
         p.rank = None;
         cx.notify();
+
+        if let Some(profiles) = &p.profiles {
+            let shown = (profiles.iter().enumerate())
+                .filter_map(|(ix, pr)| {
+                    Some(Pick::Profile(ix, command_matches(query.trim(), &pr.name)?))
+                })
+                .collect();
+            p.show(shown, Vec::new(), 0);
+            return;
+        }
 
         if let Some(q) = query.strip_prefix('>') {
             // VS Code lists recently used commands, then the rest alphabetically.
@@ -1666,6 +1695,7 @@ impl Workbench {
 
     fn palette_confirm(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
         let p = &mut self.palette;
+        let mut command = None;
         let (file, pos) = match p.shown.get(row) {
             Some(Pick::File(rel, ..)) => {
                 let path = match &self.root {
@@ -1680,18 +1710,26 @@ impl Workbench {
                 (None, Some((def.line, def.col)))
             }
             Some(&Pick::Command(ix, _)) => {
-                // The command dispatches its own action.
-                let label = commands()[ix].0;
+                let (label, action) = commands().swap_remove(ix);
+                command = Some(action);
                 p.recent.retain(|r| r != label);
                 p.recent.insert(0, label.to_string());
                 p.recent.truncate(COMMAND_HISTORY);
                 p.save(cx);
                 (None, None)
             }
+            Some(&Pick::Profile(ix, _)) => {
+                set_default_profile(&p.profiles.as_ref().unwrap()[ix].name);
+                (None, None)
+            }
             None => (None, None),
         };
         self.palette_unpreview(false, cx);
         self.close_palette(window, cx);
+        // From where focus went back to, like a keybinding.
+        if let Some(action) = command {
+            window.dispatch_action(action, cx);
+        }
         if let Some(path) = file {
             self.open_path(path, window, cx);
         }
@@ -1723,7 +1761,9 @@ impl Workbench {
 
         let this = cx.weak_entity();
         let (this2, this3) = (this.clone(), this.clone());
-        let placeholder = if p.query.starts_with('>') {
+        let placeholder = if p.profiles.is_some() {
+            "Select your default terminal profile"
+        } else if p.query.starts_with('>') {
             ""
         } else {
             "Search files by name (append : to go to line or @ to go to symbol)"
@@ -1742,6 +1782,7 @@ impl Workbench {
             .placeholder(placeholder);
         let commands = commands();
         let defs = p.defs.as_deref().unwrap_or_default();
+        let profiles = p.profiles.as_deref().unwrap_or_default();
         for (ix, pick) in p.shown.iter().enumerate() {
             let group = p
                 .groups
@@ -1763,6 +1804,7 @@ impl Workbench {
             };
             list = list.item(match pick {
                 Pick::Line(.., label) => row(RowIcon::None, label, &Vec::new()).item(),
+                Pick::Profile(pr, hits) => row(RowIcon::None, &profiles[*pr].name, hits).item(),
                 Pick::Command(cmd, hits) => {
                     let (label, action) = &commands[*cmd];
                     Row {

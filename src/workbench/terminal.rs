@@ -358,6 +358,32 @@ pub(super) struct Profile {
     env: Vec<(String, String)>,
 }
 
+/// Starts the WSL user's login shell with a prompt hook that reports the
+/// folder (OSC 9;9): PROMPT_COMMAND for bash and the like, a precmd hook from
+/// a throwaway ZDOTDIR for zsh (which then reads the user's own files), and a
+/// fish_prompt handler for fish.
+const WSL_INIT: &str = r#"unset VSN_SHELL_INIT
+s=$(getent passwd "$(id -un)" | cut -d: -f7)
+s=${s:-${SHELL:-/bin/sh}}
+cwd='printf "\033]9;9;%s\007" "$(wslpath -w "$PWD")"'
+case ${s##*/} in
+zsh)
+  d=$(mktemp -d)
+  cat > "$d/.zshenv" <<EOF
+ZDOTDIR=\${VSN_ZDOTDIR:-\$HOME}; unset VSN_ZDOTDIR; rm -rf '$d'
+[ -r "\$ZDOTDIR/.zshenv" ] && . "\$ZDOTDIR/.zshenv"
+__vsn_cwd() { $cwd; }
+autoload -Uz add-zsh-hook; add-zsh-hook precmd __vsn_cwd
+EOF
+  export VSN_ZDOTDIR="$ZDOTDIR" ZDOTDIR="$d"
+  exec "$s" -l;;
+fish)
+  exec "$s" -l -C 'function __vsn_cwd --on-event fish_prompt; printf "\033]9;9;%s\007" (wslpath -w $PWD); end';;
+*)
+  export PROMPT_COMMAND="$cwd"
+  exec "$s" -l;;
+esac"#;
+
 /// VS Code's setting for which profile new terminals start with.
 const DEFAULT_PROFILE: &str = "terminal.integrated.defaultProfile.windows";
 
@@ -382,19 +408,26 @@ pub(super) fn profiles() -> Vec<Profile> {
         env: env.iter().map(|&(k, v)| (k.into(), v.into())).collect(),
     };
     let bash_cwd = |to_windows: &str| format!(r#"printf '\e]9;9;%s\a' "$({to_windows} "$PWD")""#);
-    // WSLENV carries PROMPT_COMMAND over into the distro.
-    // ponytail: only bash runs PROMPT_COMMAND; with zsh or fish as the
-    // distro's shell, links fall back to the project folder.
+    // WSLENV carries the launcher script over into the distro.
     let wslenv = match std::env::var("WSLENV") {
-        Ok(v) if !v.is_empty() => format!("{v}:PROMPT_COMMAND/u"),
-        _ => "PROMPT_COMMAND/u".into(),
+        Ok(v) if !v.is_empty() => format!("{v}:VSN_SHELL_INIT/u"),
+        _ => "VSN_SHELL_INIT/u".into(),
     };
     let wsl = wsl_distros().iter().map(|distro| Profile {
         name: format!("{distro} (WSL)").into(),
         program: "wsl.exe".into(),
-        args: vec!["-d".into(), distro.clone()],
+        args: [
+            "-d",
+            distro,
+            "-e",
+            "/bin/sh",
+            "-c",
+            r#"eval "$VSN_SHELL_INIT""#,
+        ]
+        .map(Into::into)
+        .into(),
         env: vec![
-            ("PROMPT_COMMAND".into(), bash_cwd("wslpath -w")),
+            ("VSN_SHELL_INIT".into(), WSL_INIT.into()),
             ("WSLENV".into(), wslenv.clone()),
         ],
     });
@@ -470,7 +503,7 @@ fn settings() -> serde_json::Value {
         .unwrap_or_default()
 }
 
-fn set_default_profile(name: &str) {
+pub(super) fn set_default_profile(name: &str) {
     let Some(path) = settings_path() else { return };
     let mut settings = settings();
     if !settings.is_object() {
@@ -934,9 +967,8 @@ impl Workbench {
             .size(px(22.))
             .text_color(col::fg())
             .child(codicon(icon::CHEVRON_DOWN))
-            .dropdown_menu(move |mut menu, window, cx| {
-                let profiles = profiles();
-                for profile in profiles.clone() {
+            .dropdown_menu(move |mut menu, _, _| {
+                for profile in profiles() {
                     let wb = wb.clone();
                     let name = profile.name.clone();
                     menu = menu.item(PopupMenuItem::new(name).on_click(move |_, window, cx| {
@@ -945,23 +977,8 @@ impl Workbench {
                             .ok();
                     }));
                 }
-                // ponytail: a submenu where VS Code opens a quick pick.
-                menu.separator().submenu(
-                    "Select Default Profile",
-                    window,
-                    cx,
-                    move |mut menu, _, _| {
-                        for (ix, profile) in profiles.iter().enumerate() {
-                            let name = profile.name.clone();
-                            menu = menu.item(
-                                PopupMenuItem::new(name.clone())
-                                    .checked(ix == 0)
-                                    .on_click(move |_, _, _| set_default_profile(&name)),
-                            );
-                        }
-                        menu
-                    },
-                )
+                menu.separator()
+                    .menu("Select Default Profile", Box::new(SelectDefaultProfile))
             })
     }
 

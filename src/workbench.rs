@@ -64,6 +64,7 @@ actions!(
         ToggleBreakpoint,
         NewTerminal,
         SplitTerminal,
+        SelectDefaultProfile,
         NewTextFile,
         Noop,
     ]
@@ -1710,6 +1711,9 @@ impl Render for Workbench {
             )
             .on_action(cx.listener(|this, _: &SplitTerminal, window, cx| {
                 this.new_terminal(true, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SelectDefaultProfile, window, cx| {
+                this.select_default_profile(window, cx)
             }))
             .on_action(cx.listener(|this, _: &StartDebugging, window, cx| {
                 this.start_debugging(false, window, cx)
