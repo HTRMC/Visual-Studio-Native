@@ -2902,7 +2902,11 @@ impl Render for Workbench {
                 cx.listener(|this, _: &ToggleMaximizedPanel, _, cx| this.toggle_max_panel(cx)),
             )
             .on_action(cx.listener(Self::toggle_terminal))
-            .on_action(cx.listener(|this, _: &ShowExplorer, _, cx| this.show(View::Explorer, cx)))
+            .on_action(cx.listener(|this, _: &ShowExplorer, window, cx| {
+                (this.sidebar, this.view) = (true, View::Explorer);
+                window.focus(&this.tree_focus, cx);
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &RefreshExplorer, _, cx| {
                 this.dirs.clear();
                 cx.notify();

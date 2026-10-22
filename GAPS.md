@@ -142,8 +142,9 @@ Differences from VS Code still to close, smallest first within each area.
       opens into the editor, Space opens keeping focus; the selection's
       outline shows only while the explorer has focus.
 - [ ] The explorer lacks PageUp/PageDown, type-to-find, F2/Delete on the
-      selection, and Ctrl/Shift multi-select; the editor can't hand focus
-      back (Ctrl+Shift+E only shows the view).
+      selection, and Ctrl/Shift multi-select.
+- [x] Ctrl+Shift+E (View: Show Explorer, View > Explorer) opens the
+      explorer and puts focus in it, instead of toggling the side bar.
 - [x] The explorer's files and folders have a right-click menu: Open,
       Reveal in File Explorer, Open in Integrated Terminal (a new shell in
       that folder), Copy Path, Copy Relative Path.
