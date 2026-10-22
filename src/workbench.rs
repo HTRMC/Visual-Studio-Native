@@ -918,7 +918,7 @@ pub struct Workbench {
     last_edit: Option<(PathBuf, input::Position)>,
     /// files.autoSave "afterDelay": the pending save of dirty editors.
     autosave: Option<Task<()>>,
-    /// View > Word Wrap (Alt+Z), for every editor; starts from editor.wordWrap.
+    /// editor.wordWrap, for editors that Alt+Z hasn't set on their own.
     word_wrap: bool,
     /// What had focus when a menu bar menu was opened, so its Edit and
     /// Selection entries reach that editor rather than the menu's own path.
@@ -2294,7 +2294,7 @@ impl Workbench {
         ]
         .into_iter()
         .map(|name| {
-            let wrap = self.docs.get(self.active).is_some_and(|d| self.wraps(d));
+            let wrap = self.docs.get(self.active).map(|d| self.wraps(d));
             let focus = self.menu_focus.clone();
             Button::new(name)
                 .ghost()
@@ -5032,10 +5032,11 @@ fn watermark() -> impl IntoElement {
 }
 
 /// VS Code's application menus, minus anything AI.
-/// Menu bar menu `name`; `wrap` checks View > Word Wrap.
+/// Menu bar menu `name`; `wrap` checks View > Word Wrap, which is greyed
+/// out (`None`) with no editor open.
 fn app_menu(
     name: &str,
-    wrap: bool,
+    wrap: Option<bool>,
     menu: PopupMenu,
     window: &mut Window,
     cx: &mut Context<PopupMenu>,
@@ -5130,7 +5131,12 @@ fn app_menu(
             .menu("Debug Console", Box::new(ToggleDebugConsole))
             .menu("Terminal", Box::new(ToggleTerminal))
             .separator()
-            .menu_with_check("Word Wrap", wrap, Box::new(ToggleWordWrap)),
+            .menu_with_check_and_disabled(
+                "Word Wrap",
+                wrap == Some(true),
+                Box::new(ToggleWordWrap),
+                wrap.is_none(),
+            ),
         "Go" => menu
             .menu("Back", Box::new(GoBack))
             .menu("Forward", Box::new(GoForward))

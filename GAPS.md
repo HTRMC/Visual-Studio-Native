@@ -255,8 +255,8 @@ Differences from VS Code still to close, smallest first within each area.
       not editor.wordWrapColumn.
 - [x] Alt+Z toggled every editor; like VS Code it now flips the active one
       only, and View > Word Wrap's check follows the active editor.
-- [ ] With no editor open, View > Word Wrap is still enabled (VS Code greys
-      it out).
+- [x] With no editor open, View > Word Wrap was still enabled; it's greyed
+      out as in VS Code.
 - [ ] Still-inert menu entries: Open Recent > More..., Preferences >
       Keyboard Shortcuts / Themes; View > Editor Layout > Split Up/Down;
       Run > Open/Add Configuration..., Run Task..., Run Build Task...;
