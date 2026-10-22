@@ -4221,7 +4221,15 @@ impl Workbench {
                             if let Some(t) = this.toasts.iter_mut().find(|t| t.0 == m) {
                                 t.1 = over;
                             }
-                        })),
+                        }))
+                        // VS Code's fade-in: up from below over 300ms, keyed
+                        // by message so a toast that moves up doesn't redo it.
+                        .relative()
+                        .with_animation(
+                            SharedString::from(format!("toast-in {message}")),
+                            Animation::new(Duration::from_millis(300)).with_easing(ease_in_out),
+                            |toast, d| toast.top(px(50. * (1. - d))).opacity(d),
+                        ),
                 )
             });
         v_flex()

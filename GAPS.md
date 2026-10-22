@@ -429,4 +429,5 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] A 4th toast drops the oldest instead of queueing it until one closes.
 - [x] A queued toast that comes into view may hide sooner than a full 18
       seconds.
-- [ ] Toasts appear without VS Code's slide-in.
+- [x] Toasts appeared without VS Code's slide-in; they now fade in from below.
+- [ ] A closed toast vanishes at once; VS Code fades it out.
