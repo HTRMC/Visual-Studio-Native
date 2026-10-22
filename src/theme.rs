@@ -110,6 +110,7 @@ pub mod icon {
     pub const ERROR: char = '\u{EA87}';
     pub const WARNING: char = '\u{EA6C}';
     pub const BELL: char = '\u{EAA2}';
+    pub const BELL_DOT: char = '\u{EB9A}';
     pub const REMOTE: char = '\u{EB3A}';
     pub const ADD: char = '\u{EA60}';
     pub const TRASH: char = '\u{EA81}';

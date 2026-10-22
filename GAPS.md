@@ -97,5 +97,8 @@ Differences from VS Code still to close, smallest first within each area.
 ## Workbench
 
 - [x] A toast stays while the mouse is over it.
-- [ ] Notifications: several toasts stacked, and the bell's notification
-      center.
+- [x] The bell opens the notification center (clear one, Clear All, hide;
+      the bell dots while some are unseen; a repeat replaces the old one).
+- [ ] Escape closes the notification center.
+- [ ] Do Not Disturb (the center's bell-slash button).
+- [ ] Notifications: several toasts stacked (only one warning exists so far).

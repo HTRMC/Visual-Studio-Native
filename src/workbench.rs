@@ -296,6 +296,12 @@ pub struct Workbench {
     /// A warning toast over the status bar, whether the mouse is over it,
     /// and the timer that hides it.
     toast: Option<(SharedString, bool, Task<()>)>,
+    /// Every notification, newest first, as the bell's center lists them.
+    notes: Vec<SharedString>,
+    /// Notifications added since the center was last open: the bell's dot.
+    unseen: usize,
+    /// Whether the bell's notification center is open.
+    center: bool,
     debug: debug::Debug,
     /// Spawned when the Terminal tab first shows; the error if the shell didn't start.
     terminals: terminal::Terminals,
@@ -330,6 +336,9 @@ impl Workbench {
             find: search::Find::new(window, cx),
             palette: palette::Palette::new(window, cx),
             toast: None,
+            notes: Vec::new(),
+            unseen: 0,
+            center: false,
             debug: debug::Debug::new(window, cx),
             terminals: Default::default(),
         };
@@ -1657,7 +1666,22 @@ impl Workbench {
         }
         right.push(
             item("sb-bell")
-                .child(codicon(icon::BELL).text_size(px(14.)))
+                .child(
+                    codicon(if self.unseen > 0 {
+                        icon::BELL_DOT
+                    } else {
+                        icon::BELL
+                    })
+                    .text_size(px(14.)),
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.center = !this.center;
+                    if this.center {
+                        this.toast = None;
+                        this.unseen = 0;
+                    }
+                    cx.notify();
+                }))
                 .into_any_element(),
         );
 
@@ -1722,10 +1746,19 @@ impl Workbench {
 }
 
 impl Workbench {
-    /// A warning toast, as VS Code's notifications show it, hidden after
-    /// VS Code's 18 seconds, or later while the mouse is over it.
-    // ponytail: one toast at a time and no notification center behind the bell.
+    /// A warning notification: listed in the bell's center, and shown as a
+    /// toast (unless the center is open) until VS Code's 18 seconds pass, or
+    /// later while the mouse is over it. A repeat replaces the old one.
+    // ponytail: one toast at a time, warnings only, and Escape doesn't close
+    // the center.
     fn warn(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
+        let message = message.into();
+        self.clear_note(&message, cx);
+        self.notes.insert(0, message.clone());
+        if self.center {
+            return;
+        }
+        self.unseen += 1;
         let hide = cx.spawn(async move |this, cx| {
             loop {
                 let wait = std::time::Duration::from_secs(18);
@@ -1743,22 +1776,116 @@ impl Workbench {
                 }
             }
         });
-        self.toast = Some((message.into(), false, hide));
+        self.toast = Some((message, false, hide));
+    }
+
+    /// Clears a notification, from the center and its toast.
+    fn clear_note(&mut self, message: &SharedString, cx: &mut Context<Self>) {
+        let count = self.notes.len();
+        self.notes.retain(|n| n != message);
+        if self.notes.len() < count && !self.center {
+            self.unseen = self.unseen.saturating_sub(1);
+        }
+        if self.toast.as_ref().is_some_and(|t| &t.0 == message) {
+            self.toast = None;
+        }
         cx.notify();
+    }
+
+    /// One notification's warning icon, message and close button.
+    fn note_row(
+        &self,
+        id: impl Into<ElementId>,
+        message: &SharedString,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let gone = message.clone();
+        h_flex()
+            .min_h(px(42.))
+            .px(px(8.))
+            .gap(px(8.))
+            // notificationsWarningIcon.foreground
+            .child(codicon(icon::WARNING).text_color(c(0xCCA700)))
+            .child(div().flex_1().child(message.clone()))
+            .child(
+                action_button(id, icon::CLOSE).on_click(cx.listener(move |this, _, _, cx| {
+                    this.clear_note(&gone, cx);
+                    // The center closes once it's empty, as VS Code's does.
+                    this.center &= !this.notes.is_empty();
+                })),
+            )
+    }
+
+    /// VS Code's notification center, opened from the bell.
+    fn render_center(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        if !self.center {
+            return None;
+        }
+        let header = if self.notes.is_empty() {
+            "NO NEW NOTIFICATIONS"
+        } else {
+            "NOTIFICATIONS"
+        };
+        Some(
+            v_flex()
+                .absolute()
+                .right(px(11.))
+                .bottom(px(33.))
+                .w(px(450.))
+                .rounded(px(6.))
+                .overflow_hidden()
+                // notifications.background
+                .bg(c(0x202122))
+                .border_1()
+                .border_color(col::border())
+                .shadow_lg()
+                .text_size(px(13.))
+                .text_color(col::fg())
+                .child(
+                    h_flex()
+                        .h(px(35.))
+                        .pl(px(10.))
+                        .pr(px(6.))
+                        .gap(px(2.))
+                        .text_size(px(11.))
+                        .child(div().flex_1().child(header))
+                        .child(action_button("center-clear", icon::CLEAR_ALL).on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.notes.clear();
+                                this.center = false;
+                                cx.notify();
+                            }),
+                        ))
+                        .child(action_button("center-hide", icon::CHEVRON_DOWN).on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.center = false;
+                                cx.notify();
+                            }),
+                        )),
+                )
+                .child(
+                    v_flex()
+                        .id("center-list")
+                        .max_h(px(420.))
+                        .overflow_y_scroll()
+                        .children(self.notes.iter().enumerate().map(|(i, n)| {
+                            self.note_row(("center-close", i), n, cx)
+                                .border_t_1()
+                                .border_color(col::border())
+                        })),
+                ),
+        )
     }
 
     fn render_toast(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
         let (message, ..) = self.toast.as_ref()?;
         Some(
-            h_flex()
+            self.note_row("toast-close", message, cx)
                 .id("toast")
                 .absolute()
                 .right(px(11.))
                 .bottom(px(33.))
                 .w(px(450.))
-                .min_h(px(42.))
-                .px(px(8.))
-                .gap(px(8.))
                 .rounded(px(6.))
                 // notifications.background
                 .bg(c(0x202122))
@@ -1771,18 +1898,7 @@ impl Workbench {
                     if let Some(t) = &mut this.toast {
                         t.1 = over;
                     }
-                }))
-                // notificationsWarningIcon.foreground
-                .child(codicon(icon::WARNING).text_color(c(0xCCA700)))
-                .child(div().flex_1().child(message.clone()))
-                .child(
-                    action_button("toast-close", icon::CLOSE).on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.toast = None;
-                            cx.notify();
-                        },
-                    )),
-                ),
+                })),
         )
     }
 }
@@ -1970,6 +2086,7 @@ impl Render for Workbench {
             .child(self.render_statusbar(cx))
             .children(toolbar)
             .children(self.render_toast(cx))
+            .children(self.render_center(cx))
             .children(palette)
     }
 }
