@@ -212,7 +212,10 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Indentation actions are in the command palette; Trim Trailing Whitespace is Ctrl+K Ctrl+X.
 - [ ] Reindent Lines / Reindent Selected Lines (need the language's indent rules).
 - [ ] Changing indentation rebuilds the editor, dropping undo history (Convert/Trim can't be undone).
-- [ ] Tab characters render zero-width: gpui-base shapes `\t` as text instead of advancing to the next tab stop.
+- [ ] Tab characters render zero-width (tabs.c's indents vanish):
+      gpui-pre-windows' `DrawGlyphRun` places glyphs by summing advances and
+      ignores `baselineOriginX`, where DirectWrite puts the tab stop. Needs a
+      patched copy of that crate (decision pending).
 - [x] Status bar Col and Go to Line columns use the file's detected tab size.
 - [ ] Change Language Mode rebuilds the editor (gpui-base's set_highlighter
       doesn't re-highlight a shown one), so undo history is lost.
@@ -453,7 +456,6 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] A queued toast that comes into view may hide sooner than a full 18
       seconds.
 - [x] Toasts appeared without VS Code's slide-in; they now fade in from below.
-- [ ] Tab characters in a file render with no width (tabs.c's indents vanish).
 
 ## Extensions
 
