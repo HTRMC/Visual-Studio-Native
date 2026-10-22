@@ -2637,13 +2637,7 @@ impl Workbench {
                 let text = e.text();
                 text.line_start_offset(line as usize)..text.line_end_offset(line as usize)
             });
-            if let Some(lh) = e.line_height() {
-                // Wrapped and folded lines make the line's row differ from its number.
-                let row = e.display_map().buffer_line_to_display_row(line as usize) as f32;
-                let rows = e.visible_row_range().map_or(1, |r| r.len()) as f32;
-                let top = lh * row - (lh * rows - lh) / 2.;
-                e.set_scroll_offset(point(view.x, -top.max(px(0.))), cx);
-            }
+            center_line(e, line, None, cx);
             (view, range)
         });
         self.palette.view.get_or_insert(view);
@@ -2773,9 +2767,7 @@ impl Workbench {
             self.open_path(path, window, cx);
         }
         if let (Some((line, col)), Some(doc)) = (pos, self.docs.get(self.active)) {
-            doc.editor.update(cx, |e, cx| {
-                e.set_cursor_position(Position::new(line, col), window, cx)
-            });
+            reveal(&doc.editor.clone(), Position::new(line, col), window, cx);
         }
     }
 

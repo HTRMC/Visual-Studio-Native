@@ -649,9 +649,7 @@ impl Workbench {
             let line = frame["line"].as_u64().unwrap_or(1).saturating_sub(1) as u32;
             let col = frame["column"].as_u64().unwrap_or(1).saturating_sub(1) as u32;
             if let Some(doc) = self.docs.get(self.active) {
-                doc.editor.update(cx, |e, cx| {
-                    e.set_cursor_position(Position::new(line, col), window, cx)
-                });
+                reveal(&doc.editor.clone(), Position::new(line, col), window, cx);
             }
         }
         self.dap(
@@ -1406,9 +1404,8 @@ impl Workbench {
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.open_path(path.clone(), window, cx);
                             if let Some(doc) = this.docs.get(this.active) {
-                                doc.editor.update(cx, |e, cx| {
-                                    e.set_cursor_position(Position::new(line, 0), window, cx)
-                                });
+                                let at = Position::new(line, 0);
+                                reveal(&doc.editor.clone(), at, window, cx);
                             }
                         }))
                         .into_any_element(),

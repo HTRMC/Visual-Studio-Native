@@ -1993,8 +1993,7 @@ impl Workbench {
                 self.open_path(path, window, cx);
                 if let Some(doc) = self.docs.get(self.active) {
                     let at = Position::new(line.saturating_sub(1), col.saturating_sub(1));
-                    doc.editor
-                        .update(cx, |e, cx| e.set_cursor_position(at, window, cx));
+                    reveal(&doc.editor.clone(), at, window, cx);
                 }
             }
         }

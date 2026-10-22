@@ -1557,7 +1557,7 @@ impl Workbench {
         let Some(doc) = self.docs.get(self.active).filter(|d| d.path == path) else {
             return false;
         };
-        (doc.editor).update(cx, |e, cx| e.set_cursor_position(pos, window, cx));
+        reveal(&doc.editor.clone(), pos, window, cx);
         true
     }
 
@@ -4806,6 +4806,56 @@ fn section_header(id: &'static str, label: &str, open: bool) -> Stateful<Div> {
                         .child(label.to_uppercase()),
                 ),
         )
+}
+
+/// Puts `editor`'s cursor at `pos`, centering its line when it's out of view
+/// like VS Code's jumps (revealPositionInCenterIfOutsideViewport).
+fn reveal(editor: &Entity<EditorState>, pos: input::Position, window: &mut Window, cx: &mut App) {
+    let laid_out = editor.update(cx, |e, cx| {
+        let from = e.scroll_offset();
+        e.set_cursor_position(pos, window, cx);
+        center_line(e, pos.line, Some(from), cx)
+    });
+    if !laid_out {
+        // A new editor: centered once it's laid out, as seen from the top.
+        let editor = editor.clone();
+        window.on_next_frame(move |window, cx| center_later(editor, pos.line, 3, window, cx));
+    }
+}
+
+fn center_later(
+    editor: Entity<EditorState>,
+    line: u32,
+    tries: u8,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let laid_out = editor.update(cx, |e, cx| center_line(e, line, Some(Point::default()), cx));
+    if !laid_out && tries > 1 {
+        window.on_next_frame(move |window, cx| center_later(editor, line, tries - 1, window, cx));
+    }
+}
+
+/// Scrolls buffer `line` to the middle of `e`, unless it's in full view at
+/// scroll offset `from`; false before `e`'s first layout.
+fn center_line(
+    e: &mut EditorState,
+    line: u32,
+    from: Option<Point<Pixels>>,
+    cx: &mut Context<EditorState>,
+) -> bool {
+    let Some(lh) = e.line_height() else {
+        return false;
+    };
+    let height = e.input_bounds().size.height;
+    // Wrapped and folded lines make the line's row differ from its number.
+    let y = lh * e.display_map().buffer_line_to_display_row(line as usize) as f32;
+    if from.is_some_and(|v| -v.y <= y && y + lh <= height - v.y) {
+        return true;
+    }
+    let x = e.scroll_offset().x;
+    e.set_scroll_offset(point(x, -(y - (height - lh) / 2.).max(px(0.))), cx);
+    true
 }
 
 fn search_box(state: &Entity<InputState>) -> impl IntoElement + use<> {

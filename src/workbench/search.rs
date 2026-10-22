@@ -17,7 +17,7 @@ use gpui_kit::{
 use ignore::overrides::{Override, OverrideBuilder};
 use regex::{NoExpand, Regex, RegexBuilder};
 
-use super::Workbench;
+use super::{Workbench, reveal};
 use crate::theme::{LANGUAGES, action_button, c, ca, codicon, col, file_icon, icon, tip};
 
 /// VS Code's `search.maxResults`: collecting stops here.
@@ -981,9 +981,8 @@ impl Workbench {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_path(path.clone(), window, cx);
                         if let Some(doc) = this.docs.iter().find(|d| d.path == path) {
-                            doc.editor.update(cx, |e, cx| {
-                                e.set_cursor_position(Position::new(line, column), window, cx)
-                            });
+                            let at = Position::new(line, column);
+                            reveal(&doc.editor.clone(), at, window, cx);
                         }
                     }))
                     .into_any_element()
