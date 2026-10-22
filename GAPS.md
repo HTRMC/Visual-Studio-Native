@@ -248,6 +248,8 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] No installer; installer\build.ps1 builds an Inno Setup one after VS Code's
       User Setup (Start menu, PATH via bin\vsn.cmd, Explorer menus, uninstall)
       and runtime\node.exe for extensions.
+- [x] vsn.exe needed the VC++ redistributable (VCRUNTIME140.dll); the CRT
+      is now linked statically (.cargo/config.toml).
 - [ ] The installer has no auto-update, file associations or signed exe, and
       a running vsn is only closed by Inno's Restart Manager prompt.
 - [x] File > Close Window was inert; it, Ctrl+Shift+W and Alt+F4 close
