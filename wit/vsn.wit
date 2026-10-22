@@ -2,13 +2,15 @@
 /// editor, and what the editor calls in the plugin. Each plugin runs in its
 /// own store with a fuel and memory budget and no file, clock or network
 /// access.
-package vsn:plugin@0.2.0;
+package vsn:plugin@0.3.0;
 
 interface editor {
     enum severity { info, warning, error }
 
     /// A text file open in an editor.
     record document {
+        /// As LSP's: "file:///c%3A/...".
+        uri: string,
         path: string,
         /// VS Code's language id: "rust", "markdown", ...
         language: string,
@@ -32,6 +34,11 @@ interface editor {
     /// Asks the user for a line of text, starting from `value`; none when
     /// dismissed. The plugin waits for the answer.
     show-input-box: func(placeholder: string, value: string) -> option<string>;
+    /// Sends the editor a language server notification, as JSON params:
+    /// `textDocument/publishDiagnostics`.
+    lsp-notify: func(method: string, params: string);
+    /// Applies an LSP `WorkspaceEdit`, as JSON.
+    apply-edit: func(edit: string);
 }
 
 world plugin {
@@ -42,4 +49,9 @@ world plugin {
     /// Runs a command the plugin contributes in package.json. `args` is a
     /// JSON array of its arguments; a menu's file is `{"$uri": "file:///..."}`.
     export run-command: func(command: string, args: string);
+    /// Serves the languages listed in package.json's `vsn.languages` as a
+    /// language server would: gets each request or notification, its params
+    /// as JSON, and answers a request with its JSON result (none is null).
+    /// The documents' didOpen, didChange and didClose come this way too.
+    export lsp: func(method: string, params: string) -> option<string>;
 }

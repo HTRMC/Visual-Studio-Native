@@ -680,13 +680,27 @@ impl Workbench {
                     let defaults = (installed().iter().find(|e| e.id == id))
                         .map_or_else(Default::default, config_defaults);
                     let world = self.wasm_world(cx);
-                    if let Some(host) = &self.ext.wasm {
+                    let languages: Vec<String> = (installed().iter().find(|e| e.id == id))
+                        .and_then(|e| e.manifest["vsn"]["languages"].as_array().cloned())
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|l| Some(l.as_str()?.to_string()))
+                        .collect();
+                    if let Some(host) = self.ext.wasm.clone() {
                         host.send(wasmhost::Req::Activate {
                             id: id.clone(),
                             wasm,
                             defaults: defaults.into(),
                             world,
+                            languages: languages.clone(),
                         });
+                        let forward = move |body: &str| {
+                            host.send(wasmhost::Req::Lsp(
+                                serde_json::from_str(body).unwrap_or_default(),
+                            ));
+                            true
+                        };
+                        self.lsp_languages(languages, super::lsp::WASM_HOSTED, forward, cx);
                     }
                 }
                 None => {
@@ -705,6 +719,7 @@ impl Workbench {
         let (tx, mut rx) = futures::channel::mpsc::unbounded::<Value>();
         self.ext.wasm = Some(wasmhost::start(tx));
         self.ext.wasm_generation += 1;
+        self.lsp_host_gone(super::lsp::WASM_HOSTED, cx);
         let generation = self.ext.wasm_generation;
         cx.spawn(async move |this, cx| {
             while let Some(msg) = rx.next().await {
@@ -883,7 +898,7 @@ impl Workbench {
         });
         self.ext.generation += 1;
         let generation = self.ext.generation;
-        self.lsp_host_gone(cx);
+        self.lsp_host_gone(super::lsp::HOSTED, cx);
         cx.spawn(async move |this, cx| {
             while let Some(msg) = rx.next().await {
                 let current = |this: &mut Self| this.ext.generation == generation;
@@ -994,10 +1009,22 @@ impl Workbench {
                     .filter_map(|id| Some(id.as_str()?.to_string()))
                     .collect();
                 if let Some(out) = self.ext.out.clone() {
-                    self.lsp_languages(ids, out, cx);
+                    // Frames go out as the host's NDJSON `lsp` messages.
+                    let forward = move |body: &str| {
+                        out.send(format!("{{\"m\":\"lsp\",\"msg\":{body}}}\n"))
+                            .is_ok()
+                    };
+                    self.lsp_languages(ids, super::lsp::HOSTED, forward, cx);
                 }
             }
-            "lsp" => self.lsp_from_host(msg["msg"].clone(), cx),
+            "lsp" => {
+                let host = if msg["wasm"] == true {
+                    super::lsp::WASM_HOSTED
+                } else {
+                    super::lsp::HOSTED
+                };
+                self.lsp_from_host(msg["msg"].clone(), host, cx)
+            }
             "applyEdit" => {
                 let (Ok(edit), Some(window)) = (
                     serde_json::from_value::<lsp_types::WorkspaceEdit>(msg["edit"].clone()),
@@ -1083,7 +1110,7 @@ impl Workbench {
                 cx,
             );
             self.ext.status.retain(|i| i.wasm);
-            self.lsp_host_gone(cx);
+            self.lsp_host_gone(super::lsp::HOSTED, cx);
             return cx.notify();
         }
         self.ext.crashes += 1;

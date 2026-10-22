@@ -71,15 +71,15 @@ licensed for VS Code only and aren't on Open VSX; their open counterparts
 - **Contributions are data.** `contributes.*` is read by the manager whatever
   the runtime, so a theme or snippet pack runs no code at all.
 - **One core API, two bindings.** `vscode.languages.registerHoverProvider`
-  (JS, over RPC) and `register-hover-provider` (WIT) land in the same Rust
-  registry, and the LSP client feeds it too, so the editor has one code path
-  per feature.
+  (JS, over RPC) and the WIT world's `lsp` export both look like a language
+  server to the editor, so it has one code path per feature.
 - **The JS host mirrors VS Code's design.** VS Code already runs extensions in a
   separate process talking to the UI over RPC (ExtHost / MainThread). Ours
   is one process for all JS extensions; a crash restarts it, never the
   editor.
 - **Which runtime:** `main` → JS host; `"vsn": { "wasm": "plugin.wasm" }`
-  → WASM host. A manifest can have neither (contributions only).
+  → WASM host, with `"languages": [...]` for the ones it serves. A manifest
+  can have neither (contributions only).
 
 ## Layout on disk
 
@@ -190,16 +190,20 @@ there.
 5. **WASM host.** wasmtime, a WIT world generated from the core API, and a
    sample plugin in Rust.
    *Done:* `wit/vsn.wit` (messages, a status bar item, a log channel,
-   settings, the active document, quick picks and input boxes;
-   `activate` and `run-command` with its JSON arguments exported) and `src/workbench/wasmhost.rs`,
+   settings, the active document, quick picks and input boxes, LSP
+   notifications and workspace edits; `activate`, `run-command` with its
+   JSON arguments, and `lsp` exported) and `src/workbench/wasmhost.rs`,
    one thread running every plugin, each in its own store with ~1s of fuel
    per call and 64 MB of memory, and no WASI, so no file, clock or network
    access. A core module from `wasm32-unknown-unknown` is turned into a
    component at load (`wit-component`), so a plugin needs no extra tools.
    Its messages take the JS host's path into the workbench; a trap unloads
-   the plugin. `examples/hello-wasm` is a sample (wit-bindgen). *Left:*
-   providers and edits in the WIT world, permissions to grant file or
-   network access.
+   the plugin. A plugin serves the languages in its package.json's
+   `vsn.languages` as a language server: the editor's requests and document
+   notifications come to `lsp` as JSON, and the first plugin for the
+   language answers. `examples/hello-wasm` is a sample (wit-bindgen), with
+   hovers, completions and a hint for plain text. *Left:* permissions to
+   grant file or network access.
 
 ## Bun or Node
 

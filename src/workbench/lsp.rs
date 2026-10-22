@@ -50,8 +50,9 @@ const SERVERS: &[(&[&str], &[&str])] = &[
     ),
 ];
 
-/// The extension host's key among the servers.
-const HOSTED: &[&str] = &["Extension Host"];
+/// The extension hosts' keys among the servers.
+pub(super) const HOSTED: &[&str] = &["Extension Host"];
+pub(super) const WASM_HOSTED: &[&str] = &["WASM Host"];
 
 /// One diagnostic as a server published it, 0-based.
 pub(super) struct Problem {
@@ -75,8 +76,8 @@ pub(super) struct Lsp {
     problems: BTreeMap<PathBuf, Vec<Problem>>,
     /// How often each server has died on its own.
     crashes: HashMap<&'static str, u32>,
-    /// The languages the extension host's providers serve.
-    hosted: HashSet<String>,
+    /// The languages extensions serve, and the host that serves each.
+    hosted: HashMap<String, &'static [&'static str]>,
     /// The parameter hints shown above the cursor in this file.
     signature: Option<(PathBuf, lsp_types::SignatureHelp)>,
 }
@@ -429,9 +430,9 @@ impl Workbench {
         let Some(doc) = self.docs.get(ix).filter(|d| !d.untitled && !d.binary) else {
             return;
         };
-        let cmd = match self.lsp.hosted.contains(doc.lang) {
-            true => HOSTED,
-            false => match SERVERS.iter().find(|(langs, _)| langs.contains(&doc.lang)) {
+        let cmd = match self.lsp.hosted.get(doc.lang) {
+            Some(&host) => host,
+            None => match SERVERS.iter().find(|(langs, _)| langs.contains(&doc.lang)) {
                 Some(&(_, cmd)) => cmd,
                 None => return,
             },
@@ -865,24 +866,22 @@ impl Workbench {
         .detach();
     }
 
-    /// The extension host now serves `ids`: their built-in servers make way
-    /// and their files go to the host. `out` is the host's stdin.
+    /// Extension host `host` now serves `ids`: their built-in servers make
+    /// way and their files go to the host. `forward` passes it a message's
+    /// JSON, false once the host is gone.
     pub(super) fn lsp_languages(
         &mut self,
         ids: Vec<String>,
-        out: mpsc::Sender<String>,
+        host: &'static [&'static str],
+        forward: impl Fn(&str) -> bool + Send + 'static,
         cx: &mut Context<Self>,
     ) {
-        self.lsp.servers.entry(HOSTED[0]).or_insert_with(|| {
-            // Frames go out as the host's NDJSON `lsp` messages.
+        self.lsp.servers.entry(host[0]).or_insert_with(|| {
             let (tx, rx) = mpsc::channel::<String>();
             std::thread::spawn(move || {
                 for frame in rx {
                     let body = frame.split_once("\r\n\r\n").map_or("", |(_, b)| b);
-                    if out
-                        .send(format!("{{\"m\":\"lsp\",\"msg\":{body}}}\n"))
-                        .is_err()
-                    {
+                    if !forward(body) {
                         return;
                     }
                 }
@@ -895,7 +894,7 @@ impl Workbench {
             }))
         });
         let new: Vec<String> = (ids.into_iter())
-            .filter(|id| self.lsp.hosted.insert(id.clone()))
+            .filter(|id| self.lsp.hosted.insert(id.clone(), host) != Some(host))
             .collect();
         // ponytail: a built-in server shared with other languages (TypeScript's)
         // stops for them too, and starts again with their next file.
@@ -911,24 +910,32 @@ impl Workbench {
         }
     }
 
-    /// A message from the extension host's providers: a response, or
+    /// A message from extension host `host`'s providers: a response, or
     /// diagnostics.
-    pub(super) fn lsp_from_host(&mut self, msg: Value, cx: &mut Context<Self>) {
+    pub(super) fn lsp_from_host(
+        &mut self,
+        msg: Value,
+        host: &'static [&'static str],
+        cx: &mut Context<Self>,
+    ) {
         let Some(id) = msg["id"].as_i64() else {
             return self.on_server(msg, cx);
         };
-        if let Some(Some(server)) = self.lsp.servers.get(HOSTED[0])
+        if let Some(Some(server)) = self.lsp.servers.get(host[0])
             && let Some(tx) = server.pending.lock().unwrap().remove(&id)
         {
             tx.send(msg["result"].clone()).ok();
         }
     }
 
-    /// The extension host is gone: its languages' files go back to the
+    /// Extension host `host` is gone: its languages' files go back to the
     /// built-in servers until a new host serves them again.
-    pub(super) fn lsp_host_gone(&mut self, cx: &mut Context<Self>) {
-        self.lsp.servers.remove(HOSTED[0]);
-        let langs = std::mem::take(&mut self.lsp.hosted);
+    pub(super) fn lsp_host_gone(&mut self, host: &'static [&'static str], cx: &mut Context<Self>) {
+        self.lsp.servers.remove(host[0]);
+        let mut langs = HashSet::new();
+        self.lsp
+            .hosted
+            .retain(|lang, h| *h != host || !langs.insert(lang.clone()));
         for ix in 0..self.docs.len() {
             if langs.contains(self.docs[ix].lang) {
                 self.lsp_open(ix, cx);
