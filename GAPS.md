@@ -244,7 +244,12 @@ Differences from VS Code still to close, smallest first within each area.
       "File: Save As..." save the active editor under a new name.
 - [x] Save As onto a file open in another tab leaves both tabs (VS Code
       replaces that one).
-- [ ] File > New Window, Close Window and Auto Save are inert.
+- [ ] File > New Window and Close Window are inert.
+- [x] File > Auto Save was inert; it and "File: Toggle Auto Save" flip
+      files.autoSave, and "afterDelay" saves dirty files after
+      files.autoSaveDelay.
+- [ ] files.autoSave "onFocusChange" / "onWindowChange" count as off, and
+      the delay is one debounce for all editors (VS Code's is per editor).
 - [x] Writing a setting (default profile, file associations) rewrote
       settings.json as plain JSON, dropping its comments; it's now edited in
       place like VS Code's jsonc-parser `modify`.

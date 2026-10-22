@@ -125,6 +125,7 @@ actions!(
         NewTextFile,
         RevertFile,
         SaveAs,
+        ToggleAutoSave,
         ShowNotifications,
         HideNotifications,
         ClearAllNotifications,
@@ -331,6 +332,11 @@ enum Encoding {
 }
 
 /// A hash of an editor's text, to tell whether it's back to the saved text.
+/// Whether files.autoSave saves after a delay; other modes count as off.
+fn auto_save() -> bool {
+    terminal::settings()["files.autoSave"] == "afterDelay"
+}
+
 fn text_hash(editor: &Entity<EditorState>, cx: &App) -> u64 {
     use std::hash::Hasher;
     let mut h = std::hash::DefaultHasher::new();
@@ -498,6 +504,8 @@ pub struct Workbench {
     nav_at: usize,
     /// Where the last edit happened, for Go to Last Edit Location.
     last_edit: Option<(PathBuf, input::Position)>,
+    /// files.autoSave "afterDelay": the pending save of dirty editors.
+    autosave: Option<Task<()>>,
     debug: debug::Debug,
     /// Spawned when the Terminal tab first shows; the error if the shell didn't start.
     terminals: terminal::Terminals,
@@ -553,6 +561,7 @@ impl Workbench {
             nav: Vec::new(),
             nav_at: 0,
             last_edit: None,
+            autosave: None,
             debug: debug::Debug::new(window, cx),
             terminals: Default::default(),
         };
@@ -743,36 +752,43 @@ impl Workbench {
         });
         editor.update(cx, |e, cx| e.set_value(text, window, cx));
         self.attach_breakpoints(path, &editor, cx);
-        cx.subscribe(&editor, |this, editor, ev: &InputEvent, cx| {
-            if matches!(ev, InputEvent::Change)
-                && let Some(doc) = this.docs.iter_mut().find(|d| d.editor == editor)
-            {
-                // ponytail: hashes the whole text per edit; keep a saved
-                // undo version instead if huge files lag.
-                doc.dirty = text_hash(&editor, cx) != doc.saved;
-                // Most endings decide, as Enter inserts a bare LF and undoing
-                // Change End of Line Sequence brings the old endings back.
-                let text = editor.read(cx).text();
-                let breaks = text.lines_len() - 1;
-                if breaks > 0 {
-                    let crs: usize = (text.chunks())
-                        .map(|c| c.bytes().filter(|&b| b == b'\r').count())
-                        .sum();
-                    // ponytail: on a doc opened without breaks, undoing Change
-                    // End of Line Sequence back to LF keeps the CRLF label;
-                    // track the change's old ending if that matters.
-                    if crs > 0 || !doc.eol_default {
-                        doc.crlf = crs * 2 > breaks;
+        cx.subscribe_in(
+            &editor,
+            window,
+            |this, editor, ev: &InputEvent, window, cx| {
+                if matches!(ev, InputEvent::Change)
+                    && let Some(doc) = this.docs.iter_mut().find(|d| &d.editor == editor)
+                {
+                    // ponytail: hashes the whole text per edit; keep a saved
+                    // undo version instead if huge files lag.
+                    doc.dirty = text_hash(editor, cx) != doc.saved;
+                    // Most endings decide, as Enter inserts a bare LF and undoing
+                    // Change End of Line Sequence brings the old endings back.
+                    let text = editor.read(cx).text();
+                    let breaks = text.lines_len() - 1;
+                    if breaks > 0 {
+                        let crs: usize = (text.chunks())
+                            .map(|c| c.bytes().filter(|&b| b == b'\r').count())
+                            .sum();
+                        // ponytail: on a doc opened without breaks, undoing Change
+                        // End of Line Sequence back to LF keeps the CRLF label;
+                        // track the change's old ending if that matters.
+                        if crs > 0 || !doc.eol_default {
+                            doc.crlf = crs * 2 > breaks;
+                        }
                     }
+                    let (path, dirty) = (doc.path.clone(), doc.dirty);
+                    if dirty && auto_save() {
+                        this.schedule_autosave(window, cx);
+                    }
+                    this.last_edit = Some((path.clone(), editor.read(cx).cursor_position()));
+                    this.refresh_search_file(&path, cx);
+                    this.breakpoints_moved(&path, editor, cx);
                 }
-                let path = doc.path.clone();
-                this.last_edit = Some((path.clone(), editor.read(cx).cursor_position()));
-                this.refresh_search_file(&path, cx);
-                this.breakpoints_moved(&path, &editor, cx);
-            }
-            // Cursor moves also land here; re-render keeps "Ln, Col" current.
-            cx.notify();
-        })
+                // Cursor moves also land here; re-render keeps "Ln, Col" current.
+                cx.notify();
+            },
+        )
         .detach();
         editor
     }
@@ -1215,6 +1231,38 @@ impl Workbench {
 
     fn save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
         self.write(self.active, window, cx);
+    }
+
+    /// files.autoSave "afterDelay": saves dirty file editors once typing
+    /// pauses for files.autoSaveDelay ms. Untitled editors wait for Save.
+    // ponytail: one debounce for all editors, and only "afterDelay";
+    // "onFocusChange"/"onWindowChange" need focus-out hooks.
+    fn schedule_autosave(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let delay = terminal::settings()["files.autoSaveDelay"]
+            .as_u64()
+            .unwrap_or(1000);
+        self.autosave = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(delay))
+                .await;
+            _ = this.update_in(cx, |this, window, cx| {
+                for ix in 0..this.docs.len() {
+                    let d = &this.docs[ix];
+                    if d.dirty && !d.untitled && auto_save() {
+                        this.write(ix, window, cx);
+                    }
+                }
+            });
+        }));
+    }
+
+    /// File > Auto Save: flips files.autoSave between "off" and "afterDelay".
+    fn toggle_auto_save(&mut self, _: &ToggleAutoSave, _: &mut Window, cx: &mut Context<Self>) {
+        let value = if auto_save() { "off" } else { "afterDelay" };
+        if let Err(err) = terminal::set_setting("files.autoSave", value.into()) {
+            self.settings_error(err, cx);
+        }
+        cx.notify();
     }
 
     fn save_all(&mut self, _: &SaveAll, window: &mut Window, cx: &mut Context<Self>) {
@@ -3830,6 +3878,7 @@ impl Render for Workbench {
             }))
             .on_action(cx.listener(Self::new_text_file))
             .on_action(cx.listener(Self::revert_file))
+            .on_action(cx.listener(Self::toggle_auto_save))
             .on_action(cx.listener(|this, _: &SaveAs, window, cx| {
                 if this.docs.get(this.active).is_some_and(|d| !d.binary) {
                     this.save_as(this.active, window, cx);
@@ -4151,7 +4200,7 @@ fn app_menu(
             .menu("Save As...", Box::new(SaveAs))
             .map(|m| chord(m, "Save All", SaveAll))
             .separator()
-            .menu("Auto Save", noop())
+            .menu_with_check("Auto Save", auto_save(), Box::new(ToggleAutoSave))
             .submenu("Preferences", window, cx, |m, _, _| {
                 m.menu("Settings", Box::new(OpenSettings))
                     .menu("Keyboard Shortcuts", Box::new(Noop))
