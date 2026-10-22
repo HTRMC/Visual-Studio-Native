@@ -855,7 +855,8 @@ async function run(command, args) {
   const fn = commands.get(command);
   if (!fn) return send({ m: 'error', text: `command '${command}' not found` });
   try {
-    await fn(...(args || []));
+    // A menu passes its file as VS Code does, a Uri.
+    await fn(...(args || []).map((a) => (a && a.$uri ? Uri.parse(a.$uri) : a)));
   } catch (err) {
     send({ m: 'error', text: `Running the contributed command: '${command}' failed. ${errorText(err)}` });
   }

@@ -17,16 +17,27 @@ use super::palette::{Items, Picker, Rename};
 use super::wasmhost;
 use super::*;
 use crate::theme::codicons;
+use gpui_kit::component::native_menu::NativeMenu;
 
 const HOST: &str = include_str!("exthost.js");
 /// VS Code gives up on a host that crashes this many times.
 const RESTARTS: usize = 3;
 
-/// Runs an extension's command, from the palette or a keybinding.
+/// Runs an extension's command, from the palette, a keybinding or a menu;
+/// a menu passes its file's Uri.
 #[derive(Clone, PartialEq, Debug, Action)]
 #[action(namespace = vsn, no_json)]
 pub(crate) struct RunExtensionCommand {
     pub id: String,
+    pub path: Option<PathBuf>,
+}
+
+impl RunExtensionCommand {
+    pub(super) fn args(&self) -> Vec<Value> {
+        (self.path.iter())
+            .map(|p| json!({ "$uri": super::lsp::path_uri(p) }))
+            .collect()
+    }
 }
 
 /// A status bar entry an extension shows.
@@ -188,6 +199,66 @@ pub(super) fn palette_commands(focus: &[KeyContext]) -> Vec<(String, String)> {
     list
 }
 
+/// Whether an enabled extension adds to one of VS Code's `menus`.
+pub(super) fn has_menu(menu: &str) -> bool {
+    (installed().iter()).any(|e| e.enabled && e.manifest["contributes"]["menus"][menu].is_array())
+}
+
+/// Extensions' items in one of VS Code's `menus` (`editor/context`, ...):
+/// title and command id, those whose `when` holds on `focus`, by group.
+// ponytail: groups only order the items (navigation first, then by name),
+// with no separators or `@order`; `submenu`s and `alt` commands are skipped.
+pub(super) fn menu_items(menu: &str, focus: &[KeyContext]) -> Vec<(String, String)> {
+    let mut list = Vec::new();
+    for e in installed().iter().filter(|e| e.enabled) {
+        let items = e.manifest["contributes"]["menus"][menu].as_array();
+        for m in items.into_iter().flatten() {
+            let Some(id) = m["command"].as_str() else {
+                continue;
+            };
+            let shown = (m["when"].as_str())
+                .is_none_or(|w| when_predicate(w).is_some_and(|p| p.depth_of(focus).is_some()));
+            let Some(c) = e.contributes("commands").find(|c| c["command"] == id) else {
+                continue;
+            };
+            if shown {
+                let group = m["group"].as_str().unwrap_or("");
+                let group = group.split('@').next().unwrap_or("");
+                let key = (group != "navigation", group.to_string());
+                list.push((key, e.localize(&c["title"]), id.to_string()));
+            }
+        }
+    }
+    list.sort_by(|a, b| a.0.cmp(&b.0));
+    list.into_iter().map(|(_, title, id)| (title, id)).collect()
+}
+
+/// The editor's right-click menu with extensions' `editor/context` items:
+/// the input's own items, which a custom menu replaces, then theirs.
+// ponytail: the input's items are always enabled here, as its capabilities
+// aren't passed to a custom menu; vsn only uses one with extension items.
+pub(super) fn editor_context_menu(menu: NativeMenu, path: &Path, window: &Window) -> NativeMenu {
+    let menu = menu
+        .menu("Go to Definition", Box::new(input::GoToDefinition))
+        .menu("Show Code Actions", Box::new(input::ToggleCodeActions))
+        .separator()
+        .menu("Cut", Box::new(input::Cut))
+        .menu("Copy", Box::new(input::Copy))
+        .menu("Paste", Box::new(input::Paste))
+        .separator()
+        .menu("Select All", Box::new(input::SelectAll));
+    let items = menu_items("editor/context", &window.context_stack());
+    let menu = if items.is_empty() {
+        menu
+    } else {
+        menu.separator()
+    };
+    items.into_iter().fold(menu, |menu, (title, id)| {
+        let path = Some(path.to_path_buf());
+        menu.menu(title, Box::new(RunExtensionCommand { id, path }))
+    })
+}
+
 /// A VS Code `when` clause as a gpui context predicate. vsn's editor,
 /// terminal and explorer set VS Code's focus keys and `editorLangId`; other
 /// keys are unset, so false as in VS Code when nothing sets them.
@@ -256,7 +327,10 @@ pub(super) fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBindin
                 },
                 None => None,
             };
-            let action = Box::new(RunExtensionCommand { id: id.into() });
+            let action = Box::new(RunExtensionCommand {
+                id: id.into(),
+                path: None,
+            });
             list.extend(KeyBinding::load(&keys, action, context, false, None, mapper).ok());
         }
     }

@@ -1108,13 +1108,17 @@ impl Workbench {
                                 }),
                             ),
                     )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .child(Editor::new(&editor).h_full().bordered(false)),
-                    ),
+                    .child(div().flex_1().min_w_0().h_full().child(
+                        Editor::new(&editor).h_full().bordered(false).when(
+                            exthost::has_menu("editor/context"),
+                            |e| {
+                                let path = doc.path.clone();
+                                e.context_menu(move |menu, window, _| {
+                                    exthost::editor_context_menu(menu, &path, window)
+                                })
+                            },
+                        ),
+                    )),
             )
             // Painted after the editor, so it reads this frame's layout.
             .child(

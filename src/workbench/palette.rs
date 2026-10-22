@@ -59,7 +59,8 @@ fn commands(focus: &[KeyContext]) -> Vec<(Cow<'static, str>, Box<dyn Action>)> {
     let ext = super::exthost::palette_commands(focus)
         .into_iter()
         .map(|(label, id)| {
-            let action: Box<dyn Action> = Box::new(super::exthost::RunExtensionCommand { id });
+            let action: Box<dyn Action> =
+                Box::new(super::exthost::RunExtensionCommand { id, path: None });
             (label.into(), action)
         });
     (builtin_commands().into_iter())

@@ -4591,23 +4591,44 @@ fn explorer_menu(
                 this.clip_file(false, cx)
             })),
     };
-    menu.item(
-        item("Paste", Some(Box::new(PasteFile)), |this, path, w, cx| {
-            this.paste_file(Some(path.to_path_buf()), w, cx)
-        })
-        .disabled(!clip),
-    )
-    .separator()
-    .item(item(
-        "Copy Path",
-        Some(Box::new(CopyPath)),
-        |this, path, _, cx| this.copy_file_path(path, false, cx),
-    ))
-    .item(item(
-        "Copy Relative Path",
-        Some(Box::new(CopyRelativePath)),
-        |this, path, _, cx| this.copy_file_path(path, true, cx),
-    ))
+    let menu = menu
+        .item(
+            item("Paste", Some(Box::new(PasteFile)), |this, path, w, cx| {
+                this.paste_file(Some(path.to_path_buf()), w, cx)
+            })
+            .disabled(!clip),
+        )
+        .separator()
+        .item(item(
+            "Copy Path",
+            Some(Box::new(CopyPath)),
+            |this, path, _, cx| this.copy_file_path(path, false, cx),
+        ))
+        .item(item(
+            "Copy Relative Path",
+            Some(Box::new(CopyRelativePath)),
+            |this, path, _, cx| this.copy_file_path(path, true, cx),
+        ));
+    let mut focus = KeyContext::parse("Explorer filesExplorerFocus explorerViewletFocus").unwrap();
+    if is_dir {
+        focus.add("explorerResourceIsFolder");
+    }
+    let items = exthost::menu_items("explorer/context", &[focus]);
+    let menu = if items.is_empty() {
+        menu
+    } else {
+        menu.separator()
+    };
+    items.into_iter().fold(menu, |menu, (title, id)| {
+        let (wb, path) = (wb.clone(), Some(path.to_path_buf()));
+        let action = exthost::RunExtensionCommand { id, path };
+        menu.item(PopupMenuItem::new(title).on_click(move |_, _, cx| {
+            wb.update(cx, |this, cx| {
+                this.run_extension_command(action.id.clone(), action.args(), cx)
+            })
+            .ok();
+        }))
+    })
 }
 
 impl Render for Workbench {
@@ -4935,7 +4956,7 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &ChangeEol, window, cx| this.change_eol(window, cx)))
             .on_action(
                 cx.listener(|this, a: &exthost::RunExtensionCommand, _, cx| {
-                    this.run_extension_command(a.id.clone(), Vec::new(), cx)
+                    this.run_extension_command(a.id.clone(), a.args(), cx)
                 }),
             )
             .on_action(cx.listener(|this, _: &InstallFromVsix, _, cx| this.install_from_vsix(cx)))
