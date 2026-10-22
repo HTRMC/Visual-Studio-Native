@@ -750,6 +750,29 @@ impl Workbench {
         self.show_match(cx);
     }
 
+    fn active_id(&self) -> Option<u64> {
+        self.terminals.list.get(self.terminals.active).map(|t| t.id)
+    }
+
+    /// With find open, find moves to a newly active terminal (`was` the one
+    /// before), and closes with the last one.
+    fn find_follows(&mut self, was: Option<u64>, cx: &mut Context<Self>) {
+        if !self.terminals.finding || self.active_id() == was {
+            return;
+        }
+        if self.terminals.list.is_empty() {
+            self.terminals.finding = false;
+            return;
+        }
+        let active = self.terminals.active;
+        for (i, t) in self.terminals.list.iter_mut().enumerate() {
+            if i != active {
+                (t.matches, t.current) = (Vec::new(), None);
+            }
+        }
+        self.search_terminal(cx);
+    }
+
     /// Find's query as a regex, while find is open with one.
     fn find_regex(&self, cx: &App) -> Option<regex::Regex> {
         let input = self
@@ -900,8 +923,7 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) -> bool {
         // Find keeps up with the active terminal's output.
-        let active = self.terminals.list.get(self.terminals.active).map(|t| t.id);
-        let re = self.find_regex(cx).filter(|_| active == Some(id));
+        let re = self.find_regex(cx).filter(|_| self.active_id() == Some(id));
         let Some(t) = self.terminal(id) else {
             return true;
         };
@@ -960,8 +982,11 @@ impl Workbench {
             }
             _ => list.len(),
         };
+        let was = self.active_id();
+        let list = &mut self.terminals.list;
         list.insert(ix, t);
         self.terminals.active = ix;
+        self.find_follows(was, cx);
         true
     }
 
@@ -1003,7 +1028,9 @@ impl Workbench {
 
     fn activate_terminal(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(ix) = self.terminals.list.iter().position(|t| t.id == id) {
+            let was = self.active_id();
             self.terminals.active = ix;
+            self.find_follows(was, cx);
             window.focus(&self.terminals.list[ix].focus, cx);
             cx.notify();
         }
@@ -1022,17 +1049,21 @@ impl Workbench {
             return;
         };
         let focused = self.terminal_focused(window);
+        let was = self.active_id();
         self.terminals.list.remove(ix);
         let list = &self.terminals.list;
         let active = &mut self.terminals.active;
         if *active > ix || *active == list.len() {
             *active = active.saturating_sub(1);
         }
+        self.find_follows(was, cx);
+        let list = &self.terminals.list;
+        let active = self.terminals.active;
         if list.is_empty() && self.panel_tab == TERMINAL {
             self.panel = false;
         }
         if focused {
-            match list.get(*active) {
+            match list.get(active) {
                 Some(t) => window.focus(&t.focus, cx),
                 None => self.focus_editor(window, cx),
             }
