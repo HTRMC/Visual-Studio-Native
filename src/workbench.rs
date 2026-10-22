@@ -819,6 +819,75 @@ impl Workbench {
         .detach();
     }
 
+    /// Moves an explorer item into the folder `dir` once confirmed, as VS
+    /// Code's explorer drag does (`explorer.confirmDragAndDrop`).
+    fn move_into(
+        &mut self,
+        from: PathBuf,
+        dir: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(name) = from.file_name() else {
+            return;
+        };
+        if from.parent() == Some(&dir) || dir.starts_with(&from) {
+            return;
+        }
+        let to = dir.join(name);
+        let name = name.to_string_lossy();
+        let (message, detail, ok) = match to.exists() {
+            true => (
+                format!(
+                    "A file or folder with the name '{name}' already exists in the destination folder. Do you want to replace it?"
+                ),
+                Some("This action is irreversible!"),
+                "Replace",
+            ),
+            false => {
+                let into = dir.file_name().unwrap_or_default().to_string_lossy();
+                (
+                    format!("Are you sure you want to move '{name}' into '{into}'?"),
+                    None,
+                    "Move",
+                )
+            }
+        };
+        let answer = window.prompt(PromptLevel::Warning, &message, detail, &[ok, "Cancel"], cx);
+        cx.spawn_in(window, async move |this, cx| {
+            if answer.await != Ok(0) {
+                return;
+            }
+            this.update(cx, |this, cx| {
+                let replaced = match to.is_dir() {
+                    true => fs::remove_dir_all(&to),
+                    false if to.exists() => fs::remove_file(&to),
+                    false => Ok(()),
+                };
+                if let Err(err) = replaced.and_then(|_| fs::rename(&from, &to)) {
+                    return this.warn(format!("Unable to move '{}' ({err})", from.display()), cx);
+                }
+                // Open editors and expanded folders follow the move.
+                let moved = |p: &Path| p.strip_prefix(&from).ok().map(|rest| to.join(rest));
+                for doc in &mut this.docs {
+                    if let Some(path) = moved(&doc.path) {
+                        doc.path = path;
+                    }
+                }
+                this.expanded = (this.expanded.drain())
+                    .map(|p| moved(&p).unwrap_or(p))
+                    .collect();
+                this.expanded.insert(dir.clone());
+                this.tree_sel = Some(to.clone());
+                this.tree_cursor = Some(to.clone());
+                this.dirs.clear();
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn copy_in(
         &mut self,
         paths: &[PathBuf],
@@ -1830,6 +1899,11 @@ impl Workbench {
                         .track_scroll(&self.tree_scroll)
                         .track_focus(&self.tree_focus)
                         .on_key_down(cx.listener(Self::tree_key))
+                        .on_drop(cx.listener(|this, file: &DraggedFile, window, cx| {
+                            if let Some(root) = this.root.clone() {
+                                this.move_into(file.0.clone(), root, window, cx)
+                            }
+                        }))
                         .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                             if let Some(root) = this.root.clone() {
                                 this.import_paths(paths.paths(), root, window, cx)
@@ -2139,24 +2213,31 @@ impl Workbench {
         let (wb, menu_path) = (cx.weak_entity(), path.clone());
         h_flex()
             .id(ElementId::Name(path.to_string_lossy().to_string().into()))
-            .when(!is_dir, |d| {
-                d.on_drag(DraggedFile(path.clone()), |file, _, _, cx| {
-                    cx.new(|_| file.clone())
-                })
+            .on_drag(DraggedFile(path.clone()), |file, _, _, cx| {
+                cx.new(|_| file.clone())
             })
-            // Files from Windows are copied into this folder, or this file's.
+            // Explorer items are moved into this folder, or this file's, and
+            // files from Windows copied there.
             // ponytail: tints the row only; VS Code tints the whole target
             // folder with its children.
+            .drag_over::<DraggedFile>(|s, _, _, _| s.bg(col::drop()))
             .drag_over::<ExternalPaths>(|s, _, _, _| s.bg(col::drop()))
-            .on_drop({
+            .map(|d| {
                 let dir = match is_dir {
                     true => path.clone(),
                     false => path.parent().unwrap_or(path).to_path_buf(),
                 };
-                cx.listener(move |this, paths: &ExternalPaths, window, cx| {
+                let into = dir.clone();
+                d.on_drop(cx.listener(move |this, file: &DraggedFile, window, cx| {
                     cx.stop_propagation();
-                    this.import_paths(paths.paths(), dir.clone(), window, cx)
-                })
+                    this.move_into(file.0.clone(), into.clone(), window, cx)
+                }))
+                .on_drop(cx.listener(
+                    move |this, paths: &ExternalPaths, window, cx| {
+                        cx.stop_propagation();
+                        this.import_paths(paths.paths(), dir.clone(), window, cx)
+                    },
+                ))
             })
             .relative()
             .h(px(22.))
@@ -2347,8 +2428,10 @@ impl Workbench {
                     move |s, file, _, _| drop_side(s, after(&file.0))
                 })
                 .on_drop(cx.listener(move |this, file: &DraggedFile, window, cx| {
-                    this.drop_paths(slice::from_ref(&file.0), Some(ix), window, cx);
                     cx.stop_propagation();
+                    if !file.0.is_dir() {
+                        this.drop_paths(slice::from_ref(&file.0), Some(ix), window, cx);
+                    }
                 }))
                 .drag_over::<ExternalPaths>(move |s, paths, _, _| {
                     drop_side(s, paths.paths().first().is_some_and(|p| lands_after(p)))

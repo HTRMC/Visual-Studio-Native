@@ -231,7 +231,10 @@ Differences from VS Code still to close, smallest first within each area.
       folder under the mouse.
 - [ ] A drop over the explorer tints only the row under the mouse; VS Code
       tints the whole target folder with its children.
-- [ ] Dragging in the explorer can't move files between folders.
+- [x] Dragging in the explorer can't move files between folders.
+- [ ] An explorer move can't be undone (Ctrl+Z in the explorer), Ctrl+drag
+      doesn't copy, and the move prompt lacks VS Code's "Do not ask me
+      again" (`explorer.confirmDragAndDrop`).
 - [x] Go menu: Back/Forward (Alt+Left/Right, the title bar arrows) and
       Last Edit Location (Ctrl+K Ctrl+Q) were placeholders.
 - [ ] Go to Symbol in Workspace (Ctrl+T) is still a placeholder.
