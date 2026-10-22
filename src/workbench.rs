@@ -5498,7 +5498,14 @@ fn app_menu(
                     let paths = list.iter().map(PathBuf::from).filter(|p| p.exists());
                     for path in paths.take(10) {
                         let wb = recent.workbench.clone();
-                        let item = PopupMenuItem::new(path.to_string_lossy().into_owned());
+                        // A long path ends in "…" inside the menu's 500px.
+                        let label = SharedString::from(path.to_string_lossy().into_owned());
+                        let item = PopupMenuItem::element(move |_, _| {
+                            (div().max_w(px(460.)).overflow_hidden())
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .child(label.clone())
+                        });
                         m = m.item(item.on_click(move |_, window, cx| {
                             let path = path.clone();
                             wb.update(cx, |wb, cx| match folder {
