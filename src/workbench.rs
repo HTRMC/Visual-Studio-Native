@@ -719,10 +719,12 @@ impl Workbench {
     fn activate(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.active = ix;
         if let Some(doc) = self.docs.get(ix) {
-            if !doc.untitled {
-                self.palette.remember(self.root.as_deref(), &doc.path, cx);
-            }
             doc.editor.update(cx, |e, cx| e.focus(window, cx));
+            if !doc.untitled {
+                let path = doc.path.clone();
+                self.palette.remember(self.root.as_deref(), &path, cx);
+                self.reveal_in_tree(&path, false, cx);
+            }
         }
         cx.notify();
     }
@@ -1772,15 +1774,18 @@ impl Workbench {
         self.watcher = Some((watcher, task));
     }
 
-    /// Reveal in Explorer View: the explorer shows with `path`'s folders open
-    /// and its row scrolled into view.
-    fn reveal_in_tree(&mut self, path: &Path, cx: &mut Context<Self>) {
+    /// Opens `path`'s folders in the explorer and scrolls its row into view;
+    /// `show` also brings up the explorer (Reveal in Explorer View), else it
+    /// follows the active editor as VS Code's `explorer.autoReveal` does.
+    fn reveal_in_tree(&mut self, path: &Path, show: bool, cx: &mut Context<Self>) {
         let Some(root) = self.root.clone().filter(|r| path.starts_with(r)) else {
             return;
         };
         let parents = path.ancestors().skip(1).take_while(|a| *a != root);
         self.expanded.extend(parents.map(Path::to_path_buf));
-        (self.root_open, self.sidebar, self.view) = (true, true, View::Explorer);
+        if show {
+            (self.root_open, self.sidebar, self.view) = (true, true, View::Explorer);
+        }
         let mut rows = Vec::new();
         self.tree_rows(&root, 0, &mut rows);
         if let Some(ix) = rows.iter().position(|(p, ..)| p == path) {
@@ -2759,7 +2764,7 @@ impl Render for Workbench {
             .on_action(cx.listener(Self::toggle_panel))
             .on_action(cx.listener(|this, _: &RevealInExplorerView, _, cx| {
                 if let Some(doc) = this.docs.get(this.active) {
-                    this.reveal_in_tree(&doc.path.clone(), cx)
+                    this.reveal_in_tree(&doc.path.clone(), true, cx)
                 }
             }))
             .on_action(cx.listener(|this, _: &CloseAllEditors, w, cx| {
@@ -3407,6 +3412,6 @@ fn editor_tab_menu(
     ))
     .item(item("Reveal in Explorer View", None, |this, ix, w, cx| {
         this.activate(ix, w, cx);
-        this.reveal_in_tree(&this.docs[ix].path.clone(), cx)
+        this.reveal_in_tree(&this.docs[ix].path.clone(), true, cx)
     }))
 }

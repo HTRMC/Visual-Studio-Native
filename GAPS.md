@@ -126,8 +126,10 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] The tab menu's Reveal in Explorer View (File: Reveal Active File in
       Explorer View) opens the file's folders and scrolls its row in.
 - [ ] The tab menu lacks Keep Open/Pin, Split and Share.
-- [ ] The explorer doesn't follow the active editor (VS Code's
-      `explorer.autoReveal` opens folders to it on every switch).
+- [x] The explorer follows the active editor (VS Code's
+      `explorer.autoReveal`): each switch opens its folders and scrolls it in.
+- [ ] There's no `explorer.autoReveal` setting to turn following off, and
+      the followed row isn't selected/focused as VS Code's is.
 - [x] The explorer's selected row hugged its name instead of spanning the
       side bar's width (long names now end in an ellipsis too).
 - [ ] The explorer has no indent guides, and a folder row has no icon or
