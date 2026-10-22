@@ -1009,8 +1009,9 @@ impl Workbench {
             .collect()
     }
 
-    /// launch.json in the workspace, with comments VS Code writes into it.
-    fn create_launch_json(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Opens the workspace's launch.json (the Run view's gear, Run > Open
+    /// Configurations), first creating it with the comments VS Code writes.
+    pub(super) fn create_launch_json(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(root) = &self.root else { return };
         let path = root.join(".vscode").join("launch.json");
         if !path.exists() {

@@ -96,6 +96,7 @@ actions!(
         StepInto,
         StepOut,
         ToggleBreakpoint,
+        OpenLaunchJson,
         NewTerminal,
         SplitTerminal,
         RenameTerminal,
@@ -4781,6 +4782,9 @@ impl Render for Workbench {
             .on_action(
                 cx.listener(|this, _: &ToggleBreakpoint, _, cx| this.toggle_breakpoint(None, cx)),
             )
+            .on_action(cx.listener(|this, _: &OpenLaunchJson, window, cx| {
+                this.create_launch_json(window, cx)
+            }))
             .on_action(cx.listener(|this, _: &ShowNotifications, _, cx| this.show_center(true, cx)))
             .on_action(cx.listener(|this, _: &HideNotifications, _, cx| {
                 // The toasts stay listed in the center.
@@ -5162,7 +5166,7 @@ fn app_menu(
             .menu("Stop Debugging", Box::new(StopDebugging))
             .menu("Restart Debugging", Box::new(RestartDebugging))
             .separator()
-            .menu("Open Configurations", noop())
+            .menu("Open Configurations", Box::new(OpenLaunchJson))
             .menu("Add Configuration...", noop())
             .separator()
             .menu("Toggle Breakpoint", Box::new(ToggleBreakpoint)),

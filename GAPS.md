@@ -259,10 +259,12 @@ Differences from VS Code still to close, smallest first within each area.
       out as in VS Code.
 - [ ] Still-inert menu entries: Open Recent > More..., Preferences >
       Keyboard Shortcuts / Themes; View > Editor Layout > Split Up/Down;
-      Run > Open/Add Configuration..., Run Task..., Run Build Task...;
+      Run > Add Configuration..., Run Task..., Run Build Task...;
       Help's Documentation, Release Notes, Keyboard Shortcuts Reference,
       Report Issue (VS Code opens web pages), View License, Toggle Developer
       Tools.
+- [x] Run > Open Configurations was inert; it and "Debug: Open 'launch.json'"
+      open launch.json, creating it first, like the Run view's gear.
 - [x] Help > About (and Help: About) showed nothing; it's VS Code's version
       box with Copy.
 - [ ] The About box's title bar reads "Info" (gpui titles prompts by level;
