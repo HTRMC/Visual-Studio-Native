@@ -1909,7 +1909,7 @@ impl Workbench {
             });
         }
         if ix != 6 {
-            self.rebuild_editor(window, cx);
+            self.rebuild_editor(self.active, window, cx);
         }
     }
 
@@ -1934,16 +1934,23 @@ impl Workbench {
         });
     }
 
-    /// Adds `key` → `id` to the user's `files.associations`.
-    fn associate(&mut self, key: String, id: &'static str, cx: &mut Context<Self>) {
+    /// Adds `key` → `id` to the user's `files.associations`; open files follow.
+    fn associate(
+        &mut self,
+        key: String,
+        id: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let settings = super::terminal::settings();
         let mut map = settings["files.associations"]
             .as_object()
             .cloned()
             .unwrap_or_default();
         map.insert(key, id.into());
-        if let Err(err) = set_setting("files.associations", map.into()) {
-            self.settings_error(err, cx);
+        match set_setting("files.associations", map.into()) {
+            Ok(()) => self.relanguage(&settings, window, cx),
+            Err(err) => self.settings_error(err, cx),
         }
     }
 
@@ -1953,13 +1960,18 @@ impl Workbench {
             return;
         };
         doc.lang = id;
-        self.rebuild_editor(window, cx);
+        self.rebuild_editor(self.active, window, cx);
     }
 
-    /// Builds the active editor again for its language and indentation, at
-    /// the same place.
-    fn rebuild_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let doc = &self.docs[self.active];
+    /// Builds editor `ix` again for its language and indentation, at the
+    /// same place.
+    pub(super) fn rebuild_editor(
+        &mut self,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let doc = &self.docs[ix];
         let (path, lang, indent) = (doc.path.clone(), doc.lang, doc.indent);
         let old = doc.editor.read(cx);
         let (text, pos, scroll) = (
@@ -1975,8 +1987,10 @@ impl Workbench {
             e.set_cursor_position(pos, window, cx);
             e.set_scroll_offset(scroll, cx);
         });
-        self.docs[self.active].editor = editor;
-        self.activate(self.active, window, cx);
+        self.docs[ix].editor = editor;
+        if ix == self.active {
+            self.activate(ix, window, cx);
+        }
     }
 
     /// Rewrites every line ending in the active editor, undoably, keeping
@@ -2523,10 +2537,10 @@ impl Workbench {
                 (None, None)
             }
             Some(&Pick::Lang(id, ..)) => {
-                if let Some((key, _)) = p.associating.take() {
-                    self.associate(key, id, cx);
+                match p.associating.take() {
+                    Some((key, _)) => self.associate(key, id, window, cx),
+                    None => self.set_language(id, window, cx),
                 }
-                self.set_language(id, window, cx);
                 (None, None)
             }
             Some(Pick::Associate(..)) => {

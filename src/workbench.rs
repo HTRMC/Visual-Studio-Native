@@ -1125,10 +1125,15 @@ impl Workbench {
             return;
         }
         let text = with_eol(&doc.editor.read(cx).value(), doc.crlf);
+        let settings = terminal::settings_path().is_some_and(|p| p == doc.path);
+        let old = settings.then(terminal::settings);
         match fs::write(&doc.path, doc.encoding.encode(&text)) {
             Ok(()) => {
                 doc.dirty = false;
                 doc.saved = text_hash(&doc.editor, cx);
+                if let Some(old) = old {
+                    self.relanguage(&old, window, cx);
+                }
             }
             Err(err) => eprintln!("save {}: {err}", doc.path.display()),
         }
@@ -3149,9 +3154,30 @@ impl Workbench {
 impl Workbench {
     /// A file's language: its `files.associations` setting, else its name's.
     fn file_language(&self, path: &Path) -> &'static str {
+        self.language_in(&terminal::settings(), path)
+    }
+
+    fn language_in(&self, settings: &serde_json::Value, path: &Path) -> &'static str {
         let root = self.root.as_deref().or(path.parent()).unwrap_or(path);
-        search::associated_language(&terminal::settings(), root, path)
-            .unwrap_or_else(|| language_id(path))
+        search::associated_language(settings, root, path).unwrap_or_else(|| language_id(path))
+    }
+
+    /// After settings change from `old`, gives open files the language their
+    /// `files.associations` now name, unless one was picked by hand (VS Code
+    /// keeps an explicitly set language).
+    fn relanguage(&mut self, old: &serde_json::Value, window: &mut Window, cx: &mut Context<Self>) {
+        let new = terminal::settings();
+        for ix in 0..self.docs.len() {
+            let doc = &self.docs[ix];
+            if doc.untitled || doc.binary || doc.lang != self.language_in(old, &doc.path) {
+                continue;
+            }
+            let lang = self.language_in(&new, &doc.path);
+            if lang != doc.lang {
+                self.docs[ix].lang = lang;
+                self.rebuild_editor(ix, window, cx);
+            }
+        }
     }
 
     /// A warning notification: listed in the bell's center, and shown as a
