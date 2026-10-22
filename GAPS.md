@@ -45,7 +45,10 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Terminal: Focus Next/Previous Terminal Group (Ctrl+PageDown/Up) and
       Terminal in Terminal Group.
 - [x] Entering a terminal group returns to the terminal last focused in it.
-- [ ] Terminal: Clear (Ctrl+K in VS Code) empties the buffer and scrollback.
-- [ ] Drag tabs to reorder terminals and move them between splits.
+- [ ] Terminal: Clear (Ctrl+K in VS Code) empties the buffer and scrollback
+      (needs OpenConsole's conpty.dll for ClearPseudoConsole; clearing only
+      our side would desync conhost's cursor).
+- [x] Drag tabs to reorder terminals, or whole split groups.
+- [ ] Drag a tab onto a terminal to move it into that split group.
 - [ ] Shell integration: command decorations, run recent command, go to
       recent directory.

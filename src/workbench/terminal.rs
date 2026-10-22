@@ -1167,6 +1167,35 @@ impl Workbench {
         self.focus_terminal(window, cx);
     }
 
+    /// A tab dropped on another: within a split group it takes that one's
+    /// place, otherwise its whole group moves to the other's group's place,
+    /// as VS Code's tab list does.
+    fn move_terminal(&mut self, src: u64, dst: u64, cx: &mut Context<Self>) {
+        let was = self.active_id();
+        let list = &mut self.terminals.list;
+        let pos = |list: &Vec<Terminal>, id| list.iter().position(|t| t.id == id);
+        let (Some(from), Some(to)) = (pos(list, src), pos(list, dst)) else {
+            return;
+        };
+        let (group, target) = (list[from].group, list[to].group);
+        if group == target {
+            let t = list.remove(from);
+            list.insert(to, t);
+        } else {
+            let (moved, mut rest): (Vec<_>, Vec<_>) = std::mem::take(list)
+                .into_iter()
+                .partition(|t| t.group == group);
+            let at = match from < to {
+                true => rest.iter().rposition(|t| t.group == target).unwrap() + 1,
+                false => rest.iter().position(|t| t.group == target).unwrap(),
+            };
+            rest.splice(at..at, moved);
+            *list = rest;
+        }
+        self.terminals.active = was.and_then(|id| pos(list, id)).unwrap_or(0);
+        cx.notify();
+    }
+
     pub(super) fn kill_active_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(t) = self.terminals.list.get(self.terminals.active) {
             self.kill_terminal(t.id, window, cx);
@@ -1565,6 +1594,13 @@ impl Workbench {
                 .on_click(
                     cx.listener(move |this, _, window, cx| this.activate_terminal(id, window, cx)),
                 )
+                .on_drag(DraggedTab(id, t.name.clone().into()), |tab, _, _, cx| {
+                    cx.new(|_| tab.clone())
+                })
+                .drag_over::<DraggedTab>(|s, _, _, _| s.bg(c(0x383B3D)))
+                .on_drop(cx.listener(move |this, tab: &DraggedTab, _, cx| {
+                    this.move_terminal(tab.0, id, cx)
+                }))
                 .context_menu(move |menu, _, _| tab_menu(menu, &wb, id))
         });
         v_flex()
@@ -1913,6 +1949,21 @@ fn tab_menu(menu: PopupMenu, wb: &WeakEntity<Workbench>, id: u64) -> PopupMenu {
     }))
     .separator()
     .item(item("Kill Terminal", Workbench::kill_terminal))
+}
+
+/// A terminal tab being dragged: its id, and its name to draw under the mouse.
+#[derive(Clone)]
+struct DraggedTab(u64, SharedString);
+
+impl Render for DraggedTab {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(8.))
+            .py(px(2.))
+            .bg(col::selected())
+            .text_color(col::fg())
+            .child(self.1.clone())
+    }
 }
 
 /// A terminal tab's icon, in the color Change Color gave it.
