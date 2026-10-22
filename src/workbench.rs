@@ -3185,10 +3185,10 @@ impl Workbench {
     }
 
     /// A warning notification: listed in the bell's center, and shown as a
-    /// toast (unless the center is open) until VS Code's 18 seconds pass, or
-    /// later while the mouse is over it. A repeat replaces the old one, and
-    /// the newest 3 toasts stack, newest at the bottom; an older one waits,
-    /// its timer paused, until one of them closes.
+    /// toast (unless the center is open) for VS Code's 18 seconds, counted
+    /// while it shows and the mouse isn't over it. A repeat replaces the old
+    /// one, and the newest 3 toasts stack, newest at the bottom; an older one
+    /// waits until one of them closes.
     fn warn(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.note(message.into(), Severity::Warning, cx);
     }
@@ -3217,16 +3217,21 @@ impl Workbench {
         }
         let m = message.clone();
         let hide = cx.spawn(async move |this, cx| {
+            let mut since = Instant::now();
             loop {
-                let wait = std::time::Duration::from_secs(18);
-                cx.background_executor().timer(wait).await;
+                cx.background_executor().timer(Duration::from_secs(1)).await;
                 let gone = this.update(cx, |this, cx| {
                     let shown = this.toasts.len().saturating_sub(3);
-                    let toast = this.toasts.iter().position(|t| t.0 == m);
-                    if toast.is_some_and(|i| i < shown || this.toasts[i].1) {
+                    let Some(i) = this.toasts.iter().position(|t| t.0 == m) else {
+                        return true;
+                    };
+                    if i < shown || this.toasts[i].1 {
+                        since = Instant::now();
+                    }
+                    if since.elapsed() < Duration::from_secs(18) {
                         return false;
                     }
-                    this.toasts.retain(|t| t.0 != m);
+                    drop(this.toasts.remove(i));
                     cx.notify();
                     true
                 });

@@ -332,5 +332,6 @@ Differences from VS Code still to close, smallest first within each area.
 - [ ] Do Not Disturb lacks VS Code's per-source filter (needs extensions as notification sources).
 - [x] Notifications: several toasts stacked (only one warning exists so far).
 - [x] A 4th toast drops the oldest instead of queueing it until one closes.
-- [ ] Toasts appear without VS Code's slide-in, and a queued toast that
-      comes into view may hide sooner than a full 18 seconds.
+- [x] A queued toast that comes into view may hide sooner than a full 18
+      seconds.
+- [ ] Toasts appear without VS Code's slide-in.
