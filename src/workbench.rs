@@ -31,7 +31,9 @@ mod palette;
 mod search;
 mod terminal;
 
-use crate::theme::{action_button, c, codicon, col, file_icon, icon, language_id, language_label};
+use crate::theme::{
+    action_button, c, codicon, col, file_icon, icon, language_id, language_label, tip,
+};
 
 actions!(
     vsn,
@@ -865,9 +867,12 @@ impl Workbench {
                 })
         });
 
-        let layout_toggle = |id: &'static str, on: bool, on_icon: char, off_icon: char| {
-            action_button(id, if on { on_icon } else { off_icon }).text_color(col::fg())
-        };
+        let layout_toggle =
+            |id: &'static str, on: bool, on_icon: char, off_icon: char, text: &'static str| {
+                action_button(id, if on { on_icon } else { off_icon })
+                    .text_color(col::fg())
+                    .tooltip(tip(text))
+            };
 
         let window_button = |id: &'static str, ch: char, area: WindowControlArea, close: bool| {
             div()
@@ -931,8 +936,16 @@ impl Workbench {
                 h_flex()
                     .flex_none()
                     .gap(px(4.))
-                    .child(action_button("back", icon::ARROW_LEFT).text_color(col::fg_muted()))
-                    .child(action_button("forward", icon::ARROW_RIGHT).text_color(col::fg_dim()))
+                    .child(
+                        action_button("back", icon::ARROW_LEFT)
+                            .text_color(col::fg_muted())
+                            .tooltip(tip("Go Back")),
+                    )
+                    .child(
+                        action_button("forward", icon::ARROW_RIGHT)
+                            .text_color(col::fg_dim())
+                            .tooltip(tip("Go Forward")),
+                    )
                     .child(
                         h_flex()
                             .id("command-center")
@@ -986,6 +999,7 @@ impl Workbench {
                                     self.sidebar,
                                     icon::LAYOUT_SIDEBAR_LEFT,
                                     icon::LAYOUT_SIDEBAR_LEFT_OFF,
+                                    "Toggle Primary Side Bar (Ctrl+B)",
                                 )
                                 .on_click(cx.listener(
                                     |this, _, w, cx| this.toggle_sidebar(&ToggleSidebar, w, cx),
@@ -997,6 +1011,7 @@ impl Workbench {
                                     self.panel,
                                     icon::LAYOUT_PANEL,
                                     icon::LAYOUT_PANEL_OFF,
+                                    "Toggle Panel (Ctrl+J)",
                                 )
                                 .on_click(cx.listener(
                                     |this, _, w, cx| this.toggle_panel(&TogglePanel, w, cx),
@@ -1007,10 +1022,12 @@ impl Workbench {
                                 false,
                                 icon::LAYOUT_SIDEBAR_RIGHT_OFF,
                                 icon::LAYOUT_SIDEBAR_RIGHT_OFF,
+                                "Toggle Secondary Side Bar",
                             ))
                             .child(
                                 action_button("customize-layout", icon::LAYOUT)
-                                    .text_color(col::fg()),
+                                    .text_color(col::fg())
+                                    .tooltip(tip("Customize Layout...")),
                             ),
                     )
                     .child(window_button(
@@ -1131,44 +1148,48 @@ impl Workbench {
     // ---- side bar ----------------------------------------------------------
 
     fn render_sidebar(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let (title, actions): (&str, &[char]) = match self.view {
-            View::Explorer => ("Explorer", &[icon::ELLIPSIS]),
+        const MORE: (char, &str) = (icon::ELLIPSIS, "Views and More Actions...");
+        let (title, actions): (&str, &[(char, &str)]) = match self.view {
+            View::Explorer => ("Explorer", &[MORE]),
             View::Search => (
                 "Search",
                 &[
-                    icon::REFRESH,
-                    icon::CLEAR_ALL,
-                    icon::COLLAPSE_ALL,
-                    icon::ELLIPSIS,
+                    (icon::REFRESH, "Refresh"),
+                    (icon::CLEAR_ALL, "Clear Search Results"),
+                    (icon::COLLAPSE_ALL, "Collapse All"),
+                    MORE,
                 ],
             ),
-            View::Scm => ("Source Control", &[icon::ELLIPSIS]),
-            View::Run => ("Run and Debug", &[icon::ELLIPSIS]),
+            View::Scm => ("Source Control", &[MORE]),
+            View::Run => ("Run and Debug", &[MORE]),
             View::Extensions => (
                 "Extensions",
-                &[icon::FILTER, icon::REFRESH, icon::CLEAR_ALL, icon::ELLIPSIS],
+                &[
+                    (icon::FILTER, "Filter Extensions..."),
+                    (icon::REFRESH, "Refresh"),
+                    (icon::CLEAR_ALL, "Clear Extensions Search Results"),
+                    MORE,
+                ],
             ),
         };
-        let header = h_flex()
-            .h(px(35.))
-            .flex_none()
-            .pl(px(20.))
-            .pr(px(8.))
-            .justify_between()
-            .text_size(px(11.))
-            .text_color(col::fg())
-            .child(title.to_uppercase())
-            .when(self.view == View::Run, |d| {
-                d.children(self.render_run_title(cx))
-            })
-            .child(
-                h_flex().gap(px(4.)).children(
-                    actions
-                        .iter()
-                        .enumerate()
-                        .map(|(i, &ch)| action_button(("sb-act", i), ch)),
-                ),
-            );
+        let header =
+            h_flex()
+                .h(px(35.))
+                .flex_none()
+                .pl(px(20.))
+                .pr(px(8.))
+                .justify_between()
+                .text_size(px(11.))
+                .text_color(col::fg())
+                .child(title.to_uppercase())
+                .when(self.view == View::Run, |d| {
+                    d.children(self.render_run_title(cx))
+                })
+                .child(h_flex().gap(px(4.)).children(
+                    actions.iter().enumerate().map(|(i, &(ch, text))| {
+                        action_button(("sb-act", i), ch).tooltip(tip(text))
+                    }),
+                ));
 
         let body = match self.view {
             View::Explorer => self.render_explorer(cx).into_any_element(),
@@ -1555,8 +1576,14 @@ impl Workbench {
                             .border_b_1()
                             .border_color(col::border())
                             .text_color(col::fg())
-                            .child(action_button("split-editor", icon::SPLIT_HORIZONTAL))
-                            .child(action_button("editor-more", icon::ELLIPSIS)),
+                            .child(
+                                action_button("split-editor", icon::SPLIT_HORIZONTAL)
+                                    .tooltip(tip("Split Editor Right")),
+                            )
+                            .child(
+                                action_button("editor-more", icon::ELLIPSIS)
+                                    .tooltip(tip("More Actions...")),
+                            ),
                     ),
             )
             // Absolute, so a long path scrolls instead of widening the editor.
@@ -1703,7 +1730,11 @@ impl Workbench {
                                     .flatten(),
                             )
                             .children(actions.iter().enumerate().map(|(i, &ch)| {
-                                let button = action_button(("panel-act", i), ch);
+                                let text = match (ch, self.panel_tab) {
+                                    (icon::CLEAR_ALL, debug::DEBUG_CONSOLE) => "Clear Console",
+                                    _ => action_tip(ch),
+                                };
+                                let button = action_button(("panel-act", i), ch).tooltip(tip(text));
                                 if (ch, self.panel_tab) == (icon::CHEVRON_DOWN, TERMINAL) {
                                     return self.profile_menu(cx).into_any_element();
                                 }
@@ -1732,11 +1763,13 @@ impl Workbench {
                                 }
                                 .into_any_element()
                             }))
-                            .child(action_button("panel-close", icon::CLOSE).on_click(
-                                cx.listener(|this, _, w, cx| {
-                                    this.toggle_panel(&TogglePanel, w, cx)
-                                }),
-                            )),
+                            .child(
+                                action_button("panel-close", icon::CLOSE)
+                                    .tooltip(tip("Hide Panel (Ctrl+J)"))
+                                    .on_click(cx.listener(|this, _, w, cx| {
+                                        this.toggle_panel(&TogglePanel, w, cx)
+                                    })),
+                            ),
                     ),
             )
             .child(div().flex_1().min_h_0().pt(px(4.)).child(body))
@@ -2547,5 +2580,18 @@ mod tests {
         );
         assert_eq!(Encoding::Utf8Bom.encode("hi"), bom);
         assert_eq!(Encoding::decode(b"h\xE9").unwrap().1, Encoding::Utf8);
+    }
+}
+
+/// VS Code's tooltip for a panel title action, by its icon.
+fn action_tip(ch: char) -> &'static str {
+    match ch {
+        icon::CLEAR_ALL => "Clear All",
+        icon::FILTER => "Filter",
+        icon::ADD => "New Terminal (Ctrl+Shift+`)",
+        icon::SPLIT_HORIZONTAL => "Split Terminal (Ctrl+Shift+5)",
+        icon::TRASH => "Kill Terminal",
+        icon::CHEVRON_UP => "Maximize Panel Size",
+        _ => "Views and More Actions...",
     }
 }

@@ -184,6 +184,11 @@ pub fn logo(size: f32) -> Img {
     img((*src).clone()).flex_none().size(px(size))
 }
 
+/// A plain tooltip, for `.tooltip(tip("..."))`.
+pub fn tip(text: &'static str) -> impl Fn(&mut Window, &mut App) -> AnyView {
+    move |window, cx| component::tooltip::Tooltip::new(text).build(window, cx)
+}
+
 /// Square, hoverable toolbar button with a codicon (22x22, radius 5 like VS Code's action bar).
 pub fn action_button(id: impl Into<ElementId>, ch: char) -> Stateful<Div> {
     div()

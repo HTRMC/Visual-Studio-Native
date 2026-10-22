@@ -1870,6 +1870,7 @@ impl Workbench {
             .size(px(22.))
             .text_color(col::fg())
             .child(codicon(icon::CHEVRON_DOWN))
+            .tooltip("Launch Profile...")
             .dropdown_menu(move |mut menu, _, _| {
                 for profile in profiles() {
                     let wb = wb.clone();

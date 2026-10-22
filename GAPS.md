@@ -107,7 +107,11 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] The bell's tooltip ("No Notifications", "1 New Notification").
 - [x] Tooltips on the status bar items.
 - [x] Tooltips on the activity bar ("Explorer (Ctrl+Shift+E)", ...).
-- [ ] Tooltips on the title-bar, side bar, editor and panel action buttons.
+- [x] Tooltips on the title-bar, side bar, editor and panel action buttons.
+- [ ] Tooltips on the window controls, the command center, terminal tabs'
+      buttons and the debug toolbar.
+- [ ] Most title actions are inert (Customize Layout, Split Editor, More
+      Actions, Maximize Panel Size, the side bars' Views and More Actions).
 - [ ] Activity bar tooltips show under the mouse; VS Code puts them to the
       right of the bar with a pointer.
 - [x] Clicking Ln/Col opens Go to Line; so do Ctrl+G and the Go menu
