@@ -156,10 +156,10 @@ there.
    (rust-analyzer, clangd, gopls, zls, basedpyright, typescript-language-server),
    full-text sync, `publishDiagnostics` as squiggles, the Problems panel
    (click to jump) and the status bar counts, `window/showMessage` as
-   toasts; hover, completion and Go to Definition through gpui-component's
+   toasts; Format Document; hover, completion and Go to Definition through gpui-component's
    editor providers (`lsp-types` and `anyhow` became direct dependencies for
-   their types). *Left:* formatting, rename, references, signature help and
-   code actions; servers from language extensions, either by running
+   their types). *Left:* range formatting, rename, references, signature help
+   and code actions; servers from language extensions, either by running
    `vscode-languageclient` in the JS host against this client or by reading
    the server path from the extension; didClose; restarting a crashed server.
 5. **WASM host.** wasmtime, a WIT world generated from the core API, and a

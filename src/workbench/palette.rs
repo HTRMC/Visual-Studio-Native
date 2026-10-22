@@ -201,6 +201,7 @@ fn builtin_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         (INDENT_ACTIONS[4], Box::new(IndentationToSpaces)),
         (INDENT_ACTIONS[5], Box::new(IndentationToTabs)),
         (INDENT_ACTIONS[6], Box::new(TrimTrailingWhitespace)),
+        ("Format Document", Box::new(FormatDocument)),
         ("Toggle Line Comment", Box::new(ToggleLineComment)),
         ("Add Line Comment", Box::new(AddLineComment)),
         ("Remove Line Comment", Box::new(RemoveLineComment)),

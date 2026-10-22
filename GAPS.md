@@ -477,7 +477,8 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [ ] `workspaceContains:` matches plain paths only, not globs.
 - [x] Language servers on PATH (rust-analyzer, clangd, gopls, zls, basedpyright, typescript-language-server) give squiggles, the Problems panel and the status bar counts.
 - [x] Hover, completion (as you type and Ctrl+Space) and Go to Definition (F12, Ctrl+Click, into other files) from language servers.
-- [ ] Formatting, rename, references, signature help, code actions and document symbols from language servers.
+- [x] Format Document (Shift+Alt+F) from language servers, as one undo step.
+- [ ] Format Selection, format on save/type, rename, references, signature help, code actions and document symbols from language servers.
 - [ ] Completion ignores the server's trigger characters and snippets (`snippetSupport` is off).
 - [ ] Problems panel: collapsing a file, filter, related information, and the Explorer's red file decorations.
 - [ ] A crashed language server isn't restarted; its logs go nowhere (no Output channel).

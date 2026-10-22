@@ -384,6 +384,55 @@ impl Workbench {
         }
     }
 
+    /// Format Document: the server's edits to the active file, as one undo step.
+    pub(super) fn format_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.get(self.active) else {
+            return;
+        };
+        let server = (self.lsp.servers.values().flatten())
+            .find(|s| s.open.lock().unwrap().contains_key(&doc.path));
+        let Some(server) = server else {
+            let text = format!("There is no formatter for '{}' files installed.", doc.lang);
+            self.note(text.into(), Severity::Info, cx);
+            return;
+        };
+        let (editor, before) = (doc.editor.clone(), doc.editor.read(cx).value());
+        let reply = server.request(
+            "textDocument/formatting",
+            json!({
+                "textDocument": { "uri": path_uri(&doc.path) },
+                "options": { "tabSize": doc.indent.tab_size, "insertSpaces": !doc.indent.hard_tabs },
+            }),
+        );
+        cx.spawn_in(window, async move |_, cx| {
+            let reply = reply.await.unwrap_or_default();
+            let Ok(mut edits) = serde_json::from_value::<Vec<lsp_types::TextEdit>>(reply) else {
+                return;
+            };
+            edits.sort_by_key(|e| std::cmp::Reverse((e.range.start.line, e.range.start.character)));
+            editor
+                .update_in(cx, |e, window, cx| {
+                    // Typed over while the server worked: its edits are stale.
+                    if edits.is_empty() || e.value() != before {
+                        return;
+                    }
+                    let mut text = e.text().clone();
+                    for edit in edits {
+                        let start = text.position_to_offset(&edit.range.start);
+                        text.replace(
+                            start..text.position_to_offset(&edit.range.end),
+                            &edit.new_text,
+                        );
+                    }
+                    let pos = e.cursor_position();
+                    e.replace_all(text.to_string(), window, cx);
+                    e.set_cursor_position(pos, window, cx);
+                })
+                .ok();
+        })
+        .detach();
+    }
+
     /// A new workspace: servers start over in it.
     pub(super) fn lsp_reset(&mut self) {
         self.lsp = Lsp::default();
@@ -491,6 +540,7 @@ impl Workbench {
                         "hover": { "contentFormat": ["markdown", "plaintext"] },
                         "completion": { "completionItem": { "snippetSupport": false } },
                         "definition": { "linkSupport": true },
+                        "formatting": {},
                     },
                     "workspace": { "configuration": true, "workspaceFolders": true },
                 },
