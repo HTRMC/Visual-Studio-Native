@@ -1,16 +1,28 @@
 //! EXTENSIONS.md phase 4's native LSP client: one language server per
 //! language, started from PATH when a file of that language opens, kept in
 //! sync with full-text changes. Its diagnostics show as squiggles, in the
-//! Problems panel and in the status bar's counts.
+//! Problems panel and in the status bar's counts; hover, completion and Go to
+//! Definition reach it through the editor's providers.
 
 use std::{
     collections::{BTreeMap, HashMap},
+    hash::{DefaultHasher, Hash as _, Hasher as _},
     io::{BufRead as _, BufReader, Read, Write as _},
     process::{Command, Stdio},
-    sync::mpsc,
+    rc::Rc,
+    sync::{
+        Arc, Mutex, Weak,
+        atomic::{AtomicI64, Ordering},
+        mpsc,
+    },
 };
 
+use futures::channel::oneshot;
 use gpui_kit::base::input::{Diagnostic, DiagnosticSeverity};
+use input::{CompletionProvider, DefinitionProvider, HoverProvider, Rope};
+use lsp_types::{
+    CompletionContext, CompletionResponse, GotoDefinitionResponse, Hover, LocationLink,
+};
 use serde_json::{Value, json};
 
 use super::*;
@@ -48,18 +60,162 @@ pub(super) struct Problem {
 
 #[derive(Default)]
 pub(super) struct Lsp {
-    /// By the server's command; None once it failed to start.
-    servers: HashMap<&'static str, Option<Server>>,
+    /// By the server's command; None once it failed to start. The only
+    /// strong references: dropping one closes the server's stdin.
+    servers: HashMap<&'static str, Option<Arc<Server>>>,
     /// Each file's diagnostics, as its server last published them.
     problems: BTreeMap<PathBuf, Vec<Problem>>,
 }
 
 struct Server {
     out: mpsc::Sender<String>,
-    /// The open documents' versions.
+    next_id: AtomicI64,
+    /// Requests awaiting their response, by id.
+    pending: Mutex<HashMap<i64, oneshot::Sender<Value>>>,
+    /// The open documents' versions and the hash of the text last sent.
     // ponytail: closing an editor sends no didClose; the server keeps its
     // last text, which the next didOpen-as-didChange replaces.
-    open: HashMap<PathBuf, i64>,
+    open: Mutex<HashMap<PathBuf, (i64, u64)>>,
+}
+
+impl Server {
+    /// Sends `text` as `path`'s content unless the server has it already.
+    // ponytail: full sync; incremental changes if big files lag.
+    fn sync(&self, path: &Path, lang: &str, text: &str) {
+        let mut h = DefaultHasher::new();
+        text.hash(&mut h);
+        let hash = h.finish();
+        let uri = path_uri(path);
+        let mut open = self.open.lock().unwrap();
+        match open.get_mut(path) {
+            Some((_, last)) if *last == hash => {}
+            Some((version, last)) => {
+                (*version, *last) = (*version + 1, hash);
+                notify(
+                    &self.out,
+                    "textDocument/didChange",
+                    json!({
+                        "textDocument": { "uri": uri, "version": *version },
+                        "contentChanges": [{ "text": text }],
+                    }),
+                );
+            }
+            None => {
+                open.insert(path.to_path_buf(), (1, hash));
+                notify(
+                    &self.out,
+                    "textDocument/didOpen",
+                    json!({ "textDocument": {
+                        "uri": uri, "languageId": lang, "version": 1, "text": text,
+                    }}),
+                );
+            }
+        }
+    }
+
+    /// Sends a request; the receiver gets its result (null on an error).
+    fn request(&self, method: &str, params: Value) -> oneshot::Receiver<Value> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = oneshot::channel();
+        self.pending.lock().unwrap().insert(id, tx);
+        send(
+            &self.out,
+            json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }),
+        );
+        rx
+    }
+}
+
+/// One editor's hover, completion and definition requests, to its server.
+struct Provider {
+    server: Weak<Server>,
+    path: PathBuf,
+    lang: &'static str,
+}
+
+impl Provider {
+    /// Sends `method` for the position at `offset` in `text`. The text goes
+    /// first, as the editor asks before its Change event reaches
+    /// [`Workbench::lsp_change`].
+    fn ask(&self, method: &str, text: &Rope, offset: usize, cx: &mut App) -> Task<Value> {
+        let Some(server) = self.server.upgrade() else {
+            return Task::ready(Value::Null);
+        };
+        server.sync(&self.path, self.lang, &text.to_string());
+        let params = json!({
+            "textDocument": { "uri": path_uri(&self.path) },
+            "position": text.offset_to_position(offset),
+        });
+        let rx = server.request(method, params);
+        cx.background_spawn(async move { rx.await.unwrap_or_default() })
+    }
+}
+
+impl HoverProvider for Provider {
+    fn hover(
+        &self,
+        text: &Rope,
+        offset: usize,
+        _: &mut Window,
+        cx: &mut App,
+    ) -> Task<anyhow::Result<Option<Hover>>> {
+        let reply = self.ask("textDocument/hover", text, offset, cx);
+        cx.background_spawn(async move { Ok(serde_json::from_value(reply.await)?) })
+    }
+}
+
+impl CompletionProvider for Provider {
+    fn completions(
+        &self,
+        text: &Rope,
+        offset: usize,
+        _: CompletionContext,
+        _: &mut Window,
+        cx: &mut App,
+    ) -> Task<anyhow::Result<CompletionResponse>> {
+        let reply = self.ask("textDocument/completion", text, offset, cx);
+        cx.background_spawn(async move {
+            let reply = reply.await;
+            if reply.is_null() {
+                return Ok(CompletionResponse::Array(vec![]));
+            }
+            Ok(serde_json::from_value(reply)?)
+        })
+    }
+
+    // ponytail: typing a word character or one of `.:>` asks; the server's
+    // own triggerCharacters are ignored.
+    fn is_completion_trigger(&self, _: usize, new_text: &str, _: &mut App) -> bool {
+        let mut chars = new_text.chars();
+        matches!((chars.next(), chars.next()), (Some(c), None)
+            if c.is_alphanumeric() || "_.:>".contains(c))
+    }
+}
+
+impl DefinitionProvider for Provider {
+    fn definitions(
+        &self,
+        text: &Rope,
+        offset: usize,
+        _: &mut Window,
+        cx: &mut App,
+    ) -> Task<anyhow::Result<Vec<LocationLink>>> {
+        let reply = self.ask("textDocument/definition", text, offset, cx);
+        cx.background_spawn(async move {
+            let link = |l: lsp_types::Location| LocationLink {
+                origin_selection_range: None,
+                target_uri: l.uri,
+                target_range: l.range,
+                target_selection_range: l.range,
+            };
+            Ok(match serde_json::from_value(reply.await)? {
+                None => vec![],
+                Some(GotoDefinitionResponse::Scalar(l)) => vec![link(l)],
+                Some(GotoDefinitionResponse::Array(ls)) => ls.into_iter().map(link).collect(),
+                Some(GotoDefinitionResponse::Link(ls)) => ls,
+            })
+        })
+    }
 }
 
 fn send(out: &mpsc::Sender<String>, msg: Value) {
@@ -149,7 +305,8 @@ fn read_frames(stdout: impl Read, mut emit: impl FnMut(Value)) {
 
 impl Workbench {
     /// Tells editor `ix`'s language server about its text, starting the
-    /// server on the first file of its language.
+    /// server on the first file of its language, and points the editor's
+    /// hover, completion and definition requests at it.
     pub(super) fn lsp_open(&mut self, ix: usize, cx: &mut Context<Self>) {
         let Some(doc) = self.docs.get(ix).filter(|d| !d.untitled && !d.binary) else {
             return;
@@ -157,57 +314,66 @@ impl Workbench {
         let Some(&(_, cmd)) = SERVERS.iter().find(|(langs, _)| langs.contains(&doc.lang)) else {
             return;
         };
-        let (path, lang, text) = (doc.path.clone(), doc.lang, doc.editor.read(cx).value());
+        let (path, lang, editor) = (doc.path.clone(), doc.lang, doc.editor.clone());
         if !self.lsp.servers.contains_key(cmd[0]) {
             let server = self.start_server(cmd, cx);
             self.lsp.servers.insert(cmd[0], server);
         }
-        let Some(Some(server)) = self.lsp.servers.get_mut(cmd[0]) else {
+        let Some(Some(server)) = self.lsp.servers.get(cmd[0]) else {
             return;
         };
-        let uri = path_uri(&path);
-        match server.open.get_mut(&path) {
-            Some(version) => {
-                *version += 1;
-                notify(
-                    &server.out,
-                    "textDocument/didChange",
-                    json!({
-                        "textDocument": { "uri": uri, "version": *version },
-                        "contentChanges": [{ "text": text.as_ref() }],
-                    }),
-                );
+        server.sync(&path, lang, &editor.read(cx).value());
+        let provider = Rc::new(Provider {
+            server: Arc::downgrade(server),
+            path: path.clone(),
+            lang,
+        });
+        let this = cx.weak_entity();
+        // A definition in another file opens there; within its own file the
+        // editor moves by itself.
+        let show: input::ShowDocumentHandler = Rc::new(move |params, window, cx| {
+            let (Some(target), Some(sel)) = (uri_path(params.uri.as_str()), params.selection)
+            else {
+                return false;
+            };
+            if target == path {
+                return false;
             }
-            None => {
-                server.open.insert(path, 1);
-                notify(
-                    &server.out,
-                    "textDocument/didOpen",
-                    json!({ "textDocument": {
-                        "uri": uri, "languageId": lang, "version": 1, "text": text.as_ref(),
-                    }}),
-                );
-            }
-        }
+            let this = this.clone();
+            // The editor asking is mid-update; open once it's done.
+            window.defer(cx, move |window, cx| {
+                this.update(cx, |this, cx| {
+                    this.open_path(target, window, cx);
+                    if let Some(doc) = this.docs.get(this.active) {
+                        reveal(&doc.editor.clone(), sel.start, window, cx);
+                    }
+                })
+                .ok();
+            });
+            true
+        });
+        editor.update(cx, |e, _| {
+            let lsp = e.lsp_mut();
+            lsp.hover_provider = Some(provider.clone());
+            lsp.completion_provider = Some(provider.clone());
+            lsp.definition_provider = Some(provider);
+            lsp.show_document = Some(show);
+        });
     }
 
     /// Editor `ix` changed: its server gets the whole new text.
-    // ponytail: full sync per keystroke; incremental changes if big files lag.
     pub(super) fn lsp_change(&mut self, ix: usize, cx: &mut Context<Self>) {
-        if self
-            .lsp
-            .servers
-            .values()
-            .flatten()
-            .any(|s| s.open.contains_key(&self.docs[ix].path))
-        {
-            self.lsp_open(ix, cx);
+        let doc = &self.docs[ix];
+        for server in self.lsp.servers.values().flatten() {
+            if server.open.lock().unwrap().contains_key(&doc.path) {
+                server.sync(&doc.path, doc.lang, &doc.editor.read(cx).value());
+            }
         }
     }
 
     pub(super) fn lsp_saved(&mut self, path: &Path) {
         for server in self.lsp.servers.values().flatten() {
-            if server.open.contains_key(path) {
+            if server.open.lock().unwrap().contains_key(path) {
                 let uri = path_uri(path);
                 notify(
                     &server.out,
@@ -223,7 +389,7 @@ impl Workbench {
         self.lsp = Lsp::default();
     }
 
-    fn start_server(&mut self, cmd: &[&str], cx: &mut Context<Self>) -> Option<Server> {
+    fn start_server(&mut self, cmd: &[&str], cx: &mut Context<Self>) -> Option<Arc<Server>> {
         let mut command = Command::new(cmd[0]);
         command
             .args(&cmd[1..])
@@ -256,13 +422,30 @@ impl Workbench {
                 }
             }
         });
+        let server = Arc::new(Server {
+            out: out.clone(),
+            next_id: AtomicI64::new(1),
+            pending: Mutex::default(),
+            open: Mutex::default(),
+        });
         let (tx, mut rx) = futures::channel::mpsc::unbounded::<Value>();
-        let reply = out.clone();
+        // Weak, so dropping the server closes stdin and ends both threads.
+        let weak = Arc::downgrade(&server);
         std::thread::spawn(move || {
             read_frames(stdout, |msg| match (&msg["id"], msg["method"].as_str()) {
                 (Value::Null, Some(_)) => _ = tx.unbounded_send(msg),
                 (id, None) if id == 0 => _ = ready.send(()),
+                (id, None) => {
+                    let waiting = (weak.upgrade().zip(id.as_i64()))
+                        .and_then(|(s, id)| s.pending.lock().unwrap().remove(&id));
+                    if let Some(tx) = waiting {
+                        tx.send(msg["result"].clone()).ok();
+                    }
+                }
                 (id, Some(method)) => {
+                    let Some(server) = weak.upgrade() else {
+                        return;
+                    };
                     // Requests from the server get an empty answer; settings
                     // are null per item, so servers use their defaults.
                     let items = msg["params"]["items"].as_array().map_or(0, Vec::len);
@@ -271,11 +454,10 @@ impl Workbench {
                         _ => Value::Null,
                     };
                     send(
-                        &reply,
+                        &server.out,
                         json!({ "jsonrpc": "2.0", "id": id, "result": result }),
                     );
                 }
-                _ => {}
             });
             child.kill().ok();
             child.wait().ok();
@@ -306,16 +488,16 @@ impl Workbench {
                     "textDocument": {
                         "synchronization": { "didSave": true },
                         "publishDiagnostics": {},
+                        "hover": { "contentFormat": ["markdown", "plaintext"] },
+                        "completion": { "completionItem": { "snippetSupport": false } },
+                        "definition": { "linkSupport": true },
                     },
                     "workspace": { "configuration": true, "workspaceFolders": true },
                 },
             }}),
         );
         notify(&out, "initialized", json!({}));
-        Some(Server {
-            out,
-            open: HashMap::new(),
-        })
+        Some(server)
     }
 
     fn on_server(&mut self, msg: Value, cx: &mut Context<Self>) {

@@ -220,6 +220,8 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-g", GoToLine, None),
         KeyBinding::new("ctrl-shift-o", GoToSymbol, None),
         KeyBinding::new("ctrl-t", GoToSymbolInWorkspace, None),
+        KeyBinding::new("f12", input::GoToDefinition, Some("Input")),
+        KeyBinding::new("ctrl-space", input::ShowCompletions, Some("Input")),
         // VS Code sends these two to the shell rather than skipping it.
         KeyBinding::new("ctrl-g", NoAction, Some("Terminal")),
         KeyBinding::new("ctrl-shift-o", NoAction, Some("Terminal")),

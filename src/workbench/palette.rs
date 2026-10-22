@@ -2187,6 +2187,7 @@ impl Workbench {
             e.set_scroll_offset(scroll, cx);
         });
         self.docs[ix].editor = editor;
+        self.lsp_open(ix, cx);
         self.show_diagnostics(&path, cx);
         if ix == self.active {
             self.activate(ix, window, cx);

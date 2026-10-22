@@ -156,10 +156,10 @@ there.
    (rust-analyzer, clangd, gopls, zls, basedpyright, typescript-language-server),
    full-text sync, `publishDiagnostics` as squiggles, the Problems panel
    (click to jump) and the status bar counts, `window/showMessage` as
-   toasts. *Left:* completion, hover, definition and formatting, which
-   gpui-component's editor already takes as provider traits, but typed with
-   `lsp_types`, `ropey` and `anyhow` (in the build already, not yet direct
-   dependencies); servers from language extensions, either by running
+   toasts; hover, completion and Go to Definition through gpui-component's
+   editor providers (`lsp-types` and `anyhow` became direct dependencies for
+   their types). *Left:* formatting, rename, references, signature help and
+   code actions; servers from language extensions, either by running
    `vscode-languageclient` in the JS host against this client or by reading
    the server path from the extension; didClose; restarting a crashed server.
 5. **WASM host.** wasmtime, a WIT world generated from the core API, and a
