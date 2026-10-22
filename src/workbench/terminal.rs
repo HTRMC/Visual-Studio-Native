@@ -47,6 +47,8 @@ pub(super) struct Terminals {
     /// active terminal.
     find: Option<Entity<InputState>>,
     finding: bool,
+    /// Match case, whole word, regex.
+    find_opts: [bool; 3],
 }
 
 pub(super) struct Terminal {
@@ -781,13 +783,17 @@ impl Workbench {
             .as_ref()
             .filter(|_| self.terminals.finding)?;
         let query = input.read(cx).value();
-        // ponytail: case-insensitive text only; no case, word or regex toggles.
-        (!query.is_empty()).then(|| {
-            regex::RegexBuilder::new(&regex::escape(&query))
-                .case_insensitive(true)
-                .build()
-                .unwrap()
-        })
+        let [case, word, regex] = self.terminals.find_opts;
+        // ponytail: a bad regex just finds nothing; VS Code also reddens the box.
+        (!query.is_empty())
+            .then(|| super::search::build_regex(&query, case, word, regex).ok())
+            .flatten()
+    }
+
+    /// Alt+C, Alt+W, Alt+R: flips match case, whole word or regex (`i`).
+    fn toggle_find_opt(&mut self, i: usize, cx: &mut Context<Self>) {
+        self.terminals.find_opts[i] ^= true;
+        self.search_terminal(cx);
     }
 
     /// Selects the match above (`up`) or below the current one, wrapping.
@@ -843,6 +849,17 @@ impl Workbench {
                 .size(px(20.))
                 .on_click(cx.listener(move |this, _, w, cx| act(this, w, cx)))
         };
+        let opts = [
+            ("terminal-find-case", icon::CASE_SENSITIVE),
+            ("terminal-find-word", icon::WHOLE_WORD),
+            ("terminal-find-regex", icon::REGEX),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, (id, ch))| {
+            super::search::find_toggle(id, ch, self.terminals.find_opts[i])
+                .on_click(cx.listener(move |this, _, _, cx| this.toggle_find_opt(i, cx)))
+        });
         Some(
             h_flex()
                 .id("terminal-find")
@@ -862,17 +879,30 @@ impl Workbench {
                     cx.stop_propagation();
                     this.find_in_terminal(window, cx)
                 }))
+                .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
+                    let m = &ev.keystroke.modifiers;
+                    let i = ["c", "w", "r"].iter().position(|k| *k == ev.keystroke.key);
+                    if let Some(i) = i.filter(|_| m.alt && !m.control && !m.shift) {
+                        cx.stop_propagation();
+                        this.toggle_find_opt(i, cx);
+                    }
+                }))
                 .capture_action(cx.listener(|this, _: &Escape, window, cx| {
                     cx.stop_propagation();
                     this.close_terminal_find(window, cx)
                 }))
                 .child(
                     div()
-                        .w(px(220.))
+                        .w(px(280.))
                         .border_1()
                         .border_color(col::accent())
                         .bg(col::input())
-                        .child(Input::new(input).appearance(false).text_size(px(13.))),
+                        .child(
+                            Input::new(input)
+                                .appearance(false)
+                                .text_size(px(13.))
+                                .suffix(h_flex().gap(px(2.)).children(opts)),
+                        ),
                 )
                 .child(
                     div()

@@ -137,7 +137,30 @@ fn expand_at(re: &Regex, line: &str, m: &Range<usize>, with: &str) -> String {
     out
 }
 
-fn build_regex(text: &str, case: bool, word: bool, regex: bool) -> Result<Regex, regex::Error> {
+/// A match case, whole word or regex toggle in a find input.
+pub(super) fn find_toggle(id: &'static str, ch: char, on: bool) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(20.))
+        .rounded(px(3.))
+        .cursor_pointer()
+        .text_color(col::fg())
+        .when(on, |d| {
+            d.bg(ca(0x3994BC33)).border_1().border_color(col::accent())
+        })
+        .when(!on, |d| d.hover(|s| s.bg(col::toolbar_hover())))
+        .child(codicon(ch))
+}
+
+pub(super) fn build_regex(
+    text: &str,
+    case: bool,
+    word: bool,
+    regex: bool,
+) -> Result<Regex, regex::Error> {
     let pattern = if regex {
         text.to_string()
     } else {
@@ -709,25 +732,11 @@ impl Workbench {
                       on: bool,
                       set: fn(&mut Find) -> &mut bool,
                       cx: &mut Context<Self>| {
-            div()
-                .id(id)
-                .flex()
-                .items_center()
-                .justify_center()
-                .size(px(20.))
-                .rounded(px(3.))
-                .cursor_pointer()
-                .text_color(col::fg())
-                .when(on, |d| {
-                    d.bg(ca(0x3994BC33)).border_1().border_color(col::accent())
-                })
-                .when(!on, |d| d.hover(|s| s.bg(col::toolbar_hover())))
-                .child(codicon(ch))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    let flag = set(&mut this.find);
-                    *flag = !*flag;
-                    this.run_search(Duration::ZERO, cx);
-                }))
+            find_toggle(id, ch, on).on_click(cx.listener(move |this, _, _, cx| {
+                let flag = set(&mut this.find);
+                *flag = !*flag;
+                this.run_search(Duration::ZERO, cx);
+            }))
         };
         let suffix = h_flex()
             .gap(px(2.))
