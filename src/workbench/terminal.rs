@@ -2214,7 +2214,7 @@ impl Workbench {
 
         let screen = t.parser.screen();
         let (rows, cols) = screen.size();
-        let (fg0, bg0) = (c(0xCCCCCC), col::bg());
+        let (fg0, bg0) = (col::terminal_fg(), col::bg());
         // The grid's width past the panel's, when its size is fixed.
         let grid_w = PAD_L + cols.get() as f32 * t.cell_w + PAD_R;
         let over = (grid_w - f32::from(size.width)).max(0.);

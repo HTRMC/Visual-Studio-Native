@@ -195,7 +195,9 @@ pub(super) fn associated_language(
 ) -> Option<&'static str> {
     let map = settings["files.associations"].as_object()?;
     map.iter().find_map(|(glob, id)| {
-        let id = *LANGUAGES.iter().find(|l| id.as_str() == Some(**l))?;
+        let id = (LANGUAGES.iter().copied())
+            .chain(super::extensions::language_ids())
+            .find(|l| id.as_str() == Some(*l))?;
         let mut b = OverrideBuilder::new(root);
         b.add(glob).ok()?;
         b.build()

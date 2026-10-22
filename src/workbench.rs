@@ -32,6 +32,7 @@ use gpui_kit::{
 };
 
 mod debug;
+pub(crate) mod extensions;
 mod palette;
 mod search;
 mod terminal;
@@ -161,6 +162,9 @@ actions!(
         FindInFolder,
         OpenSettingsJson,
         OpenSettings,
+        InstallFromVsix,
+        SelectColorTheme,
+        InsertSnippet,
     ]
 );
 
@@ -174,6 +178,7 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
     vec![
         KeyBinding::new("ctrl-o", OpenFile, None),
         KeyBinding::new("ctrl-k ctrl-o", OpenFolder, None),
+        KeyBinding::new("ctrl-k ctrl-t", SelectColorTheme, None),
         KeyBinding::new("ctrl-s", Save, None),
         KeyBinding::new("ctrl-shift-s", SaveAs, None),
         KeyBinding::new("ctrl-k s", SaveAll, None),
@@ -619,6 +624,9 @@ fn enclosing_brackets(text: &str, mut from: usize, to: usize) -> Option<(usize, 
 /// Language `lang`'s line comment token, from VS Code's language
 /// configurations.
 fn line_comment(lang: &str) -> Option<&'static str> {
+    if let Some((line, _)) = extensions::comments(lang) {
+        return line;
+    }
     Some(match lang {
         "rust" | "typescript" | "typescriptreact" | "javascript" | "javascriptreact" | "json"
         | "jsonc" | "c" | "cpp" | "csharp" | "go" | "java" | "kotlin" | "php" | "swift" | "zig"
@@ -634,6 +642,9 @@ fn line_comment(lang: &str) -> Option<&'static str> {
 /// Language `lang`'s block comment start and end, from VS Code's language
 /// configurations.
 fn block_comment(lang: &str) -> Option<(&'static str, &'static str)> {
+    if let Some((_, block)) = extensions::comments(lang) {
+        return block;
+    }
     Some(match lang {
         "rust" | "typescript" | "typescriptreact" | "javascript" | "javascriptreact" | "json"
         | "jsonc" | "c" | "cpp" | "csharp" | "go" | "java" | "kotlin" | "php" | "swift" | "css"
@@ -994,6 +1005,12 @@ impl Workbench {
         };
         this.init_search(window, cx);
         this.init_debug(window, cx);
+        cx.subscribe(&this.ext_search, |_, _, ev: &InputEvent, cx| {
+            if matches!(ev, InputEvent::Change) {
+                cx.notify();
+            }
+        })
+        .detach();
         this.watch_root(cx);
         // The title bar's close button (and Alt+F4) land here.
         let wb = cx.weak_entity();
@@ -1650,6 +1667,10 @@ impl Workbench {
                 doc.saved = text_hash(&doc.editor, cx);
                 if let Some(old) = old {
                     self.relanguage(&old, window, cx);
+                    let theme = &terminal::settings()["workbench.colorTheme"];
+                    if old["workbench.colorTheme"] != *theme {
+                        extensions::apply_theme(&extensions::configured_theme(), cx);
+                    }
                 }
             }
             Err(err) => eprintln!("save {}: {err}", doc.path.display()),
@@ -2702,24 +2723,32 @@ impl Workbench {
                 ],
             ),
         };
-        let header =
-            h_flex()
-                .h(px(35.))
-                .flex_none()
-                .pl(px(20.))
-                .pr(px(8.))
-                .justify_between()
-                .text_size(px(11.))
-                .text_color(col::fg())
-                .child(title.to_uppercase())
-                .when(self.view == View::Run, |d| {
-                    d.children(self.render_run_title(cx))
-                })
-                .child(h_flex().gap(px(4.)).children(
-                    actions.iter().enumerate().map(|(i, &(ch, text))| {
-                        action_button(("sb-act", i), ch).tooltip(tip(text))
-                    }),
-                ));
+        let header = h_flex()
+            .h(px(35.))
+            .flex_none()
+            .pl(px(20.))
+            .pr(px(8.))
+            .justify_between()
+            .text_size(px(11.))
+            .text_color(col::fg())
+            .child(title.to_uppercase())
+            .when(self.view == View::Run, |d| {
+                d.children(self.render_run_title(cx))
+            })
+            .child(
+                h_flex()
+                    .gap(px(4.))
+                    .children(actions.iter().enumerate().map(|(i, &(ch, text))| {
+                        match (self.view, text == MORE.1) {
+                            (View::Extensions, true) => {
+                                extensions::more_button().into_any_element()
+                            }
+                            _ => action_button(("sb-act", i), ch)
+                                .tooltip(tip(text))
+                                .into_any_element(),
+                        }
+                    })),
+            );
 
         let body = match self.view {
             View::Explorer => self.render_explorer(cx).into_any_element(),
@@ -2743,8 +2772,8 @@ impl Workbench {
                         .pb(px(8.))
                         .child(search_box(&self.ext_search)),
                 )
-                .child(section_header("ext-installed", "Installed", false))
-                .child(section_header("ext-recommended", "Recommended", false))
+                .child(section_header("ext-installed", "Installed", true))
+                .child(self.render_installed(cx))
                 .into_any_element(),
         };
 
@@ -4019,7 +4048,7 @@ impl Workbench {
     }
 
     fn note(&mut self, message: SharedString, severity: Severity, cx: &mut Context<Self>) {
-        let error = severity != Severity::Warning;
+        let error = matches!(severity, Severity::Error | Severity::SettingsError);
         self.clear_note(&message, cx);
         self.notes.insert(0, (message.clone(), severity));
         if self.center {
@@ -4150,9 +4179,10 @@ impl Workbench {
             .py(px(8.))
             .gap(px(8.))
             // notificationsErrorIcon.foreground and notificationsWarningIcon.foreground
-            .child(match severity != Severity::Warning {
-                true => codicon(icon::ERROR).mt(px(5.)).text_color(c(0xF14C4C)),
-                false => codicon(icon::WARNING).mt(px(5.)).text_color(c(0xCCA700)),
+            .child(match severity {
+                Severity::Info => codicon(icon::INFO).mt(px(5.)).text_color(c(0x3794FF)),
+                Severity::Warning => codicon(icon::WARNING).mt(px(5.)).text_color(c(0xCCA700)),
+                _ => codicon(icon::ERROR).mt(px(5.)).text_color(c(0xF14C4C)),
             })
             // min width 0 lets a long message wrap instead of pushing out the close button.
             .child(
@@ -4310,6 +4340,7 @@ impl Workbench {
 /// A notification's severity; settings.json errors offer Open Settings.
 #[derive(Clone, Copy, PartialEq)]
 enum Severity {
+    Info,
     Warning,
     Error,
     SettingsError,
@@ -4775,6 +4806,13 @@ impl Render for Workbench {
                 this.scroll_terminal(isize::MIN, 0, cx)
             }))
             .on_action(cx.listener(|this, _: &ChangeEol, window, cx| this.change_eol(window, cx)))
+            .on_action(cx.listener(|this, _: &InstallFromVsix, _, cx| this.install_from_vsix(cx)))
+            .on_action(cx.listener(|this, _: &SelectColorTheme, window, cx| {
+                this.select_color_theme(window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &InsertSnippet, window, cx| this.insert_snippet(window, cx)),
+            )
             .on_action(cx.listener(|this, _: &IndentUsingSpaces, window, cx| {
                 this.indent_action(0, window, cx)
             }))

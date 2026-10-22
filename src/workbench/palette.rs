@@ -256,6 +256,12 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("Debug: Toggle Breakpoint", Box::new(ToggleBreakpoint)),
         ("Debug: Open 'launch.json'", Box::new(OpenLaunchJson)),
         ("Preferences: Open User Settings", Box::new(OpenSettings)),
+        ("Preferences: Color Theme", Box::new(SelectColorTheme)),
+        (
+            "Extensions: Install from VSIX...",
+            Box::new(InstallFromVsix),
+        ),
+        ("Snippets: Insert Snippet", Box::new(InsertSnippet)),
         (
             "Preferences: Open User Settings (JSON)",
             Box::new(OpenSettingsJson),
@@ -266,6 +272,8 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
 }
 
 enum Pick {
+    /// A row of a plain pick list (`Palette::items`), matched offsets.
+    Item(usize, Vec<usize>),
     /// Path (relative to the root when inside it), with the byte offsets
     /// matched in its file name and in its folder.
     File(String, Vec<usize>, Vec<usize>),
@@ -373,6 +381,23 @@ struct Def {
 /// Group headers: the row they start at and their label.
 type Groups = Vec<(usize, SharedString)>;
 
+/// A plain pick list: rows of a label and a description, in groups.
+pub(super) struct Items {
+    pub picker: Picker,
+    pub rows: Vec<(String, String)>,
+    pub groups: Groups,
+    pub placeholder: &'static str,
+    /// The row highlighted when the list opens.
+    pub current: usize,
+}
+
+/// What a plain pick list's rows are.
+pub(super) enum Picker {
+    /// `workbench.colorTheme` names.
+    Theme(Vec<String>),
+    Snippet(Vec<extensions::Snippet>),
+}
+
 pub(super) struct Palette {
     state: Entity<CommandState>,
     open: bool,
@@ -409,6 +434,8 @@ pub(super) struct Palette {
     eol: bool,
     /// Set while the palette is Change Language Mode's pick list.
     lang: bool,
+    /// Set while the palette is a plain pick list.
+    items: Option<Items>,
     /// Set while Change Language Mode's list picks the language to associate
     /// with: the `files.associations` key and the file's language by name.
     associating: Option<(String, &'static str)>,
@@ -471,6 +498,7 @@ impl Palette {
             coloring: None,
             iconing: None,
             joining: false,
+            items: None,
             eol: false,
             lang: false,
             associating: None,
@@ -1834,6 +1862,7 @@ impl Workbench {
         p.joining = false;
         p.eol = false;
         p.lang = false;
+        p.items = None;
         p.associating = None;
         p.indent = None;
         p.encoding = None;
@@ -1910,6 +1939,13 @@ impl Workbench {
         }
         self.open_palette("", window, cx);
         self.palette.eol = true;
+        self.palette_query(String::new(), cx);
+    }
+
+    /// The palette as the plain pick list `items`.
+    pub(super) fn open_items(&mut self, items: Items, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_palette("", window, cx);
+        self.palette.items = Some(items);
         self.palette_query(String::new(), cx);
     }
 
@@ -2262,6 +2298,7 @@ impl Workbench {
         p.joining = false;
         p.eol = false;
         p.lang = false;
+        p.items = None;
         p.associating = None;
         p.indent = None;
         p.encoding = None;
@@ -2307,14 +2344,30 @@ impl Workbench {
             p.show(shown, Vec::new(), 0);
             return;
         }
+        if let Some(items) = &p.items {
+            let q = query.trim();
+            let shown = (items.rows.iter().enumerate())
+                .filter_map(|(ix, (label, _))| Some(Pick::Item(ix, command_matches(q, label)?)))
+                .collect();
+            match q.is_empty() {
+                true => p.show(shown, items.groups.clone(), items.current),
+                false => p.show(shown, Vec::new(), 0),
+            }
+            return;
+        }
         if p.lang {
             // Associating lists names alone, the file's current one preselected.
             let (current, associating) = match &p.associating {
                 Some((_, by_name)) => (*by_name, true),
                 None => (active.map_or("", |d| d.lang), false),
             };
-            let mut langs: Vec<_> = (LANGUAGES.iter())
-                .map(|&id| match associating {
+            let mut langs: Vec<_> = (LANGUAGES.iter().copied())
+                .chain(
+                    extensions::language_ids()
+                        .into_iter()
+                        .filter(|id| !LANGUAGES.contains(id)),
+                )
+                .map(|id| match associating {
                     true => (id, language_label(id).to_string()),
                     false => (id, format!("{} ({id})", language_label(id))),
                 })
@@ -2799,6 +2852,12 @@ impl Workbench {
                 }
                 (None, None)
             }
+            Some(&Pick::Item(ix, _)) => {
+                if let Some(items) = p.items.take() {
+                    self.pick_item(items.picker, ix, window, cx);
+                }
+                (None, None)
+            }
             Some(&Pick::View(ix, _)) => {
                 view = Some(ix);
                 (None, None)
@@ -2866,7 +2925,9 @@ impl Workbench {
         let this = cx.weak_entity();
         let (this2, this3) = (this.clone(), this.clone());
         let associate_placeholder;
-        let placeholder = if p.profiles.is_some() {
+        let placeholder = if let Some(items) = &p.items {
+            items.placeholder
+        } else if p.profiles.is_some() {
             "Select your default terminal profile"
         } else if p.renaming.is_some() {
             "Enter terminal name"
@@ -2964,6 +3025,14 @@ impl Workbench {
                 }
                 Pick::Eol(crlf, hits) => row(RowIcon::None, eol(*crlf), hits).item(),
                 Pick::View(ix, hits) => row(RowIcon::None, VIEWS[*ix], hits).item(),
+                Pick::Item(ix, hits) => {
+                    let (label, desc) = &p.items.as_ref().unwrap().rows[*ix];
+                    Row {
+                        desc: desc.clone().into(),
+                        ..row(RowIcon::None, label, hits)
+                    }
+                    .item()
+                }
                 Pick::TermView(_, label, hits) => row(RowIcon::None, label, hits).item(),
                 Pick::Lang(id, label, hits) => {
                     let current = matches!(&p.associating, Some((_, by_name)) if by_name == id);

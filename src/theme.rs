@@ -16,72 +16,64 @@ pub fn ca(hex: u32) -> Hsla {
     rgba(hex).into()
 }
 
+/// The workbench's colors: Dark 2026's, or an extension color theme's
+/// mapped onto them (see `extensions::apply_theme`).
+// ponytail: only these follow a color theme; the `c(0x..)` literals
+// elsewhere stay Dark 2026's.
 pub mod col {
     use super::*;
-    pub fn bg() -> Hsla {
-        c(0x191A1B)
-    } // titleBar / activityBar / sideBar / panel / statusBar
-    pub fn editor() -> Hsla {
-        c(0x121314)
+    use std::sync::RwLock;
+
+    macro_rules! colors {
+        ($($(#[$doc:meta])* $name:ident: $value:expr,)*) => {
+            #[derive(Clone, Copy)]
+            pub struct Colors {
+                $(pub $name: Hsla,)*
+            }
+            impl Default for Colors {
+                fn default() -> Self {
+                    Self { $($name: $value,)* }
+                }
+            }
+            $($(#[$doc])* pub fn $name() -> Hsla {
+                COLORS.read().unwrap().$name
+            })*
+        };
     }
-    pub fn border() -> Hsla {
-        c(0x2A2B2C)
+
+    colors! {
+        /// titleBar / activityBar / sideBar / panel / statusBar
+        bg: c(0x191A1B),
+        editor: c(0x121314),
+        border: c(0x2A2B2C),
+        fg: c(0xbfbfbf),
+        fg_muted: c(0x8C8C8C),
+        fg_dim: c(0x555555),
+        accent: c(0x3994BC),
+        focus: ca(0x3994BCB3),
+        hover: ca(0xFFFFFF14),
+        selected: ca(0xFFFFFF22),
+        /// editorGroup.dropBackground
+        drop: ca(0x53595D80),
+        /// tab.dragAndDropBorder
+        drag_border: c(0xFFFFFF),
+        toolbar_hover: ca(0xFFFFFF10),
+        input: c(0x191A1B),
+        input_border: c(0x333536),
+        command_center_border: c(0x2E3031),
+        status_hover: c(0x323233),
+        remote: c(0x0078D4),
+        indent_guide: c(0x585858),
+        inactive_indent_guide: ca(0x58585866),
+        close_hover: c(0xE81123),
+        /// terminal.foreground
+        terminal_fg: c(0xCCCCCC),
     }
-    pub fn fg() -> Hsla {
-        c(0xbfbfbf)
-    }
-    pub fn fg_muted() -> Hsla {
-        c(0x8C8C8C)
-    }
-    pub fn fg_dim() -> Hsla {
-        c(0x555555)
-    }
-    pub fn accent() -> Hsla {
-        c(0x3994BC)
-    }
-    pub fn focus() -> Hsla {
-        ca(0x3994BCB3)
-    }
-    pub fn hover() -> Hsla {
-        ca(0xFFFFFF14)
-    }
-    pub fn selected() -> Hsla {
-        ca(0xFFFFFF22)
-    }
-    /// editorGroup.dropBackground
-    pub fn drop() -> Hsla {
-        ca(0x53595D80)
-    }
-    /// tab.dragAndDropBorder
-    pub fn drag_border() -> Hsla {
-        c(0xFFFFFF)
-    }
-    pub fn toolbar_hover() -> Hsla {
-        ca(0xFFFFFF10)
-    }
-    pub fn input() -> Hsla {
-        c(0x191A1B)
-    }
-    pub fn input_border() -> Hsla {
-        c(0x333536)
-    }
-    pub fn command_center_border() -> Hsla {
-        c(0x2E3031)
-    }
-    pub fn status_hover() -> Hsla {
-        c(0x323233)
-    }
-    pub fn remote() -> Hsla {
-        c(0x0078D4)
-    }
-    pub fn indent_guide() -> Hsla {
-        c(0x585858)
-    }
-    pub fn inactive_indent_guide() -> Hsla {
-        ca(0x58585866)
-    }
-    pub fn close_hover() -> Hsla {
-        c(0xE81123)
+
+    static COLORS: LazyLock<RwLock<Colors>> = LazyLock::new(Default::default);
+
+    pub fn set(colors: Colors) {
+        *COLORS.write().unwrap() = colors;
     }
 }
 
@@ -123,6 +115,7 @@ pub mod icon {
     pub const SYNC: char = '\u{EA77}';
     pub const ERROR: char = '\u{EA87}';
     pub const WARNING: char = '\u{EA6C}';
+    pub const INFO: char = '\u{EA74}';
     pub const BELL: char = '\u{EAA2}';
     pub const BELL_DOT: char = '\u{EB9A}';
     pub const BELL_SLASH: char = '\u{EC08}';
@@ -293,6 +286,9 @@ pub fn language_id(path: &Path) -> &'static str {
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
+    if let Some(id) = crate::workbench::extensions::language_of(&name) {
+        return id;
+    }
     match name.as_str() {
         "makefile" => return "makefile",
         "dockerfile" => return "dockerfile",
@@ -409,7 +405,7 @@ pub fn language_label(id: &str) -> &'static str {
         "makefile" => "Makefile",
         "dockerfile" => "Dockerfile",
         "ignore" => "Ignore",
-        _ => "Plain Text",
+        _ => crate::workbench::extensions::language_label(id).unwrap_or("Plain Text"),
     }
 }
 

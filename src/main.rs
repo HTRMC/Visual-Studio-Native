@@ -7,7 +7,7 @@ mod workbench;
 
 use std::{borrow::Cow, path::PathBuf};
 
-use gpui_kit::component::{Theme, ThemeMode, ThemeRegistry};
+use gpui_kit::component::ThemeRegistry;
 use gpui_kit::*;
 
 use workbench::Workbench;
@@ -38,10 +38,9 @@ fn main() {
             ThemeRegistry::global_mut(cx)
                 .load_themes_from_str(include_str!("../assets/themes/dark-2026.json"))
                 .expect("load theme");
-            if let Some(theme) = ThemeRegistry::global(cx).themes().get("Dark 2026").cloned() {
-                Theme::global_mut(cx).dark_theme = theme;
-            }
-            Theme::change(ThemeMode::Dark, None, cx);
+            workbench::extensions::reload();
+            let theme = workbench::extensions::configured_theme();
+            workbench::extensions::apply_theme(&theme, cx);
 
             let keys = workbench::key_bindings(cx.keyboard_mapper().as_ref());
             cx.bind_keys(keys);

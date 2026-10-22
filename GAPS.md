@@ -450,3 +450,20 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] A queued toast that comes into view may hide sooner than a full 18
       seconds.
 - [x] Toasts appeared without VS Code's slide-in; they now fade in from below.
+- [ ] Tab characters in a file render with no width (tabs.c's indents vanish).
+
+## Extensions
+
+See EXTENSIONS.md for the plan; phase 1 is in.
+
+- [x] Install from VSIX... (the view's ... menu, and the palette).
+- [x] Installed list with search, Disable and Uninstall on the gear.
+- [x] Preferences: Color Theme (Ctrl+K Ctrl+T) applies an extension's theme and saves `workbench.colorTheme`.
+- [x] Snippets: Insert Snippet; languages' file extensions, labels and comments.
+- [x] The terminal's text followed no theme; it takes `terminal.foreground`.
+- [ ] Toasts, menus and other hard-coded `c(0x..)` colors stay dark under a light theme.
+- [ ] The theme picker doesn't preview as the selection moves.
+- [ ] Snippets: only the first tab stop is selected; no Tab to the next, no completion by prefix.
+- [ ] Extension details page (README, changelog) when clicking a row.
+- [ ] Open VSX search and install (needs an HTTP client dependency).
+- [ ] Icon themes, brackets and indent rules from extensions.

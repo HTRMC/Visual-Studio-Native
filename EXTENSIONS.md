@@ -84,8 +84,9 @@ licensed for VS Code only and aren't on Open VSX; their open counterparts
 ## Layout on disk
 
 VS Code's: `%USERPROFILE%\.vsn\extensions\<publisher>.<name>-<version>\`
-(the unpacked `extension/` folder of the .vsix), plus `extensions.json`
-listing what's installed and disabled.
+(the unpacked `extension/` folder of the .vsix), plus `.disabled` listing
+the disabled ids, one per line. What's installed is whatever folders are
+there.
 
 ## Contribution points
 
@@ -117,6 +118,12 @@ listing what's installed and disabled.
 1. **Manager and contributions.** Install from a .vsix or Open VSX,
    uninstall and disable; a real Extensions view (search, details, Installed);
    color themes, snippets and language configurations applied.
+   *Done:* Install from VSIX..., Installed with search, Disable and
+   Uninstall; Preferences: Color Theme (Ctrl+K Ctrl+T) applies and saves
+   `workbench.colorTheme`; Snippets: Insert Snippet; languages' ids, file
+   extensions and comments. *Left:* Open VSX (needs an HTTP client), the
+   details page, icon themes, snippet tab stops after the first and
+   completion by prefix, brackets and indent rules.
 2. **Core API and command registry.** Extension commands in the palette,
    menus and keybindings; activation events (`onCommand`, `onLanguage`,
    `workspaceContains`, `onStartupFinished`, `*`).
@@ -144,7 +151,7 @@ default if it passes this suite on the bundled build; otherwise Node.
 
 | Need | Plan | New? |
 |---|---|---|
-| Unzip .vsix | A small reader over `flate2` (already built in through `png`) | Direct dependency only |
+| Unzip .vsix | Windows' own `tar.exe` (bsdtar reads zip) | No |
 | HTTP (Open VSX) | gpui has the `http_client` interface but no implementation built in | Yes: a client (`ureq` is the small option) |
 | WASM | `wasmtime` | Yes, large; phase 5 |
 | JS runtime | Bun or Node exe in the installer | Bundled, not a crate |
