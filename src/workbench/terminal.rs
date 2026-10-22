@@ -7,7 +7,7 @@ use std::{
     rc::Rc,
 };
 
-use gpui_kit::base::input::Escape;
+use gpui_kit::base::input::{Escape, Search};
 use gpui_kit::component::{
     input::Position,
     menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem},
@@ -718,7 +718,11 @@ impl Workbench {
             }
         };
         self.terminals.finding = true;
-        input.update(cx, |s, cx| s.focus(window, cx));
+        // The query starts selected, so typing replaces it.
+        input.update(cx, |s, cx| {
+            s.focus(window, cx);
+            s.select_all(window, cx);
+        });
         self.search_terminal(cx);
     }
 
@@ -823,6 +827,11 @@ impl Workbench {
                 .text_size(px(13.))
                 // Clicks stay off the terminal under it.
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                // Ctrl+F in the input is its own Search; reselect instead.
+                .capture_action(cx.listener(|this, _: &Search, window, cx| {
+                    cx.stop_propagation();
+                    this.find_in_terminal(window, cx)
+                }))
                 .capture_action(cx.listener(|this, _: &Escape, window, cx| {
                     cx.stop_propagation();
                     this.close_terminal_find(window, cx)
