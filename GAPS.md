@@ -244,7 +244,9 @@ Differences from VS Code still to close, smallest first within each area.
       "File: Save As..." save the active editor under a new name.
 - [x] Save As onto a file open in another tab leaves both tabs (VS Code
       replaces that one).
-- [ ] File > New Window and Close Window are inert.
+- [ ] File > New Window is inert (one window per process).
+- [x] File > Close Window was inert; it, Ctrl+Shift+W and Alt+F4 close
+      the window, asking to save dirty files first.
 - [x] File > Auto Save was inert; it and "File: Toggle Auto Save" flip
       files.autoSave, and "afterDelay" saves dirty files after
       files.autoSaveDelay.

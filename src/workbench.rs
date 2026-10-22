@@ -58,6 +58,7 @@ actions!(
         RevealInFileExplorer,
         RevealInExplorerView,
         Quit,
+        CloseWindow,
         ToggleSidebar,
         TogglePanel,
         ToggleMaximizedPanel,
@@ -161,7 +162,9 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("shift-alt-c", CopyPath, None),
         KeyBinding::new("ctrl-k ctrl-shift-alt-c", CopyRelativePath, None),
         KeyBinding::new("shift-alt-r", RevealInFileExplorer, None),
-        KeyBinding::new("alt-f4", Quit, None),
+        // The menu shows the last binding, so Alt+F4 as VS Code does.
+        KeyBinding::new("ctrl-shift-w", CloseWindow, None),
+        KeyBinding::new("alt-f4", CloseWindow, None),
         KeyBinding::new("ctrl-b", ToggleSidebar, None),
         KeyBinding::new("ctrl-j", TogglePanel, None),
         KeyBinding::new("ctrl-`", ToggleTerminal, None),
@@ -1487,6 +1490,12 @@ impl Workbench {
         if self.can_close(window, cx) {
             cx.quit();
         }
+    }
+
+    /// Close Window: the only window, so it quits like VS Code's last one.
+    // ponytail: one window per process; close just this one once New Window opens more.
+    fn close_window(&mut self, _: &CloseWindow, window: &mut Window, cx: &mut Context<Self>) {
+        self.quit(&Quit, window, cx);
     }
 
     /// True when nothing is unsaved. Otherwise asks Save All / Don't Save / Cancel
@@ -3879,6 +3888,7 @@ impl Render for Workbench {
             .on_action(cx.listener(Self::new_text_file))
             .on_action(cx.listener(Self::revert_file))
             .on_action(cx.listener(Self::toggle_auto_save))
+            .on_action(cx.listener(Self::close_window))
             .on_action(cx.listener(|this, _: &SaveAs, window, cx| {
                 if this.docs.get(this.active).is_some_and(|d| !d.binary) {
                     this.save_as(this.active, window, cx);
@@ -4210,7 +4220,7 @@ fn app_menu(
             .menu("Revert File", Box::new(RevertFile))
             .menu("Close Editor", Box::new(CloseEditor))
             .menu("Close Folder", Box::new(CloseFolder))
-            .menu("Close Window", noop())
+            .menu("Close Window", Box::new(CloseWindow))
             .separator()
             .menu("Exit", Box::new(Quit)),
         "Edit" => menu

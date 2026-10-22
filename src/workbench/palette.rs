@@ -206,6 +206,7 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
             Box::new(OpenSettingsJson),
         ),
         ("File: Exit", Box::new(Quit)),
+        ("Close Window", Box::new(CloseWindow)),
     ]
 }
 
