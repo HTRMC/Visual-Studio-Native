@@ -643,17 +643,28 @@ pub(super) fn settings_path() -> Option<PathBuf> {
     Some(dirs::config_dir()?.join("vsn").join("settings.json"))
 }
 
+/// The user's settings (JSON with comments and trailing commas), or null
+/// when there are none or they don't parse.
 pub(super) fn settings() -> serde_json::Value {
     settings_path()
-        .and_then(|p| fs::read(p).ok())
-        .and_then(|b| serde_json::from_slice(&b).ok())
+        .and_then(|p| fs::read_to_string(p).ok())
+        .and_then(|text| {
+            let text = text.trim_start_matches('\u{feff}');
+            serde_json::from_str(&debug::strip_jsonc(text)).ok()
+        })
         .unwrap_or_default()
 }
 
+// ponytail: rewrites settings.json as plain JSON, dropping its comments;
+// VS Code edits the one property in place (jsonc-parser's modify).
 pub(super) fn set_default_profile(name: &str) {
     let Some(path) = settings_path() else { return };
     let mut settings = settings();
     if !settings.is_object() {
+        // A settings.json that doesn't parse is left alone rather than lost.
+        if path.exists() {
+            return;
+        }
         settings = serde_json::json!({});
     }
     settings[DEFAULT_PROFILE] = name.into();

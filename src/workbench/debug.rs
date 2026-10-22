@@ -2067,7 +2067,7 @@ fn default_config() -> Value {
 }
 
 /// JSON with comments (`//`, `/* */`) and trailing commas, as VS Code reads it.
-fn strip_jsonc(text: &str) -> String {
+pub(super) fn strip_jsonc(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(ch) = chars.next() {

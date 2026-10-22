@@ -130,9 +130,14 @@ Differences from VS Code still to close, smallest first within each area.
       `explorer.autoReveal`): each switch opens its folders and scrolls it in.
 - [x] There's no `explorer.autoReveal` setting to turn following off (no
       general settings.json yet; only the terminal reads one).
+- [x] settings.json with comments or trailing commas (JSONC) was ignored, and
+      picking a default terminal profile then overwrote it.
 - [ ] Settings are read from settings.json as each feature needs them; there's
-      no file watcher, no workspace `.vscode/settings.json`, and no JSONC
-      (a comment or trailing comma makes the whole file unread).
+      no file watcher and no workspace `.vscode/settings.json`.
+- [ ] Setting the default terminal profile rewrites settings.json as plain
+      JSON, dropping its comments (VS Code edits the one property in place).
+- [ ] A settings.json that doesn't parse is silently ignored; VS Code shows
+      an error notification pointing at it.
 - [x] The explorer draws indent guides while the mouse is over the tree.
 - [x] The selection's guide (its folder's, or an open folder's own) is lit
       and stays shown; the others are dimmer and show on hover.
