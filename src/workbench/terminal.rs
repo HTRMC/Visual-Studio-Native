@@ -5,6 +5,7 @@ use std::{
     cell::Cell,
     io::{Read as _, Write},
     rc::Rc,
+    time::Instant,
 };
 
 use gpui_kit::base::input::{Escape, Search};
@@ -108,6 +109,9 @@ pub(super) struct Terminal {
     scroll_x: f32,
     /// Which scrollbar's thumb a drag holds, and where along it.
     thumb: Option<(Axis, f32)>,
+    /// Whether the mouse is over the terminal and since when, to fade the
+    /// scrollbars; none until it first comes over.
+    over: Option<(bool, Instant)>,
     /// The cell the last mouse report was for, to send motion once per cell.
     mouse_cell: Option<(u16, u16)>,
     /// Find's matches, oldest first, and the one selected.
@@ -715,6 +719,7 @@ impl Workbench {
             fixed_cols: None,
             scroll_x: 0.,
             thumb: None,
+            over: None,
             mouse_cell: None,
             matches: Vec::new(),
             current: None,
@@ -1893,12 +1898,30 @@ impl Workbench {
         let (selecting, drag) = (t.selecting, wb.clone());
         let thumb_axis = t.thumb.map(|(axis, _)| axis);
         let thumbing = thumb_axis.is_some();
+        // VS Code's scrollbars fade in over 100ms, and out over 800ms
+        // starting 500ms after the mouse leaves.
+        let shown = match t.over {
+            None => 0.,
+            Some((true, at)) => (at.elapsed().as_secs_f32() / 0.1).min(1.),
+            Some((false, at)) => 1. - ((at.elapsed().as_secs_f32() - 0.5) / 0.8).clamp(0., 1.),
+        };
+        if t.over
+            .is_some_and(|(over, _)| if over { shown < 1. } else { shown > 0. })
+        {
+            window.request_animation_frame();
+        }
+        let shown = if thumbing { 1. } else { shown };
         div()
             .id(("terminal", id as usize))
             .relative()
             .size_full()
             .overflow_hidden()
-            .group("terminal")
+            .on_hover(cx.listener(move |this, over: &bool, _, cx| {
+                if let Some(t) = this.terminal(id) {
+                    t.over = Some((*over, Instant::now()));
+                    cx.notify();
+                }
+            }))
             .track_focus(&t.focus)
             .key_context("Terminal")
             .map(|d| match hover {
@@ -2041,11 +2064,11 @@ impl Workbench {
                 let w = f32::from(size.width);
                 let thumb = (scroll_x / grid_w * w, w / grid_w * w);
                 let active = thumb_axis == Some(Axis::Horizontal);
-                d.child(scrollbar(id, Axis::Horizontal, thumb, active, cx))
+                d.child(scrollbar(id, Axis::Horizontal, thumb, active, shown, cx))
             })
             .when_some(v_bar, |d, thumb| {
                 let active = thumb_axis == Some(Axis::Vertical);
-                d.child(scrollbar(id, Axis::Vertical, thumb, active, cx))
+                d.child(scrollbar(id, Axis::Vertical, thumb, active, shown, cx))
             })
             .context_menu(move |menu: PopupMenu, _, _| {
                 type Act = fn(&mut Workbench, u64, &mut Window, &mut Context<Workbench>);
@@ -2145,12 +2168,12 @@ fn v_thumb(screen: &vt100::Screen, h: f32) -> (f32, f32) {
 /// over the terminal, with its thumb's start and length. Dragging the thumb
 /// scrolls; pressing the track centers the thumb there first, as VS Code's
 /// scrollbars do.
-// ponytail: shows and hides at once; VS Code fades it.
 fn scrollbar(
     id: u64,
     axis: Axis,
     (at, len): (f32, f32),
     active: bool,
+    shown: f32,
     cx: &mut Context<Workbench>,
 ) -> impl IntoElement {
     let horizontal = axis == Axis::Horizontal;
@@ -2163,9 +2186,7 @@ fn scrollbar(
         })
         .map(|d| match active {
             true => d.bg(ca(0xBFBFBF66)),
-            false => d
-                .group_hover("terminal", |s| s.bg(ca(0x79797966)))
-                .hover(|s| s.bg(ca(0x646464B3))),
+            false => d.bg(ca(0x79797966)).hover(|s| s.bg(ca(0x646464B3))),
         })
         .on_mouse_down(
             MouseButton::Left,
@@ -2189,6 +2210,7 @@ fn scrollbar(
             true => d.left_0().right_0().bottom_0().h(px(10.)),
             false => d.top_0().bottom_0().right_0().w(px(PAD_R)),
         })
+        .opacity(shown)
         .cursor_default()
         .on_mouse_down(
             MouseButton::Left,
