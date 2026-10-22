@@ -297,11 +297,13 @@ enum Pick {
     Encoding(Encoding, &'static str, Vec<usize>),
     /// Index into `VIEWS`, and the matched offsets.
     View(usize, Vec<usize>),
+    /// An open terminal's id, its "group.index: name" label, matched offsets.
+    TermView(u64, String, Vec<usize>),
 }
 
 /// Open View's views: the side bar's, then the panel's in `PANEL_TABS` order.
 // ponytail: whole containers; VS Code lists their sub-views too (Open
-// Editors, Outline, Timeline) and each terminal.
+// Editors, Outline, Timeline).
 const VIEWS: [&str; 10] = [
     "Explorer",
     "Search",
@@ -2443,26 +2445,29 @@ impl Workbench {
         }
 
         if let Some(q) = query.strip_prefix("view ") {
-            let shown: Vec<_> = (0..VIEWS.len())
-                .filter_map(|ix| Some((ix, command_matches(q.trim(), VIEWS[ix])?)))
+            let q = q.trim();
+            let mut shown: Vec<_> = (0..VIEWS.len())
+                .filter_map(|ix| {
+                    let group = if ix < SIDE_BAR_VIEWS {
+                        "Side Bar"
+                    } else {
+                        "Panel"
+                    };
+                    Some((group, Pick::View(ix, command_matches(q, VIEWS[ix])?)))
+                })
                 .collect();
-            let group = |row: usize| match shown[row].0 < SIDE_BAR_VIEWS {
-                true => "Side Bar",
-                false => "Panel",
-            };
+            for (id, label) in self.terminal_views() {
+                if let Some(hits) = command_matches(q, &label) {
+                    shown.push(("Terminal", Pick::TermView(id, label, hits)));
+                }
+            }
             let groups = (0..shown.len())
-                .filter(|&row| row == 0 || group(row) != group(row - 1))
-                .map(|row| (row, group(row).into()))
+                .filter(|&row| row == 0 || shown[row].0 != shown[row - 1].0)
+                .map(|row| (row, shown[row].0.into()))
                 .collect();
+            let p = &mut self.palette;
             p.empty = "No matching views".into();
-            p.show(
-                shown
-                    .into_iter()
-                    .map(|(ix, hits)| Pick::View(ix, hits))
-                    .collect(),
-                groups,
-                0,
-            );
+            p.show(shown.into_iter().map(|(_, pick)| pick).collect(), groups, 0);
             return;
         }
 
@@ -2670,7 +2675,7 @@ impl Workbench {
 
     fn palette_confirm(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
         let p = &mut self.palette;
-        let (mut command, mut view) = (None, None);
+        let (mut command, mut view, mut term) = (None, None, None);
         let (file, pos) = match p.shown.get(row) {
             Some(Pick::File(rel, ..)) => {
                 let path = match &self.root {
@@ -2753,6 +2758,10 @@ impl Workbench {
                 view = Some(ix);
                 (None, None)
             }
+            Some(&Pick::TermView(id, ..)) => {
+                term = Some(id);
+                (None, None)
+            }
             None => (None, None),
         };
         self.palette_unpreview(false, cx);
@@ -2763,6 +2772,10 @@ impl Workbench {
         }
         if let Some(ix) = view {
             self.open_view(ix, window, cx);
+        }
+        if let Some(id) = term {
+            self.focus_terminal(window, cx);
+            self.activate_terminal(id, window, cx);
         }
         if let Some(path) = file {
             self.open_path(path, window, cx);
@@ -2906,6 +2919,7 @@ impl Workbench {
                 }
                 Pick::Eol(crlf, hits) => row(RowIcon::None, eol(*crlf), hits).item(),
                 Pick::View(ix, hits) => row(RowIcon::None, VIEWS[*ix], hits).item(),
+                Pick::TermView(_, label, hits) => row(RowIcon::None, label, hits).item(),
                 Pick::Lang(id, label, hits) => {
                     let current = matches!(&p.associating, Some((_, by_name)) if by_name == id);
                     Row {

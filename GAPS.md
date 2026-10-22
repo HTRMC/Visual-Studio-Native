@@ -310,8 +310,12 @@ Differences from VS Code still to close, smallest first within each area.
       active selection only.
 - [x] View > Open View... was inert; it and Ctrl+Q list the side bar and
       panel views in the palette (`view ` prefix) and show the picked one.
+- [x] Open View lists each open terminal under "Terminal", numbered
+      "group.index: name" as VS Code does, and picking one focuses it.
 - [ ] Open View lists whole containers, not their sub-views (Open Editors,
-      Outline, Timeline) or each open terminal, and has no Other group.
+      Outline, Timeline), and has no Output-channel rows.
+- [ ] Open View filters on labels only; VS Code also keeps rows whose group
+      name contains the filter ("view term" lists every terminal).
 - [x] File > Auto Save was inert; it and "File: Toggle Auto Save" flip
       files.autoSave, and "afterDelay" saves dirty files after
       files.autoSaveDelay.

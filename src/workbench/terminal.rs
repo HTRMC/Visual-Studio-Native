@@ -1391,7 +1391,12 @@ impl Workbench {
         cx.notify();
     }
 
-    fn activate_terminal(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn activate_terminal(
+        &mut self,
+        id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(ix) = self.terminals.list.iter().position(|t| t.id == id) {
             let was = self.active_id();
             self.terminals.active = ix;
@@ -1576,6 +1581,16 @@ impl Workbench {
                 let color = t.color.map_or(col::fg(), |i| c(ANSI[i]));
                 (t.id, t.name.clone(), t.icon, color)
             })
+            .collect()
+    }
+
+    /// Open View's terminal rows: each id, labelled "group.index: name" as
+    /// VS Code numbers them.
+    pub(super) fn terminal_views(&self) -> Vec<(u64, String)> {
+        let list = &self.terminals.list;
+        let groups: Vec<_> = list.iter().map(|t| t.group).collect();
+        (list.iter().zip(view_numbers(&groups)))
+            .map(|(t, (g, i))| (t.id, format!("{g}.{i}: {}", t.name)))
             .collect()
     }
 
@@ -3073,8 +3088,29 @@ fn key_bytes(ks: &Keystroke, text: bool, app_cursor: bool) -> Option<Vec<u8>> {
     Some(s.into_bytes())
 }
 
+/// 1-based (group, index in group) for each of `groups`, a terminal list's
+/// group ids, whose groups are contiguous.
+fn view_numbers(groups: &[u64]) -> Vec<(usize, usize)> {
+    let mut at = (0, 0);
+    (groups.iter().enumerate())
+        .map(|(ix, g)| {
+            at = match ix > 0 && groups[ix - 1] == *g {
+                true => (at.0, at.1 + 1),
+                false => (at.0 + 1, 1),
+            };
+            at
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn view_numbers_count_groups_then_splits() {
+        let n = super::view_numbers(&[7, 3, 3, 9]);
+        assert_eq!(n, [(1, 1), (2, 1), (2, 2), (3, 1)]);
+    }
+
     #[test]
     fn shell_path_quotes_per_shell() {
         use super::shell_path;
