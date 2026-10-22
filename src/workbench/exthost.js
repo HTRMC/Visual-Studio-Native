@@ -1,6 +1,6 @@
 // vsn's extension host: runs JS extensions against a `vscode` module shim and
-// talks to vsn in newline-delimited JSON on stdin/stdout. Plain Node APIs
-// only, so Bun and Node both run it. Extensions' console output goes to
+// talks to vsn in newline-delimited JSON on stdin/stdout, under Node.
+// Extensions' console output goes to
 // stderr, which vsn shows as the Extension Host output channel.
 'use strict';
 const Module = require('module');
@@ -16,32 +16,6 @@ for (const k of ['log', 'info', 'warn', 'error', 'debug', 'trace']) console[k] =
 const errorText = (e) => (e && e.stack) || String(e);
 process.on('uncaughtException', (e) => send({ m: 'error', text: errorText(e) }));
 process.on('unhandledRejection', (e) => log('Unhandled rejection:', errorText(e)));
-
-// Bun's process.env has no Object methods, and its child processes don't see
-// changes to it unless given it; extensions count on both, as under Node.
-if (process.versions.bun) {
-  for (const k of ['hasOwnProperty', 'propertyIsEnumerable', 'isPrototypeOf', 'toString', 'valueOf', 'toLocaleString']) {
-    Object.defineProperty(process.env, k, { value: Object.prototype[k], writable: true, configurable: true });
-  }
-  const cp = require('child_process');
-  for (const k of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']) {
-    const f = cp[k];
-    cp[k] = function (...a) {
-      // Options come after the command and its argument list, before a callback.
-      const at = Array.isArray(a[1]) ? 2 : 1;
-      if (a[at] == null || typeof a[at] === 'function') a.splice(at, a[at] == null ? 1 : 0, { env: process.env });
-      else if (typeof a[at] === 'object' && !a[at].env) a[at] = { ...a[at], env: process.env };
-      // Node's spawn() ignores `encoding`; Bun's would make its output strings.
-      if (k === 'spawn' && a[at]?.encoding) a[at] = { ...a[at], encoding: undefined };
-      return f.apply(this, a);
-    };
-    // `util.promisify(exec)` resolves to { stdout, stderr }, as Node's does.
-    if (f[util.promisify.custom]) {
-      cp[k][util.promisify.custom] = (...a) => new Promise((ok, no) =>
-        cp[k](...a, (err, stdout, stderr) => (err ? no(Object.assign(err, { stdout, stderr })) : ok({ stdout, stderr }))));
-    }
-  }
-}
 
 // ---- plain classes ---------------------------------------------------------
 
@@ -1204,7 +1178,7 @@ const vscode = new Proxy(known, {
 known.default = vscode;
 
 // `require('vscode')` from any extension gets the shim, through a file next
-// to this one (Bun ignores `Module._load` hooks; both honor `_resolveFilename`).
+// to this one.
 globalThis.__vsnVscode = vscode;
 const shim = path.join(__dirname, 'vscode.js');
 fs.writeFileSync(shim, 'module.exports = globalThis.__vsnVscode;\n');

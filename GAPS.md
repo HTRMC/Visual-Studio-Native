@@ -486,7 +486,7 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [ ] Picking "None" as the icon theme saves `""`, not `null` (settings can't hold a null yet).
 - [ ] Extension indentation patterns with lookaround (JS regex) are skipped; the editor's regex has none.
 - [ ] A line matching the decrease-indent pattern outdents only on Enter, not as it's typed (gpui-base).
-- [x] JS extensions run in a Node (or Bun) host: commands in the palette and keys, messages, status bar items, configuration defaults, activation events, restart on crash.
+- [x] JS extensions run in a Node host: commands in the palette and keys, messages, status bar items, configuration defaults, activation events, restart on crash.
 - [x] Extension keybindings took effect only after a restart; they're rebound on install, uninstall and enable.
 - [x] Extension keybindings with a `when` clause were skipped; focus keys, `editorLangId` and the platform are matched now.
 - [x] Extension keybindings' `when` with `<`, `>`, `=~` or `in` were skipped; they're checked in full as the key comes.
@@ -507,14 +507,13 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [x] `executeCommand` runs ~35 of VS Code's built-in commands (`vscode.open`, saves, views, panels, formatting, ...) as vsn's actions.
 - [x] `executeCommand` runs ~170 of VS Code's built-in commands (every one vsn has an action for: files, editors, views, panels, terminal, debugging, the editor's cursor, clipboard and line commands), `type`, `vscode.openFolder`, and `getCommands` lists them; `registerTextEditorCommand` runs with the active editor.
 - [ ] Built-ins that return results (`vscode.executeHoverProvider` and friends) and ones without a vsn action log "not found"; built-ins ignore their arguments; `type` leaves the cursor before the text it inserts.
-- [x] Extensions' `deactivate()` and `context.subscriptions` run when vsn closes or restarts the host (install, uninstall, enable, disable), up to 5s, under Node and Bun.
-- [ ] Under Bun, `process.on('exit')` listeners don't run when vsn closes.
+- [x] Extensions' `deactivate()` and `context.subscriptions` run when vsn closes or restarts the host (install, uninstall, enable, disable), up to 5s.
 - [x] A host left running after vsn closed (an extension keeping it busy): it watches vsn and exits with it, and vsn ends it 6s after closing.
 - [x] Installing from search took the universal build, without rust-analyzer's or clangd's native server; it takes the build for this platform.
 - [x] An extension setting a tree view's `message` from `getChildren()` (GitLens) refetched it forever, growing the host to 4 GB.
-- [x] The 20 most-downloaded JS extensions on Open VSX activate under Node and Bun: VS Code's enums and classes, `extensionDependencies` first, `getExtension().activate()`, `FileSystemError`, `workspace.fs.copy`, configuration values as properties.
+- [x] The 20 most-downloaded JS extensions on Open VSX activate: VS Code's enums and classes, `extensionDependencies` first, `getExtension().activate()`, `FileSystemError`, `workspace.fs.copy`, configuration values as properties.
 - [ ] Accepted but doing nothing (logged "not implemented"): `debug.register*`, `tests.createTestController`, `tasks.registerTaskProvider`/`fetchTasks`, `notebooks.*`, `chat.*`, `lm.registerTool`/`registerMcpServerDefinitionProvider`, `environmentVariableCollection`, `createLanguageStatusItem`, `setLanguageConfiguration`, and `languages.register*Provider` beyond hover, completion, definition, references, rename, formatting, code actions and signature help; `window.createTextEditorDecorationType`, `registerWebviewViewProvider`, `registerCustomEditorProvider`, `registerFileDecorationProvider`, `registerUriHandler`, `registerTerminalLinkProvider`; `workspace.registerFileSystemProvider`, `registerTextDocumentContentProvider`.
-- [ ] The Bun host uses ~2.6x Node's memory with the same 20 extensions (620 MB vs 235 MB).
+- [x] Bun support dropped: Node only, bundled (EXTENSIONS.md, Bun or Node).
 - [ ] `workspace.fs.rename` ignores `overwrite: false`; `tabGroups` is always one empty group.
 - [x] `window.activeTextEditor` with its document, selection, `edit()` and `insertSnippet()`; `workspace.applyEdit`.
 - [ ] The active editor is sent on a tab switch and before a command: selection changes in between aren't (`onDidChangeTextEditorSelection` never fires), closing a tab doesn't send the next one, `setDecorations` draws nothing, and only one editor is visible.

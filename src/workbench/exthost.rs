@@ -1,5 +1,4 @@
-//! The JS extension host, as EXTENSIONS.md lays it out: one Node or Bun
-//! process running every JS extension against exthost.js's `vscode` shim,
+//! The JS extension host, as EXTENSIONS.md lays it out: one Node process running every JS extension against exthost.js's `vscode` shim,
 //! started when the first extension activates and talking newline-delimited
 //! JSON on stdio. It exits when vsn closes its stdin.
 
@@ -133,24 +132,14 @@ impl Host {
     }
 }
 
-/// The runtimes to try: `VSN_JS_RUNTIME`, one bundled in `runtime` next to
-/// vsn, then Node and Bun on PATH. Node first: on Windows it starts in
-/// ~25ms where Bun takes ~630ms (EXTENSIONS.md, Bun or Node).
+/// The Node to run: the one bundled in `runtime` next to vsn, then Node on
+/// PATH (a build without the installer).
 fn runtimes() -> Vec<std::ffi::OsString> {
-    let mut list: Vec<std::ffi::OsString> =
-        std::env::var_os("VSN_JS_RUNTIME").into_iter().collect();
-    if let Some(dir) = std::env::current_exe()
-        .ok()
-        .and_then(|e| Some(e.parent()?.join("runtime")))
-    {
-        list.extend(["node", "bun"].map(|n| {
-            dir.join(n)
-                .with_extension(std::env::consts::EXE_EXTENSION)
-                .into()
-        }));
-    }
-    list.extend(["node", "bun"].map(Into::into));
-    list
+    let bundled = std::env::current_exe().ok().and_then(|e| {
+        let node = e.parent()?.join("runtime").join("node");
+        Some(node.with_extension(std::env::consts::EXE_EXTENSION).into())
+    });
+    bundled.into_iter().chain(["node".into()]).collect()
 }
 
 /// An extension's configuration defaults, by key.
@@ -1093,7 +1082,7 @@ impl Workbench {
             command.spawn().ok()
         });
         let Some(mut child) = spawned else {
-            self.error("Extensions need Node.js or Bun, and neither was found.", cx);
+            self.error("Extensions need Node.js, and it wasn't found.", cx);
             return false;
         };
         let (mut stdin, stdout, stderr) = (

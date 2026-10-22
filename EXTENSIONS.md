@@ -35,7 +35,7 @@ extensions need it.
 | Question | Decision | Why |
 |---|---|---|
 | Manifest format | VS Code's `package.json`, for both kinds | Existing extensions work unchanged; one manager, one Extensions view |
-| JS runtime | Bundled with vsn, **Node preferred**, Bun also works (see [Bun or Node](#bun-or-node)) | No "install Node first"; Node measured faster and smaller here |
+| JS runtime | **Node**, bundled with vsn; not Bun (see [Bun or Node](#bun-or-node)) | No "install Node first"; Node measured faster and smaller, and extensions are written for it |
 | Native plugins | **WebAssembly** (wasmtime, WIT interface) | Sandboxed, any source language, stable ABI across vsn versions |
 | Native DLL plugins | **No** | No stable Rust ABI, can't be sandboxed, a bad one crashes the editor |
 | Gallery | **Open VSX** (open-vsx.org) and local `.vsix` files | The Microsoft Marketplace's terms allow only Microsoft's products |
@@ -61,7 +61,7 @@ licensed for VS Code only and aren't on Open VSX; their open counterparts
                       │ WIT bindings                   │ JSON-RPC over stdio
               ┌───────┴────────┐              ┌────────┴─────────────────┐
               │ WASM host      │              │ JS extension host        │
-              │ wasmtime, one  │              │ bundled Bun/Node process │
+              │ wasmtime, one  │              │ bundled Node process     │
               │ store per      │              │ running every JS         │
               │ plugin, fuel + │              │ extension, with a        │
               │ memory limits  │              │ `vscode` module shim     │
@@ -159,7 +159,7 @@ there.
    *Left:* nothing.
 3. **JS host.** The bundled runtime and the `vscode` shim; a simple Open VSX
    extension that registers commands, shows messages and adds a status bar
-   item works unchanged. The Bun vs Node comparison happens here.
+   item works unchanged. The Bun vs Node comparison happens here (Node won).
    *Done:* `src/workbench/exthost.js`, one process for all JS extensions,
    NDJSON over stdio; `commands`, `window` messages and status bar items
    (codicons, tooltip, click), `workspace.getConfiguration`/`fs`/folders,
@@ -167,7 +167,7 @@ there.
    friends; unknown API members are stubs that log "not implemented"
    instead of throwing. Install, uninstall, enable and disable restart the
    host; a crash restarts it up to 3 times. `require('vscode')` works by
-   hooking `Module._resolveFilename` (Bun ignores `Module._load`) to a
+   hooking `Module._resolveFilename` to a
    `vscode.js` written next to the host. Output channels and the host's console show in the Output panel.
    Text documents (`workspace.textDocuments` and their events), diagnostic
    collections, `TextDocument`, `CodeActionKind` and the other provider
@@ -247,15 +247,14 @@ the phase 3 test extension (Windows 11, Node 24.14, Bun 1.3.13):
 | The 20 most-downloaded JS extensions on Open VSX | 20 of 20 activate | 20 of 20 activate |
 | Host with those 20 active, 40 s in | 235 MB | 620 MB |
 
-So Node is preferred; `VSN_JS_RUNTIME` picks another runtime. Bun quirks
-met on the way: it ignores `Module._load` hooks, and when the main module's
-exports have `fetch` it starts `Bun.serve` on its own, so the `vscode` shim
-can't be a Proxy exported from the main module, and after vsn exits its
-`process.exit` skips `'exit'` listeners (`deactivate()` still runs, so that's
-the cleanup to use). The host evens out three more for extensions: Bun's
-`process.env` has no `hasOwnProperty`, its child processes don't see
-changes to `process.env` unless passed it, and its `spawn()` honors
-`encoding`, turning output into strings.
+So vsn runs Node only: the bundled `runtime\node.exe`, or `node` on PATH
+for a build without the installer. Bun lost on every row, and it needed
+shims for what extensions count on: it ignores `Module._load` hooks, skips
+`'exit'` listeners, has no `hasOwnProperty` on `process.env`, doesn't pass
+changes to `process.env` to child processes, and its `spawn()` honors
+`encoding`, turning output into strings. Its startup edge doesn't show on
+Windows, and its TypeScript and bundler go unused, as extensions ship
+bundled JS.
 
 The 20, picked on 2026-10-22 by download count, leaving out AI assistants
 (vsn has no AI features), each with its `win32-x64` build when it has one,
@@ -289,4 +288,4 @@ its `getChildren()` had the host refetch it forever, growing to 4 GB.
 | Unzip .vsix | Windows' own `tar.exe` (bsdtar reads zip) | No |
 | HTTP (Open VSX) | `ureq` | Added |
 | WASM | `wasmtime`, `wit-component` | Added |
-| JS runtime | Bun or Node exe in the installer | Bundled, not a crate |
+| JS runtime | Node exe in the installer | Bundled, not a crate |
