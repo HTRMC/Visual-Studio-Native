@@ -59,7 +59,9 @@ Differences from VS Code still to close, smallest first within each area.
       panel's width; Shift+wheel scrolls sideways.
 - [x] The sideways scrollbar's thumb can be dragged, and shows while the
       mouse is over the terminal.
-- [ ] Clicking the sideways scrollbar's track pages toward the click.
+- [x] Clicking the sideways scrollbar's track jumps the thumb there and
+      drags it, as VS Code's scrollbars do by default.
+- [ ] The terminal has no vertical scrollbar over its scrollback.
 - [ ] Dragging a tab onto the editor area moves the terminal into an editor.
 - [ ] Shell integration: command decorations, run recent command, go to
       recent directory.

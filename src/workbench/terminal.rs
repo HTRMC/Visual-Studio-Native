@@ -2030,14 +2030,33 @@ impl Workbench {
             // ponytail: shows and hides at once; VS Code fades it.
             .when(scrolled, |d| {
                 let w = f32::from(size.width);
-                let left = scroll_x / grid_w * w;
-                d.child(
+                let (left, thumb_w) = (scroll_x / grid_w * w, w / grid_w * w);
+                // A click on the track centers the thumb there and drags it.
+                let track = div()
+                    .id("terminal-track")
+                    .absolute()
+                    .bottom_0()
+                    .left_0()
+                    .right_0()
+                    .h(px(10.))
+                    .cursor_default()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            if let Some(t) = this.terminal(id) {
+                                t.thumb = Some(thumb_w / 2.);
+                            }
+                            this.drag_thumb(id, ev.position.x, cx);
+                        }),
+                    );
+                d.child(track).child(
                     div()
                         .id("terminal-thumb")
                         .absolute()
                         .bottom_0()
                         .left(px(left))
-                        .w(px(w / grid_w * w))
+                        .w(px(thumb_w))
                         .h(px(10.))
                         .cursor_default()
                         .map(|d| match thumbing {
