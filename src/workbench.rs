@@ -1575,6 +1575,7 @@ impl Workbench {
                 self.reveal_in_tree(&path, false, cx);
             }
         }
+        self.send_active_editor(cx);
         cx.notify();
     }
 

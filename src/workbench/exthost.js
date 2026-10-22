@@ -247,6 +247,7 @@ const opened = new EventEmitter();
 const changed = new EventEmitter();
 const closed = new EventEmitter();
 const saved = new EventEmitter();
+const activeChanged = new EventEmitter();
 // Each language feature's providers: { selector, provider }.
 const providers = { hover: [], completion: [], definition: [], formatting: [], rangeFormatting: [], codeAction: [], rename: [], references: [], signatureHelp: [] };
 
@@ -377,6 +378,7 @@ const vscodeWindow = {
   withProgress: async (_options, task) => task({ report() {} }, new CancellationTokenSource().token),
   activeTextEditor: undefined,
   visibleTextEditors: [],
+  onDidChangeActiveTextEditor: activeChanged.event,
   terminals: [],
   state: { focused: true },
 };
@@ -429,6 +431,11 @@ const vscodeWorkspace = {
   onDidChangeTextDocument: changed.event,
   onDidCloseTextDocument: closed.event,
   onDidSaveTextDocument: saved.event,
+  // ponytail: always applied; vsn doesn't say whether the edit held.
+  async applyEdit(edit) {
+    send({ m: 'applyEdit', edit: lspWorkspaceEdit(edit) });
+    return true;
+  },
   async openTextDocument(u) {
     // ponytail: files vsn hasn't opened are read from disk and never kept in sync.
     const uri = typeof u === 'string' ? Uri.file(u) : u;
@@ -686,6 +693,43 @@ function onLsp(msg) {
   );
 }
 
+// vsn's active editor, as window.activeTextEditor: sent when the tab changes
+// and before each command, with its text and selection then.
+// ponytail: the selection and the text of a file no language server of the
+// host's has open aren't sent as they change in between.
+function setActiveEditor(e) {
+  let editor;
+  if (e) {
+    const doc = documents.get(e.uri) || new TextDocument(e.uri, e.languageId, 1, e.text);
+    const [s, end] = e.selection;
+    const selection = new Selection(s.line, s.character, end.line, end.character);
+    editor = {
+      document: doc, selection, selections: [selection], visibleRanges: [],
+      options: { tabSize: 4, insertSpaces: true }, viewColumn: 1,
+      async edit(cb) {
+        const edit = new WorkspaceEdit();
+        cb({
+          replace: (r, t) => edit.replace(doc.uri, r instanceof Position ? new Range(r, r) : r, t),
+          insert: (p, t) => edit.insert(doc.uri, p, t),
+          delete: (r) => edit.delete(doc.uri, r),
+          setEndOfLine() {},
+        });
+        return vscodeWorkspace.applyEdit(edit);
+      },
+      // ponytail: tab stops are dropped, placeholders kept as text.
+      async insertSnippet(snippet, at) {
+        const text = String(snippet.value ?? snippet).replace(/\$\{\d+:([^}]*)\}/g, '$1').replace(/\$\{?\d+\}?/g, '');
+        return this.edit((b) => b.replace(at || selection, text));
+      },
+      setDecorations() {}, revealRange() {}, show() {}, hide() {},
+    };
+  }
+  const was = vscodeWindow.activeTextEditor;
+  vscodeWindow.activeTextEditor = editor;
+  vscodeWindow.visibleTextEditors = editor ? [editor] : [];
+  if (was?.document.uri.toString() !== editor?.document.uri.toString()) activeChanged.fire(editor);
+}
+
 // The API members vsn has; any other namespace answers with no-op stubs so
 // an extension that touches it still activates, and any other class name
 // with an empty class it can extend. A stub's result is a stub too, so
@@ -848,6 +892,8 @@ rl.on('line', (line) => {
         return;
       case 'lsp':
         return onLsp(msg.msg);
+      case 'activeEditor':
+        return setActiveEditor(msg.editor);
     }
   });
 });

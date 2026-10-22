@@ -479,6 +479,8 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [x] `globalState`/`workspaceState` persist (JSON under `~/.vsn/globalStorage` and `workspaceStorage`); `storageUri` is per folder.
 - [x] `executeCommand` runs ~35 of VS Code's built-in commands (`vscode.open`, saves, views, panels, formatting, ...) as vsn's actions.
 - [ ] Other built-in commands log "not found"; built-ins return nothing (`vscode.executeHoverProvider` and friends), and `getCommands` lists only extensions' commands.
+- [x] `window.activeTextEditor` with its document, selection, `edit()` and `insertSnippet()`; `workspace.applyEdit`.
+- [ ] The active editor is sent on a tab switch and before a command: selection changes in between aren't (`onDidChangeTextEditorSelection` never fires), closing a tab doesn't send the next one, `setDecorations` draws nothing, and only one editor is visible.
 - [ ] `secrets` is a stub that stores nothing; `setKeysForSync` does nothing (no settings sync).
 - [ ] Extension quick picks pick one even with `canPickMany`, `createQuickPick`/`createInputBox` are stubs, input boxes don't run `validateInput`, show `prompt` only as the placeholder, and a password box reads as cancelled; `modal` messages are toasts.
 - [x] Output channels, the extension host's console and language server logs

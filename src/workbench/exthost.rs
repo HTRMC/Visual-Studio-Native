@@ -344,6 +344,29 @@ impl Workbench {
         .detach();
     }
 
+    /// Tells the JS host the active editor, its text and selection, for
+    /// `window.activeTextEditor`.
+    // ponytail: sent on a tab switch and before each command; closing a tab
+    // doesn't send the next one.
+    pub(super) fn send_active_editor(&self, cx: &App) {
+        if self.ext.out.is_none() {
+            return;
+        }
+        let editor = (self.docs.get(self.active).filter(|d| !d.binary)).map(|d| {
+            let e = d.editor.read(cx);
+            let sel = e.selected_range();
+            let [start, end] = [sel.start, sel.end].map(|o| e.text().offset_to_position(o));
+            json!({
+                "uri": super::lsp::path_uri(&d.path),
+                "languageId": d.lang,
+                "text": e.value(),
+                "selection": [start, end],
+            })
+        });
+        self.ext
+            .send(json!({ "m": "activeEditor", "editor": editor }));
+    }
+
     /// Runs extension command `id`, activating its extension first.
     pub(super) fn run_extension_command(
         &mut self,
@@ -370,7 +393,8 @@ impl Workbench {
                 .ok();
             }
             (None, _, Some(_)) => {
-                (self.ext).send(json!({ "m": "run", "command": id, "args": args }))
+                self.send_active_editor(cx);
+                (self.ext).send(json!({ "m": "run", "command": id, "args": args }));
             }
             _ => self.error(format!("command '{id}' not found"), cx),
         }
@@ -503,6 +527,7 @@ impl Workbench {
             "root": self.root,
             "extensions": extensions,
         }));
+        self.send_active_editor(cx);
         true
     }
 
@@ -584,6 +609,21 @@ impl Workbench {
                 }
             }
             "lsp" => self.lsp_from_host(msg["msg"].clone(), cx),
+            "applyEdit" => {
+                let (Ok(edit), Some(window)) = (
+                    serde_json::from_value::<lsp_types::WorkspaceEdit>(msg["edit"].clone()),
+                    self.ext.window,
+                ) else {
+                    return;
+                };
+                let this = cx.entity();
+                cx.defer(move |cx| {
+                    (window.update(cx, |_, window, cx| {
+                        this.update(cx, |this, cx| this.apply_workspace_edit(edit, window, cx))
+                    }))
+                    .ok();
+                });
+            }
             "status" => {
                 let id = text("id");
                 self.ext.status.retain(|i| i.id != id);

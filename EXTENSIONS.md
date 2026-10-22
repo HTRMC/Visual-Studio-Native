@@ -153,7 +153,9 @@ there.
    `storageUri`. VS Code's built-in commands extensions run most
    (`vscode.open`, `workbench.action.files.save`, `workbench.view.*`, ...)
    run vsn's actions; `workbench.action.reloadWindow` restarts the
-   extensions. *Left:* the rest of the built-in commands, `activeTextEditor`, a
+   extensions. `window.activeTextEditor` (its document, selection,
+   `edit` and `insertSnippet`), `onDidChangeActiveTextEditor` and
+   `workspace.applyEdit`. *Left:* the rest of the built-in commands, a
    bundled runtime in the installer (today: `runtime\` next to vsn.exe, then
    PATH).
 4. **LSP client** into the provider registries; `vscode-languageclient`-based
