@@ -86,6 +86,7 @@ actions!(
         ScrollTerminalToBottom,
         SelectDefaultProfile,
         NewTextFile,
+        HideNotifications,
         Noop,
     ]
 );
@@ -170,6 +171,8 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-pagedown", FocusNextTerminalGroup, Some("Terminal")),
         KeyBinding::new("ctrl-pageup", FocusPreviousTerminalGroup, Some("Terminal")),
         KeyBinding::new("ctrl-n", NewTextFile, None),
+        // VS Code's notifications.hideList and hideToasts, which skip the shell.
+        KeyBinding::new("escape", HideNotifications, Some("notificationsVisible")),
     ]
 }
 
@@ -1749,8 +1752,7 @@ impl Workbench {
     /// A warning notification: listed in the bell's center, and shown as a
     /// toast (unless the center is open) until VS Code's 18 seconds pass, or
     /// later while the mouse is over it. A repeat replaces the old one.
-    // ponytail: one toast at a time, warnings only, and Escape doesn't close
-    // the center.
+    // ponytail: one toast at a time, and warnings only.
     fn warn(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
         let message = message.into();
         self.clear_note(&message, cx);
@@ -1912,7 +1914,10 @@ impl Render for Workbench {
         let toolbar = self.render_debug_toolbar(window, cx);
 
         v_flex()
-            .key_context("Workbench")
+            .key_context(match self.center || self.toast.is_some() {
+                true => "Workbench notificationsVisible",
+                false => "Workbench",
+            })
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::open_file))
             .on_action(cx.listener(Self::open_folder))
@@ -2047,6 +2052,12 @@ impl Render for Workbench {
             .on_action(
                 cx.listener(|this, _: &ToggleBreakpoint, _, cx| this.toggle_breakpoint(None, cx)),
             )
+            .on_action(cx.listener(|this, _: &HideNotifications, _, cx| {
+                // The toast stays listed in the center.
+                this.center = false;
+                this.toast = None;
+                cx.notify();
+            }))
             .relative()
             .size_full()
             .font_family("Segoe UI")

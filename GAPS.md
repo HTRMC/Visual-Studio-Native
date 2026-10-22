@@ -99,6 +99,10 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] A toast stays while the mouse is over it.
 - [x] The bell opens the notification center (clear one, Clear All, hide;
       the bell dots while some are unseen; a repeat replaces the old one).
-- [ ] Escape closes the notification center.
+- [x] Escape closes the notification center and hides a toast, even from
+      the terminal (VS Code keeps both from the shell).
+- [ ] Notifications: Show Notifications, Clear All Notifications and Focus
+      Notification Toast in the palette.
+- [ ] The bell's tooltip ("No Notifications", "1 New Notification").
 - [ ] Do Not Disturb (the center's bell-slash button).
 - [ ] Notifications: several toasts stacked (only one warning exists so far).
