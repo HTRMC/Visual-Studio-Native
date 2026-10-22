@@ -1060,6 +1060,14 @@ impl Workbench {
         self.prompt(true, cx);
     }
 
+    fn set_root(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.root = Some(path);
+        self.expanded.clear();
+        self.root_open = true;
+        self.watch_root(cx);
+        cx.notify();
+    }
+
     fn prompt(&mut self, directories: bool, cx: &mut Context<Self>) {
         let paths = cx.prompt_for_paths(PathPromptOptions {
             files: !directories,
@@ -1074,11 +1082,7 @@ impl Workbench {
             let Some(path) = paths.pop() else { return };
             this.update(cx, |this, cx| {
                 if directories {
-                    this.root = Some(path);
-                    this.expanded.clear();
-                    this.root_open = true;
-                    this.watch_root(cx);
-                    cx.notify();
+                    this.set_root(path, cx);
                 } else if let Some(window) = cx.active_window() {
                     let this = cx.entity();
                     window
@@ -3010,14 +3014,35 @@ impl Render for Workbench {
             self.title = title;
         }
         let sidebar = self.render_sidebar(cx);
-        // A file dragged from the explorer opens where it's dropped.
+        // A file dragged from the explorer opens where it's dropped; so do
+        // files from Windows, and a folder from there becomes the workspace.
         let editor = div()
+            .relative()
             .size_full()
-            .drag_over::<DraggedFile>(|s, _, _, _| s.bg(col::drop()))
             .on_drop(cx.listener(|this, file: &DraggedFile, window, cx| {
                 this.open_path(file.0.clone(), window, cx)
             }))
-            .child(self.render_editor_group(cx));
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                for path in paths.paths() {
+                    match path.is_dir() {
+                        true => this.set_root(path.clone(), cx),
+                        false => this.open_path(path.clone(), window, cx),
+                    }
+                }
+            }))
+            .child(self.render_editor_group(cx))
+            // The highlight goes over the editor, below the tab strip (whose
+            // tabs light up on their own).
+            .child(
+                div()
+                    .absolute()
+                    .top(px(if self.docs.is_empty() { 0. } else { 35. }))
+                    .bottom_0()
+                    .left_0()
+                    .right_0()
+                    .drag_over::<DraggedFile>(|s, _, _, _| s.bg(col::drop()))
+                    .drag_over::<ExternalPaths>(|s, _, _, _| s.bg(col::drop())),
+            );
         let panel = self.render_panel(window, cx);
         let palette = self.render_palette(window, cx);
         let toolbar = self.render_debug_toolbar(window, cx);

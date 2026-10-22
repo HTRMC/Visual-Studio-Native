@@ -2211,6 +2211,20 @@ impl Workbench {
                 this.paste_text(id, path, cx);
                 this.activate_terminal(id, window, cx);
             }))
+            .drag_over::<ExternalPaths>(|s, _, _, _| s.bg(col::drop()))
+            .on_drop(cx.listener(move |this, paths: &ExternalPaths, window, cx| {
+                let Some(t) = this.terminal(id) else {
+                    return;
+                };
+                let shell = shell_name(&t.profile);
+                let paths: Vec<_> = paths
+                    .paths()
+                    .iter()
+                    .map(|p| shell_path(&shell, p))
+                    .collect();
+                this.paste_text(id, paths.join(" "), cx);
+                this.activate_terminal(id, window, cx);
+            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
