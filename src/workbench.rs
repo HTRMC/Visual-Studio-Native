@@ -34,6 +34,7 @@ use gpui_kit::{
 mod debug;
 pub(crate) mod extensions;
 mod exthost;
+mod lsp;
 mod palette;
 mod search;
 mod terminal;
@@ -948,6 +949,7 @@ pub struct Workbench {
     /// Spawned when the Terminal tab first shows; the error if the shell didn't start.
     terminals: terminal::Terminals,
     ext: exthost::Host,
+    lsp: lsp::Lsp,
     commit: Entity<InputState>,
     ext_search: Entity<InputState>,
     pub focus: FocusHandle,
@@ -1008,6 +1010,7 @@ impl Workbench {
             debug: debug::Debug::new(window, cx),
             terminals: Default::default(),
             ext: Default::default(),
+            lsp: Default::default(),
         };
         this.init_search(window, cx);
         this.init_debug(window, cx);
@@ -1112,6 +1115,9 @@ impl Workbench {
         self.activate(self.docs.len() - 1, window, cx);
         self.open_editors_changed(cx);
         self.activate_extensions(&format!("onLanguage:{lang}"), cx);
+        let ix = self.docs.len() - 1;
+        self.lsp_open(ix, cx);
+        self.show_diagnostics(&self.docs[ix].path.clone(), cx);
     }
 
     /// Ctrl+N: an `Untitled-N` editor, saved through Save As.
@@ -1184,6 +1190,8 @@ impl Workbench {
         doc.dirty = false;
         doc.binary = false;
         self.activate(ix, window, cx);
+        self.lsp_open(ix, cx);
+        self.show_diagnostics(&path, cx);
     }
 
     /// An editor for `path`'s text, highlighted as language id `lang`.
@@ -1244,6 +1252,9 @@ impl Workbench {
                     this.last_edit = Some((path.clone(), editor.read(cx).cursor_position()));
                     this.refresh_search_file(&path, cx);
                     this.breakpoints_moved(&path, editor, cx);
+                    if let Some(ix) = this.docs.iter().position(|d| &d.editor == editor) {
+                        this.lsp_change(ix, cx);
+                    }
                 }
                 // Cursor moves also land here; re-render keeps "Ln, Col" current.
                 cx.notify();
@@ -1673,6 +1684,8 @@ impl Workbench {
             Ok(()) => {
                 doc.dirty = false;
                 doc.saved = text_hash(&doc.editor, cx);
+                let path = doc.path.clone();
+                self.lsp_saved(&path);
                 if let Some(old) = old {
                     self.relanguage(&old, window, cx);
                     let theme = &terminal::settings()["workbench.colorTheme"];
@@ -1960,6 +1973,7 @@ impl Workbench {
 
     fn set_root(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.root = Some(path);
+        self.lsp_reset();
         self.expanded.clear();
         self.root_open = true;
         self.watch_root(cx);
@@ -3769,10 +3783,7 @@ impl Workbench {
         };
 
         let body = match self.panel_tab {
-            0 => div()
-                .px(px(20.))
-                .child("No problems have been detected in the workspace.")
-                .into_any_element(),
+            0 => self.render_problems(cx),
             TERMINAL => self.render_terminal(window, cx),
             4 => v_flex()
                 .px(px(20.))
@@ -3880,6 +3891,11 @@ impl Workbench {
         }
 
         let mut right = self.extension_status(true, cx);
+        let (errors, warnings) = self.problem_counts();
+        let problems_tip = match (errors, warnings) {
+            (0, 0) => "No Problems".to_string(),
+            _ => format!("Errors: {errors}, Warnings: {warnings}"),
+        };
         if let Some(doc) = self.docs.get(self.active).filter(|d| !d.binary) {
             let editor = doc.editor.read(cx);
             let pos = editor.cursor_position();
@@ -3984,11 +4000,11 @@ impl Workbench {
                         )
                     })
                     .child(
-                        item("sb-problems", "No Problems")
+                        item("sb-problems", problems_tip)
                             .child(codicon(icon::ERROR).text_size(px(14.)))
-                            .child("0")
+                            .child(errors.to_string())
                             .child(codicon(icon::WARNING).text_size(px(14.)))
-                            .child("0")
+                            .child(warnings.to_string())
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_panel_tab(0, cx))),
                     )
                     .when_some(debugging, |d, (name, _)| {

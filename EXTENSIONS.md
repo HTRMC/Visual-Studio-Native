@@ -151,6 +151,17 @@ there.
    PATH).
 4. **LSP client** into the provider registries; `vscode-languageclient`-based
    extensions then work through the JS host.
+   *Done:* `src/workbench/lsp.rs`, a client over stdio with no new
+   dependency: one server per language from a built-in table on PATH
+   (rust-analyzer, clangd, gopls, zls, basedpyright, typescript-language-server),
+   full-text sync, `publishDiagnostics` as squiggles, the Problems panel
+   (click to jump) and the status bar counts, `window/showMessage` as
+   toasts. *Left:* completion, hover, definition and formatting, which
+   gpui-component's editor already takes as provider traits, but typed with
+   `lsp_types`, `ropey` and `anyhow` (in the build already, not yet direct
+   dependencies); servers from language extensions, either by running
+   `vscode-languageclient` in the JS host against this client or by reading
+   the server path from the extension; didClose; restarting a crashed server.
 5. **WASM host.** wasmtime, a WIT world generated from the core API, and a
    sample plugin in Rust.
 

@@ -454,7 +454,7 @@ Differences from VS Code still to close, smallest first within each area.
 
 ## Extensions
 
-See EXTENSIONS.md for the plan; phases 1–3 are in.
+See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics.
 
 - [x] Install from VSIX... (the view's ... menu, and the palette).
 - [x] Installed list with search, Disable and Uninstall on the gear.
@@ -475,3 +475,7 @@ See EXTENSIONS.md for the plan; phases 1–3 are in.
 - [ ] VS Code's own commands (`vscode.open`, `workbench.action.*`) called by extensions do nothing.
 - [ ] `globalState`/`workspaceState` are in memory only; `activeTextEditor` and documents don't reach the host.
 - [ ] `workspaceContains:` matches plain paths only, not globs.
+- [x] Language servers on PATH (rust-analyzer, clangd, gopls, zls, basedpyright, typescript-language-server) give squiggles, the Problems panel and the status bar counts.
+- [ ] Completion, hover, Go to Definition and formatting from language servers (needs `lsp-types`/`ropey`/`anyhow` as direct dependencies).
+- [ ] Problems panel: collapsing a file, filter, related information, and the Explorer's red file decorations.
+- [ ] A crashed language server isn't restarted; its logs go nowhere (no Output channel).
