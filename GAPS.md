@@ -114,8 +114,14 @@ Differences from VS Code still to close, smallest first within each area.
       - Visual Studio Code", with a dot while dirty.
 - [x] Maximize/Restore Panel Size (the panel's chevron, View: Toggle
       Maximized Panel) fills the editor's space with the panel.
-- [ ] Most title actions are inert (Customize Layout, Split Editor, More
-      Actions, the side bars' Views and More Actions).
+- [x] The editor's More Actions menu: Close All (Ctrl+K W, one prompt for
+      every dirty file) and Close Saved (Ctrl+K U), also in the palette.
+- [ ] More Actions lacks Show Opened Editors, Enable Preview Editors, Lock
+      Group and Configure Editors (no preview editors or groups yet).
+- [ ] Most title actions are inert (Customize Layout, Split Editor, the side
+      bars' Views and More Actions).
+- [ ] Tabs have no right-click menu (Close, Close Others, Close to the
+      Right, Close Saved, Close All, Copy Path, Reveal in Explorer...).
 - [ ] A gpui tooltip stays on screen when its button moves away under a
       still mouse (e.g. after Restore Panel Size) until the mouse moves.
 - [x] Activity bar tooltips show under the mouse; VS Code puts them to the

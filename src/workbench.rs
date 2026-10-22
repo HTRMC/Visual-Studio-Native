@@ -45,6 +45,8 @@ actions!(
         Save,
         SaveAll,
         CloseEditor,
+        CloseAllEditors,
+        CloseSavedEditors,
         Quit,
         ToggleSidebar,
         TogglePanel,
@@ -131,6 +133,9 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-k s", SaveAll, None),
         KeyBinding::new("ctrl-w", CloseEditor, None),
         KeyBinding::new("ctrl-f4", CloseEditor, None),
+        KeyBinding::new("ctrl-k ctrl-w", CloseAllEditors, None),
+        KeyBinding::new("ctrl-k w", CloseAllEditors, None),
+        KeyBinding::new("ctrl-k u", CloseSavedEditors, None),
         KeyBinding::new("alt-f4", Quit, None),
         KeyBinding::new("ctrl-b", ToggleSidebar, None),
         KeyBinding::new("ctrl-j", TogglePanel, None),
@@ -888,6 +893,74 @@ impl Workbench {
             .ok();
         })
         .detach();
+    }
+
+    /// Close All (Ctrl+K W): one prompt for every dirty editor, as VS Code asks.
+    fn close_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let names: Vec<_> = (self.docs.iter().filter(|d| d.dirty))
+            .map(|d| d.path.file_name().unwrap_or_default().to_string_lossy())
+            .collect();
+        let lost = "Your changes will be lost if you don't save them.";
+        let (message, detail, save) = match names.as_slice() {
+            [] => return self.remove_where(|_| true, window, cx),
+            [name] => (
+                format!("Do you want to save the changes you made to {name}?"),
+                lost.to_string(),
+                "Save",
+            ),
+            _ => (
+                format!(
+                    "Do you want to save the changes to the following {} files?",
+                    names.len()
+                ),
+                format!("{}\n\n{lost}", names.join("\n")),
+                "Save All",
+            ),
+        };
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &message,
+            Some(&detail),
+            &[save, "Don't Save", "Cancel"],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(choice) = answer.await else { return };
+            this.update_in(cx, |this, window, cx| match choice {
+                0 => {
+                    for ix in 0..this.docs.len() {
+                        if this.docs[ix].dirty {
+                            this.write(ix, window, cx);
+                        }
+                    }
+                    // An untitled one still waits on its Save As dialog.
+                    this.remove_where(|d| !d.dirty, window, cx);
+                }
+                1 => this.remove_where(|_| true, window, cx),
+                _ => {}
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Closes every editor `gone` picks, keeping the active one if it stays.
+    fn remove_where(
+        &mut self,
+        gone: impl Fn(&Doc) -> bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let active = self.docs.get(self.active).map(|d| d.editor.clone());
+        self.docs.retain(|d| !gone(d));
+        self.active = (active.and_then(|e| self.docs.iter().position(|d| d.editor == e)))
+            .unwrap_or(self.docs.len().saturating_sub(1));
+        if self.docs.is_empty() {
+            window.focus(&self.focus, cx);
+        } else {
+            self.activate(self.active, window, cx);
+        }
+        cx.notify();
     }
 
     fn remove(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -1841,8 +1914,17 @@ impl Workbench {
                                     .tooltip(tip("Split Editor Right")),
                             )
                             .child(
-                                action_button("editor-more", icon::ELLIPSIS)
-                                    .tooltip(tip("More Actions...")),
+                                Button::new("editor-more")
+                                    .ghost()
+                                    .compact()
+                                    .size(px(22.))
+                                    .text_color(col::fg())
+                                    .child(codicon(icon::ELLIPSIS))
+                                    .tooltip("More Actions...")
+                                    .dropdown_menu(|menu, _, _| {
+                                        let menu = chord(menu, "Close All", CloseAllEditors);
+                                        chord(menu, "Close Saved", CloseSavedEditors)
+                                    }),
                             ),
                     ),
             )
@@ -2514,6 +2596,10 @@ impl Render for Workbench {
             .on_action(cx.listener(Self::quit))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::toggle_panel))
+            .on_action(cx.listener(|this, _: &CloseAllEditors, w, cx| this.close_all(w, cx)))
+            .on_action(cx.listener(|this, _: &CloseSavedEditors, w, cx| {
+                this.remove_where(|d| !d.dirty, w, cx)
+            }))
             .on_action(
                 cx.listener(|this, _: &ToggleMaximizedPanel, _, cx| this.toggle_max_panel(cx)),
             )

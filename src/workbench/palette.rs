@@ -57,6 +57,11 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("File: Save All", Box::new(SaveAll)),
         ("Workspaces: Close Workspace", Box::new(CloseFolder)),
         ("View: Close Editor", Box::new(CloseEditor)),
+        ("View: Close All Editors", Box::new(CloseAllEditors)),
+        (
+            "View: Close Saved Editors in Group",
+            Box::new(CloseSavedEditors),
+        ),
         (
             "View: Toggle Primary Side Bar Visibility",
             Box::new(ToggleSidebar),
