@@ -57,6 +57,7 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("File: Open Folder...", Box::new(OpenFolder)),
         ("File: Save", Box::new(Save)),
         ("File: Save All", Box::new(SaveAll)),
+        ("File: Revert File", Box::new(RevertFile)),
         ("Workspaces: Close Workspace", Box::new(CloseFolder)),
         ("View: Close Editor", Box::new(CloseEditor)),
         ("View: Close All Editors", Box::new(CloseAllEditors)),

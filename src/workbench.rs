@@ -123,6 +123,7 @@ actions!(
         IndentationToTabs,
         TrimTrailingWhitespace,
         NewTextFile,
+        RevertFile,
         ShowNotifications,
         HideNotifications,
         ClearAllNotifications,
@@ -660,6 +661,19 @@ impl Workbench {
             .unwrap();
         let path = PathBuf::from(format!("Untitled-{n}"));
         self.push_doc(path, String::new(), Encoding::Utf8, false, true, window, cx);
+    }
+
+    /// File: Revert File: the active editor's file read again, dropping its
+    /// changes.
+    // ponytail: an Untitled editor isn't reverted; VS Code empties it.
+    fn revert_file(&mut self, _: &RevertFile, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(doc) = self
+            .docs
+            .get(self.active)
+            .filter(|d| !d.binary && !d.untitled)
+        {
+            self.reopen(self.active, doc.encoding, window, cx);
+        }
     }
 
     /// Reads editor `ix`'s file again as `encoding`, dropping its changes:
@@ -3795,6 +3809,7 @@ impl Render for Workbench {
                 this.open_palette(">", window, cx)
             }))
             .on_action(cx.listener(Self::new_text_file))
+            .on_action(cx.listener(Self::revert_file))
             .on_action(
                 cx.listener(|this, _: &NewTerminal, window, cx| {
                     this.new_terminal(false, window, cx)
@@ -4118,7 +4133,7 @@ fn app_menu(
                     .menu("Themes", Box::new(Noop))
             })
             .separator()
-            .menu("Revert File", noop())
+            .menu("Revert File", Box::new(RevertFile))
             .menu("Close Editor", Box::new(CloseEditor))
             .menu("Close Folder", Box::new(CloseFolder))
             .menu("Close Window", noop())
