@@ -18,7 +18,7 @@ use ignore::overrides::{Override, OverrideBuilder};
 use regex::{NoExpand, Regex, RegexBuilder};
 
 use super::Workbench;
-use crate::theme::{action_button, c, ca, codicon, col, file_icon, icon};
+use crate::theme::{action_button, c, ca, codicon, col, file_icon, icon, tip};
 
 /// VS Code's `search.maxResults`: collecting stops here.
 const MAX_MATCHES: usize = 20_000;
@@ -152,6 +152,15 @@ pub(super) fn find_toggle(id: &'static str, ch: char, on: bool) -> Stateful<Div>
             d.bg(ca(0x3994BC33)).border_1().border_color(col::accent())
         })
         .when(!on, |d| d.hover(|s| s.bg(col::toolbar_hover())))
+        .when_some(
+            match ch {
+                icon::CASE_SENSITIVE => Some("Match Case (Alt+C)"),
+                icon::WHOLE_WORD => Some("Match Whole Word (Alt+W)"),
+                icon::REGEX => Some("Use Regular Expression (Alt+R)"),
+                _ => None,
+            },
+            |d, text| d.tooltip(tip(text)),
+        )
         .child(codicon(ch))
 }
 

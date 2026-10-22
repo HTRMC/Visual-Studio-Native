@@ -897,6 +897,28 @@ impl Workbench {
         let title = self
             .root_name()
             .unwrap_or_else(|| "Visual Studio Native".into());
+        // VS Code's "Search {workspace} (Ctrl+P) — {window title}".
+        let tooltip: SharedString = {
+            let doc = self.docs.get(self.active);
+            let mut parts: Vec<String> = doc
+                .map(|d| {
+                    d.path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into()
+                })
+                .into_iter()
+                .chain(self.root_name())
+                .collect();
+            parts.push("Visual Studio Native".into());
+            let dirty = if doc.is_some_and(|d| d.dirty) {
+                "● "
+            } else {
+                ""
+            };
+            format!("Search {title} (Ctrl+P) — {dirty}{}", parts.join(" - ")).into()
+        };
 
         h_flex()
             .h(px(35.))
@@ -967,7 +989,10 @@ impl Workbench {
                             .text_size(px(12.))
                             .text_color(col::fg())
                             .child(codicon(icon::SEARCH).text_size(px(14.)))
-                            .child(title)
+                            .child(title.clone())
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(tooltip.clone()).build(window, cx)
+                            })
                             .on_click(
                                 cx.listener(|this, _, window, cx| {
                                     this.open_palette("", window, cx)

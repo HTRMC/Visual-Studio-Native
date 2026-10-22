@@ -108,8 +108,10 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Tooltips on the status bar items.
 - [x] Tooltips on the activity bar ("Explorer (Ctrl+Shift+E)", ...).
 - [x] Tooltips on the title-bar, side bar, editor and panel action buttons.
-- [ ] Tooltips on the window controls, the command center, terminal tabs'
-      buttons and the debug toolbar.
+- [x] Tooltips on the command center, terminal tabs' trash, terminal find
+      and the debug toolbar (Windows shows the window controls' own).
+- [ ] The window's taskbar title stays fixed; VS Code's is "{file} - {folder}
+      - Visual Studio Code", with a dot while dirty.
 - [ ] Most title actions are inert (Customize Layout, Split Editor, More
       Actions, Maximize Panel Size, the side bars' Views and More Actions).
 - [ ] Activity bar tooltips show under the mouse; VS Code puts them to the

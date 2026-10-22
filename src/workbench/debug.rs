@@ -19,7 +19,7 @@ use regex::Regex;
 use serde_json::{Value, json};
 
 use super::*;
-use crate::theme::{c, ca};
+use crate::theme::{c, ca, tip};
 
 pub(super) const DEBUG_CONSOLE: usize = 2;
 /// Width of the glyph margin left of the line numbers.
@@ -1182,6 +1182,7 @@ impl Workbench {
                 .child(
                     action_button("dbg-start", icon::DEBUG_START)
                         .text_color(c(ICON_GREEN))
+                        .tooltip(tip("Start Debugging"))
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.start_debugging(false, window, cx)
                         })),
@@ -1212,9 +1213,13 @@ impl Workbench {
                             menu
                         }),
                 )
-                .child(action_button("dbg-gear", icon::GEAR).on_click(
-                    cx.listener(|this, _, window, cx| this.create_launch_json(window, cx)),
-                ))
+                .child(
+                    action_button("dbg-gear", icon::GEAR)
+                        .tooltip(tip("Open 'launch.json'"))
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.create_launch_json(window, cx)),
+                        ),
+                )
                 .into_any_element(),
         )
     }
@@ -1672,8 +1677,18 @@ impl Workbench {
         let top = y.min(h - TOOLBAR_H).max(0.);
         let paused = s.stop.is_some();
         let button = |id: &'static str, ch: char, color: u32, enabled: bool| {
+            let text = match ch {
+                icon::DEBUG_CONTINUE => "Continue (F5)",
+                icon::DEBUG_PAUSE => "Pause (F6)",
+                icon::DEBUG_STEP_OVER => "Step Over (F10)",
+                icon::DEBUG_STEP_INTO => "Step Into (F11)",
+                icon::DEBUG_STEP_OUT => "Step Out (Shift+F11)",
+                icon::DEBUG_RESTART => "Restart (Ctrl+Shift+F5)",
+                _ => "Stop (Shift+F5)",
+            };
             action_button(id, ch)
                 .text_color(c(color))
+                .tooltip(tip(text))
                 .when(!enabled, |d| d.opacity(0.4))
         };
         let toolbar = h_flex()

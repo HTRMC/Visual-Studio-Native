@@ -16,7 +16,7 @@ use gpui_kit::component::{
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 use super::*;
-use crate::theme::{c, ca};
+use crate::theme::{c, ca, tip};
 
 const FONT: &str = "Consolas";
 const FONT_SIZE: f32 = 14.;
@@ -936,9 +936,10 @@ impl Workbench {
             None => format!("? of {}", t.matches.len()),
         };
         type Act = fn(&mut Workbench, &mut Window, &mut Context<Workbench>);
-        let button = |id: &'static str, ch: char, act: Act| {
+        let button = |id: &'static str, ch: char, text: &'static str, act: Act| {
             action_button(id, ch)
                 .size(px(20.))
+                .tooltip(tip(text))
                 .on_click(cx.listener(move |this, _, w, cx| act(this, w, cx)))
         };
         // A query that won't compile reddens the box, as in VS Code.
@@ -1006,17 +1007,22 @@ impl Workbench {
                         .text_size(px(12.))
                         .child(count),
                 )
-                .child(button("terminal-find-up", icon::ARROW_UP, |this, _, cx| {
-                    this.step_match(true, cx)
-                }))
+                .child(button(
+                    "terminal-find-up",
+                    icon::ARROW_UP,
+                    "Previous Match (Shift+Enter)",
+                    |this, _, cx| this.step_match(true, cx),
+                ))
                 .child(button(
                     "terminal-find-down",
                     icon::ARROW_DOWN,
+                    "Next Match (Enter)",
                     |this, _, cx| this.step_match(false, cx),
                 ))
                 .child(button(
                     "terminal-find-close",
                     icon::CLOSE,
+                    "Close (Escape)",
                     Self::close_terminal_find,
                 )),
         )
@@ -1921,12 +1927,12 @@ impl Workbench {
                 .child(div().flex_1().min_w_0().truncate().child(t.name.clone()))
                 .when(active, |d| {
                     d.child(
-                        action_button(("terminal-kill", id as usize), icon::TRASH).on_click(
-                            cx.listener(move |this, _, window, cx| {
+                        action_button(("terminal-kill", id as usize), icon::TRASH)
+                            .tooltip(tip("Kill (Delete)"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();
                                 this.kill_terminal(id, window, cx)
-                            }),
-                        ),
+                            })),
                     )
                 })
                 .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
