@@ -396,7 +396,10 @@ impl Workbench {
             }
             // ponytail: VS Code's own commands (vscode.open, workbench.*) aren't
             // mapped onto vsn's actions yet.
-            "execute" => eprintln!("[extension host] command '{}' not found", text("command")),
+            "execute" => {
+                let text = format!("command '{}' not found", text("command"));
+                self.log("Extension Host", &text, cx);
+            }
             _ => {}
         }
     }
