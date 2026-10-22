@@ -137,9 +137,13 @@ Differences from VS Code still to close, smallest first within each area.
       side bar's width (long names now end in an ellipsis too).
 - [x] Clicking a folder selects it; the selection goes back to the file on
       the next editor switch.
-- [ ] The explorer has no keyboard focus: no arrow keys, Enter/Space to
-      open, or focused-vs-unfocused selection colors; no Ctrl/Shift
-      multi-select.
+- [x] The explorer takes keyboard focus on a click: Up/Down/Home/End move
+      the selection, Left/Right shut/open folders or step out/in, Enter
+      opens into the editor, Space opens keeping focus; the selection's
+      outline shows only while the explorer has focus.
+- [ ] The explorer lacks PageUp/PageDown, type-to-find, F2/Delete on the
+      selection, and Ctrl/Shift multi-select; the editor can't hand focus
+      back (Ctrl+Shift+E only shows the view).
 - [x] The explorer's files and folders have a right-click menu: Open,
       Reveal in File Explorer, Open in Integrated Terminal (a new shell in
       that folder), Copy Path, Copy Relative Path.

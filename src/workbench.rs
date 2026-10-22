@@ -422,6 +422,7 @@ pub struct Workbench {
     /// The explorer's selected row: the active editor's file, or a folder
     /// clicked since.
     tree_sel: Option<PathBuf>,
+    tree_focus: FocusHandle,
     /// Explorer listings (folders first, then name), dropped when the watcher sees them change.
     dirs: HashMap<PathBuf, Vec<(PathBuf, bool)>>,
     watcher: Option<(notify::RecommendedWatcher, Task<()>)>,
@@ -482,6 +483,7 @@ impl Workbench {
             expanded: HashSet::new(),
             tree_scroll: UniformListScrollHandle::new(),
             tree_sel: None,
+            tree_focus: cx.focus_handle(),
             dirs: HashMap::new(),
             watcher: None,
             quitting: false,
@@ -1674,13 +1676,16 @@ impl Workbench {
                         uniform_list(
                             "tree",
                             rows.len(),
-                            cx.processor(move |this, range: Range<usize>, _, cx| {
+                            cx.processor(move |this, range: Range<usize>, window, cx| {
+                                let focused = this.tree_focus.is_focused(window);
                                 range
-                                    .map(|ix| this.render_tree_row(&rows[ix], cx))
+                                    .map(|ix| this.render_tree_row(&rows[ix], focused, cx))
                                     .collect::<Vec<_>>()
                             }),
                         )
                         .track_scroll(&self.tree_scroll)
+                        .track_focus(&self.tree_focus)
+                        .on_key_down(cx.listener(Self::tree_key))
                         .group("explorer-tree")
                         .flex_1()
                         .min_h_0(),
@@ -1800,6 +1805,75 @@ impl Workbench {
         cx.notify();
     }
 
+    /// A folder toggles open or shut, a file opens in the editor.
+    fn tree_open(
+        &mut self,
+        path: &Path,
+        is_dir: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if is_dir {
+            self.tree_sel = Some(path.to_path_buf());
+            if !self.expanded.remove(path) {
+                self.expanded.insert(path.to_path_buf());
+            }
+            cx.notify();
+        } else {
+            self.open_path(path.to_path_buf(), window, cx);
+        }
+    }
+
+    /// The explorer's keys: Up/Down/Home/End move the selection, Right
+    /// opens a folder or steps into it, Left shuts it or steps out, Enter
+    /// opens into the editor and Space opens keeping focus here.
+    fn tree_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        if ev.keystroke.modifiers.modified() {
+            return;
+        }
+        let mut rows = Vec::new();
+        self.tree_rows(&root, 0, &mut rows);
+        let Some(last) = rows.len().checked_sub(1) else {
+            return;
+        };
+        let cur = self
+            .tree_sel
+            .as_ref()
+            .and_then(|s| rows.iter().position(|(p, ..)| p == s));
+        let row = cur.map(|i| rows[i].clone());
+        let open = |p: &PathBuf| self.expanded.contains(p);
+        let to = match (ev.keystroke.key.as_str(), cur, &row) {
+            ("down", None, _) | ("up", None, _) | ("home", ..) => 0,
+            ("end", ..) => last,
+            ("down", Some(i), _) => (i + 1).min(last),
+            ("up", Some(i), _) => i.saturating_sub(1),
+            ("right", Some(i), Some((p, _, true))) if open(p) => (i + 1).min(last),
+            ("left", Some(i), Some((p, _, dir))) if !(*dir && open(p)) => rows[..i]
+                .iter()
+                .rposition(|(q, ..)| p.parent() == Some(q))
+                .unwrap_or(i),
+            ("right" | "left", _, Some((p, _, true))) => {
+                self.tree_open(&p.clone(), true, window, cx);
+                return cx.stop_propagation();
+            }
+            ("enter" | "space", _, Some((p, _, dir))) => {
+                self.tree_open(&p.clone(), *dir, window, cx);
+                if ev.keystroke.key == "space" {
+                    window.focus(&self.tree_focus, cx);
+                }
+                return cx.stop_propagation();
+            }
+            _ => return,
+        };
+        cx.stop_propagation();
+        self.tree_sel = Some(rows[to].0.clone());
+        self.tree_scroll.scroll_to_item(to, ScrollStrategy::Nearest);
+        cx.notify();
+    }
+
     /// Visible explorer rows (path, depth, is_dir), reading folders only on a cache miss.
     fn tree_rows(&mut self, dir: &Path, depth: usize, rows: &mut Vec<(PathBuf, usize, bool)>) {
         let entries = self
@@ -1837,6 +1911,7 @@ impl Workbench {
     fn render_tree_row(
         &self,
         (path, depth, is_dir): &(PathBuf, usize, bool),
+        focused: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (depth, is_dir) = (*depth, *is_dir);
@@ -1867,7 +1942,8 @@ impl Workbench {
             .cursor_pointer()
             .border_1()
             .border_color(transparent_black())
-            .when(active, |d| d.bg(col::selected()).border_color(col::focus()))
+            .when(active, |d| d.bg(col::selected()))
+            .when(active && focused, |d| d.border_color(col::focus()))
             .when(!active, |d| d.hover(|s| s.bg(col::hover())))
             // Indent guides under each ancestor folder's chevron, shown while
             // the mouse is over the tree (`workbench.tree.renderIndentGuides`).
@@ -1905,15 +1981,9 @@ impl Workbench {
             })
             .child(div().overflow_hidden().text_ellipsis().child(name))
             .on_click(cx.listener(move |this, _, window, cx| {
-                if is_dir {
-                    this.tree_sel = Some(click_path.clone());
-                    if !this.expanded.remove(&click_path) {
-                        this.expanded.insert(click_path.clone());
-                    }
-                    cx.notify();
-                } else {
-                    this.open_path(click_path.clone(), window, cx);
-                }
+                this.tree_open(&click_path, is_dir, window, cx);
+                // A click opens the file but leaves focus in the explorer.
+                window.focus(&this.tree_focus, cx);
             }))
             .context_menu(move |menu, _, _| explorer_menu(menu, &wb, &menu_path, is_dir))
             .into_any_element()
