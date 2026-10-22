@@ -110,7 +110,13 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Clicking Ln/Col opens Go to Line; so do Ctrl+G and the Go menu
       (Ctrl+Shift+O and the menu open Go to Symbol in Editor). In the
       terminal both keys still reach the shell, as in VS Code.
-- [ ] Clicking Spaces/encoding/EOL/language opens their pickers.
+- [x] Clicking LF/CRLF (or Change End of Line Sequence) picks the line
+      endings; undo brings the old ones back.
+- [ ] Clicking Spaces/encoding/language opens their pickers.
+- [ ] Undoing back to the saved text leaves the tab dirty (VS Code clears
+      the dot).
+- [ ] Enter in a CRLF file may insert a bare LF (check the editor's
+      newline).
 - [ ] Go menu: Back/Forward (Alt+Left/Right), Last Edit Location and
       Go to Symbol in Workspace (Ctrl+T) are still placeholders.
 - [ ] Do Not Disturb (the center's bell-slash button).

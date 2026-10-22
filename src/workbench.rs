@@ -89,6 +89,7 @@ actions!(
         ScrollTerminalToTop,
         ScrollTerminalToBottom,
         SelectDefaultProfile,
+        ChangeEol,
         NewTextFile,
         ShowNotifications,
         HideNotifications,
@@ -471,6 +472,12 @@ impl Workbench {
                 && let Some(doc) = this.docs.iter_mut().find(|d| d.editor == editor)
             {
                 doc.dirty = true;
+                // Undoing Change End of Line Sequence brings the old endings back.
+                let text = editor.read(cx).text();
+                if text.lines_len() > 1 {
+                    let cr = text.line_start_offset(1).checked_sub(2);
+                    doc.crlf = cr.and_then(|i| text.char_at(i)) == Some('\r');
+                }
                 let path = doc.path.clone();
                 this.refresh_search_file(&path, cx);
                 this.breakpoints_moved(&path, &editor, cx);
@@ -1674,7 +1681,8 @@ impl Workbench {
                     .child(doc.encoding.label())
                     .into_any_element(),
                 item("sb-eol", "Select End of Line Sequence")
-                    .child(if doc.crlf { "CRLF" } else { "LF" })
+                    .on_click(cx.listener(|this, _, window, cx| this.change_eol(window, cx)))
+                    .child(palette::eol(doc.crlf))
                     .into_any_element(),
                 item("sb-lang", "Select Language Mode")
                     .child(codicon(icon::CODE).text_size(px(14.)))
@@ -2079,6 +2087,7 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &ScrollTerminalToBottom, _, cx| {
                 this.scroll_terminal(isize::MIN, 0, cx)
             }))
+            .on_action(cx.listener(|this, _: &ChangeEol, window, cx| this.change_eol(window, cx)))
             .on_action(cx.listener(|this, _: &SelectDefaultProfile, window, cx| {
                 this.select_default_profile(window, cx)
             }))

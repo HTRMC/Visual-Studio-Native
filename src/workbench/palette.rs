@@ -128,6 +128,7 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
             "Terminal: Select Default Profile",
             Box::new(SelectDefaultProfile),
         ),
+        ("Change End of Line Sequence", Box::new(ChangeEol)),
         ("View: Show Explorer", Box::new(ShowExplorer)),
         ("View: Show Search", Box::new(ShowSearch)),
         ("View: Show Source Control", Box::new(ShowScm)),
@@ -169,6 +170,8 @@ enum Pick {
     Icons(Vec<(&'static str, char, Vec<usize>)>),
     /// A terminal for Join Terminals: id, name, tab icon and color, matched offsets.
     Join(u64, String, char, Hsla, Vec<usize>),
+    /// CRLF (or LF) for Change End of Line Sequence, and the matched offsets.
+    Eol(bool, Vec<usize>),
 }
 
 /// A definition in the active editor, for `@`.
@@ -213,6 +216,8 @@ pub(super) struct Palette {
     iconing: Option<u64>,
     /// Set while the palette is Terminal: Join Terminals' pick list.
     joining: bool,
+    /// Set while the palette is Change End of Line Sequence's pick list.
+    eol: bool,
     /// 0-based line and column from a `file:line:col` query.
     goto: Option<(u32, u32)>,
     shown: Vec<Pick>,
@@ -261,6 +266,7 @@ impl Palette {
             coloring: None,
             iconing: None,
             joining: false,
+            eol: false,
             goto: None,
             shown: Vec::new(),
             groups: Vec::new(),
@@ -330,6 +336,11 @@ impl Palette {
         self.selected = select;
         self.preselect = Some(select);
     }
+}
+
+/// The status bar's and Change End of Line Sequence's name for an ending.
+pub(super) fn eol(crlf: bool) -> &'static str {
+    if crlf { "CRLF" } else { "LF" }
 }
 
 /// Where the histories survive restarts: VS Code's user data folder layout
@@ -1520,6 +1531,7 @@ impl Workbench {
         p.coloring = None;
         p.iconing = None;
         p.joining = false;
+        p.eol = false;
         p.parse = None;
         p.state
             .update(cx, |s, cx| s.set_query(query.to_string(), window, cx));
@@ -1580,6 +1592,37 @@ impl Workbench {
         self.open_palette("", window, cx);
         self.palette.joining = true;
         self.palette_query(String::new(), cx);
+    }
+
+    /// VS Code's Change End of Line Sequence: the palette lists LF and CRLF,
+    /// the active editor's highlighted.
+    pub(super) fn change_eol(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.docs.get(self.active).is_some_and(|d| !d.binary) {
+            return;
+        }
+        self.open_palette("", window, cx);
+        self.palette.eol = true;
+        self.palette_query(String::new(), cx);
+    }
+
+    /// Rewrites every line ending in the active editor, undoably, keeping
+    /// the cursor where it was.
+    fn set_eol(&mut self, crlf: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.get_mut(self.active) else {
+            return;
+        };
+        doc.crlf = crlf;
+        let old = doc.editor.read(cx).value();
+        let lf = old.replace("\r\n", "\n");
+        let text = if crlf { lf.replace('\n', "\r\n") } else { lf };
+        if text != old.as_ref() {
+            doc.editor.update(cx, |e, cx| {
+                let pos = e.cursor_position();
+                e.replace_all(text, window, cx);
+                e.set_cursor_position(pos, window, cx);
+            });
+        }
+        cx.notify();
     }
 
     /// VS Code's Terminal: Change Icon: the palette shows every codicon in a
@@ -1679,6 +1722,7 @@ impl Workbench {
         p.coloring = None;
         p.iconing = None;
         p.joining = false;
+        p.eol = false;
         // A command may have moved focus (Show Search); only restore it when it is still ours.
         if p.focus.contains_focused(window, cx) {
             match p.restore.take() {
@@ -1719,6 +1763,15 @@ impl Workbench {
                 })
                 .collect();
             p.show(shown, Vec::new(), 0);
+            return;
+        }
+        if p.eol {
+            let crlf = active.is_some_and(|d| d.crlf);
+            let shown = [false, true]
+                .into_iter()
+                .filter_map(|crlf| Some(Pick::Eol(crlf, command_matches(query.trim(), eol(crlf))?)))
+                .collect();
+            p.show(shown, Vec::new(), crlf as usize);
             return;
         }
         if p.joining {
@@ -1960,6 +2013,10 @@ impl Workbench {
                 self.join_active_terminal(id, window, cx);
                 (None, None)
             }
+            Some(&Pick::Eol(crlf, _)) => {
+                self.set_eol(crlf, window, cx);
+                (None, None)
+            }
             Some(&Pick::Color(color, _)) => {
                 if let Some(id) = p.coloring {
                     self.set_terminal_color(id, color, cx);
@@ -2015,6 +2072,8 @@ impl Workbench {
             "Choose a color for the terminal"
         } else if p.joining {
             "Select a terminal to join"
+        } else if p.eol {
+            "Select End of Line Sequence"
         } else if p.query.starts_with('>') {
             ""
         } else {
@@ -2081,6 +2140,7 @@ impl Workbench {
                 Pick::Join(_, name, ch, color, hits) => {
                     row(RowIcon::Symbol(*ch, *color), name, hits).item()
                 }
+                Pick::Eol(crlf, hits) => row(RowIcon::None, eol(*crlf), hits).item(),
                 Pick::Command(cmd, hits) => {
                     let (label, action) = &commands[*cmd];
                     Row {
