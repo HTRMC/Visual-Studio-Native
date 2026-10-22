@@ -106,6 +106,8 @@ pub(super) struct Terminal {
     /// how far the grid is scrolled left to show it.
     fixed_cols: Option<u16>,
     scroll_x: f32,
+    /// Where on the sideways scrollbar's thumb a drag grabbed it.
+    thumb: Option<f32>,
     /// The cell the last mouse report was for, to send motion once per cell.
     mouse_cell: Option<(u16, u16)>,
     /// Find's matches, oldest first, and the one selected.
@@ -712,6 +714,7 @@ impl Workbench {
             scroll: 0.,
             fixed_cols: None,
             scroll_x: 0.,
+            thumb: None,
             mouse_cell: None,
             matches: Vec::new(),
             current: None,
@@ -1508,6 +1511,20 @@ impl Workbench {
         true
     }
 
+    /// Scrolls sideways to keep the grabbed point of the thumb at `x`.
+    fn drag_thumb(&mut self, id: u64, x: Pixels, cx: &mut Context<Self>) {
+        let Some(t) = self.terminal(id) else {
+            return;
+        };
+        let Some(grab) = t.thumb else {
+            return;
+        };
+        let b = t.bounds.get();
+        let grid_w = PAD_L + t.parser.screen().size().1.get() as f32 * t.cell_w + PAD_R;
+        t.scroll_x = (f32::from(x - b.left()) - grab) * grid_w / f32::from(b.size.width);
+        cx.notify();
+    }
+
     fn terminal_release(&mut self, id: u64, ev: &MouseUpEvent) {
         let Some(t) = self.terminal(id) else {
             return;
@@ -1863,11 +1880,13 @@ impl Workbench {
 
         let bounds = t.bounds.clone();
         let (selecting, drag) = (t.selecting, wb.clone());
+        let thumbing = t.thumb.is_some();
         div()
             .id(("terminal", id as usize))
             .relative()
             .size_full()
             .overflow_hidden()
+            .group("terminal")
             .track_focus(&t.focus)
             .key_context("Terminal")
             .map(|d| match hover {
@@ -1920,7 +1939,9 @@ impl Workbench {
                 let Some(t) = this.terminal(id) else {
                     return;
                 };
-                if !t.selecting && t.mouse_mode(ev.modifiers) {
+                if t.thumb.is_some() {
+                    this.drag_thumb(id, ev.position.x, cx);
+                } else if !t.selecting && t.mouse_mode(ev.modifiers) {
                     let held = ev.pressed_button.and_then(button_code);
                     t.report(held.map_or(35, |b| b + 32), false, ev.position);
                 } else if t.selecting {
@@ -1935,13 +1956,20 @@ impl Workbench {
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(move |this, ev, _, _| this.terminal_release(id, ev)),
+                cx.listener(move |this, ev, _, cx| {
+                    if this.terminal(id).and_then(|t| t.thumb.take()).is_some() {
+                        return cx.notify();
+                    }
+                    this.terminal_release(id, ev)
+                }),
             )
             .on_mouse_up_out(
                 MouseButton::Left,
-                cx.listener(move |this, _, _, _| {
+                cx.listener(move |this, _, _, cx| {
                     if let Some(t) = this.terminal(id) {
                         t.selecting = false;
+                        t.thumb = None;
+                        cx.notify();
                     }
                 }),
             )
@@ -1963,11 +1991,14 @@ impl Workbench {
                     },
                     move |b, _, window, _| {
                         // Mouse moves outside reach only the window.
-                        if selecting {
+                        if selecting || thumbing {
                             window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _, cx| {
                                 if phase == DispatchPhase::Bubble && !b.contains(&ev.position) {
-                                    drag.update(cx, |this, cx| this.drag_terminal(id, ev, cx))
-                                        .ok();
+                                    drag.update(cx, |this, cx| match thumbing {
+                                        true => this.drag_thumb(id, ev.position.x, cx),
+                                        false => this.drag_terminal(id, ev, cx),
+                                    })
+                                    .ok();
                                 }
                             });
                         }
@@ -1994,18 +2025,38 @@ impl Workbench {
                     .child(v_flex().pl(px(PAD_L)).children(lines))
                     .children(cursor),
             )
-            // ponytail: the thumb shows where the view is but can't be
-            // dragged; Shift+wheel scrolls.
+            // The sideways scrollbar's thumb, shown while the mouse is over
+            // the terminal.
+            // ponytail: shows and hides at once; VS Code fades it.
             .when(scrolled, |d| {
                 let w = f32::from(size.width);
+                let left = scroll_x / grid_w * w;
                 d.child(
                     div()
+                        .id("terminal-thumb")
                         .absolute()
                         .bottom_0()
-                        .left(px(scroll_x / grid_w * w))
+                        .left(px(left))
                         .w(px(w / grid_w * w))
                         .h(px(10.))
-                        .bg(ca(0x79797966)),
+                        .cursor_default()
+                        .map(|d| match thumbing {
+                            true => d.bg(ca(0xBFBFBF66)),
+                            false => d
+                                .group_hover("terminal", |s| s.bg(ca(0x79797966)))
+                                .hover(|s| s.bg(ca(0x646464B3))),
+                        })
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                                cx.stop_propagation();
+                                if let Some(t) = this.terminal(id) {
+                                    let x = f32::from(ev.position.x - t.bounds.get().left());
+                                    t.thumb = Some(x - left);
+                                    cx.notify();
+                                }
+                            }),
+                        ),
                 )
             })
             .context_menu(move |menu: PopupMenu, _, _| {

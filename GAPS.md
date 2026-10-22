@@ -57,8 +57,9 @@ Differences from VS Code still to close, smallest first within each area.
       (needs multi-select in the tab list: Ctrl/Shift+click).
 - [x] Terminal: Toggle Size to Content Width (Alt+Z) stops wrapping at the
       panel's width; Shift+wheel scrolls sideways.
-- [ ] The sideways scrollbar's thumb can be dragged, and fades in on hover
-      like VS Code's.
+- [x] The sideways scrollbar's thumb can be dragged, and shows while the
+      mouse is over the terminal.
+- [ ] Clicking the sideways scrollbar's track pages toward the click.
 - [ ] Dragging a tab onto the editor area moves the terminal into an editor.
 - [ ] Shell integration: command decorations, run recent command, go to
       recent directory.
