@@ -69,6 +69,9 @@ pub mod col {
     pub fn indent_guide() -> Hsla {
         c(0x585858)
     }
+    pub fn inactive_indent_guide() -> Hsla {
+        ca(0x58585866)
+    }
     pub fn close_hover() -> Hsla {
         c(0xE81123)
     }

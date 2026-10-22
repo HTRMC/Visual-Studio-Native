@@ -1847,6 +1847,12 @@ impl Workbench {
             .to_string();
         let open = is_dir && self.expanded.contains(path);
         let active = self.tree_sel.as_ref() == Some(path);
+        // The selection's guide is lit and always shown: an open folder's
+        // own, else its parent's.
+        let lit = self
+            .tree_sel
+            .as_deref()
+            .and_then(|sel| self.expanded.contains(sel).then_some(sel).or(sel.parent()));
         let click_path = path.clone();
         let (wb, menu_path) = (cx.weak_entity(), path.clone());
         h_flex()
@@ -1865,17 +1871,28 @@ impl Workbench {
             .when(!active, |d| d.hover(|s| s.bg(col::hover())))
             // Indent guides under each ancestor folder's chevron, shown while
             // the mouse is over the tree (`workbench.tree.renderIndentGuides`).
-            .children((0..depth).map(|level| {
-                div()
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .left(px(15. + level as f32 * 8.))
-                    .w(px(1.))
-                    .bg(col::indent_guide())
-                    .invisible()
-                    .group_hover("explorer-tree", |s| s.visible())
-            }))
+            .children(
+                path.ancestors()
+                    .skip(1)
+                    .take(depth)
+                    .enumerate()
+                    .map(|(i, owner)| {
+                        let guide = div()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left(px(15. + (depth - 1 - i) as f32 * 8.))
+                            .w(px(1.));
+                        if lit == Some(owner) {
+                            guide.bg(col::indent_guide())
+                        } else {
+                            guide
+                                .bg(col::inactive_indent_guide())
+                                .invisible()
+                                .group_hover("explorer-tree", |s| s.visible())
+                        }
+                    }),
+            )
             .child(div().w(px(16.)).flex_none().when(is_dir, |d| {
                 d.child(codicon(if open {
                     icon::CHEVRON_DOWN

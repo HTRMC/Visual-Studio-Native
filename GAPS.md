@@ -131,8 +131,8 @@ Differences from VS Code still to close, smallest first within each area.
 - [ ] There's no `explorer.autoReveal` setting to turn following off (no
       general settings.json yet; only the terminal reads one).
 - [x] The explorer draws indent guides while the mouse is over the tree.
-- [ ] The guide of the active row's parent isn't brighter than the rest, as
-      VS Code's is.
+- [x] The selection's guide (its folder's, or an open folder's own) is lit
+      and stays shown; the others are dimmer and show on hover.
 - [x] The explorer's selected row hugged its name instead of spanning the
       side bar's width (long names now end in an ellipsis too).
 - [x] Clicking a folder selects it; the selection goes back to the file on
