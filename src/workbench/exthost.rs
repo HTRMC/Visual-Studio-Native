@@ -1109,9 +1109,20 @@ impl Workbench {
                     .and_then(|()| stdin.flush())
                     .is_err()
                 {
-                    return;
+                    break;
                 }
             }
+            // Closed: the host deactivates its extensions and exits, or is
+            // ended if one keeps it from that.
+            drop(stdin);
+            for _ in 0..60 {
+                if !matches!(child.try_wait(), Ok(None)) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            child.kill().ok();
+            child.wait().ok();
         });
         let (tx, mut rx) = futures::channel::mpsc::unbounded::<Value>();
         let log = tx.clone();
@@ -1129,7 +1140,6 @@ impl Workbench {
                     tx.unbounded_send(msg).ok();
                 }
             }
-            child.wait().ok();
         });
         self.ext.generation += 1;
         let generation = self.ext.generation;

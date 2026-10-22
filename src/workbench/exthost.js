@@ -17,6 +17,32 @@ const errorText = (e) => (e && e.stack) || String(e);
 process.on('uncaughtException', (e) => send({ m: 'error', text: errorText(e) }));
 process.on('unhandledRejection', (e) => log('Unhandled rejection:', errorText(e)));
 
+// Bun's process.env has no Object methods, and its child processes don't see
+// changes to it unless given it; extensions count on both, as under Node.
+if (process.versions.bun) {
+  for (const k of ['hasOwnProperty', 'propertyIsEnumerable', 'isPrototypeOf', 'toString', 'valueOf', 'toLocaleString']) {
+    Object.defineProperty(process.env, k, { value: Object.prototype[k], writable: true, configurable: true });
+  }
+  const cp = require('child_process');
+  for (const k of ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']) {
+    const f = cp[k];
+    cp[k] = function (...a) {
+      // Options come after the command and its argument list, before a callback.
+      const at = Array.isArray(a[1]) ? 2 : 1;
+      if (a[at] == null || typeof a[at] === 'function') a.splice(at, a[at] == null ? 1 : 0, { env: process.env });
+      else if (typeof a[at] === 'object' && !a[at].env) a[at] = { ...a[at], env: process.env };
+      // Node's spawn() ignores `encoding`; Bun's would make its output strings.
+      if (k === 'spawn' && a[at]?.encoding) a[at] = { ...a[at], encoding: undefined };
+      return f.apply(this, a);
+    };
+    // `util.promisify(exec)` resolves to { stdout, stderr }, as Node's does.
+    if (f[util.promisify.custom]) {
+      cp[k][util.promisify.custom] = (...a) => new Promise((ok, no) =>
+        cp[k](...a, (err, stdout, stderr) => (err ? no(Object.assign(err, { stdout, stderr })) : ok({ stdout, stderr }))));
+    }
+  }
+}
+
 // ---- plain classes ---------------------------------------------------------
 
 class Disposable {
@@ -376,6 +402,9 @@ function createOutputChannel(name) {
 }
 
 const vscodeWindow = {
+  // No notebooks, and tabs only as far as vsn tells extensions of them.
+  activeNotebookEditor: undefined, visibleNotebookEditors: [],
+  tabGroups: { all: [], activeTabGroup: { tabs: [], isActive: true, viewColumn: 1 }, onDidChangeTabGroups: never, onDidChangeTabs: never, close: async () => false },
   showInformationMessage: message('info'),
   showWarningMessage: message('warning'),
   showErrorMessage: message('error'),
@@ -421,7 +450,9 @@ function configuration(section) {
     }
     return obj;
   };
+  // Its values are its properties too, as of now, as in VS Code.
   return {
+    ...lookup(),
     get(key, defaultValue) { const v = lookup(key); return v === undefined ? defaultValue : v; },
     has(key) { return lookup(key) !== undefined; },
     inspect(key) { const k = full(key); return { key: k, defaultValue: defaults[k], globalValue: settings[k] }; },
@@ -436,11 +467,77 @@ function configuration(section) {
   };
 }
 
+// A glob as VS Code's (`**`, `*`, `?`, `{a,b}`, `[...]`), matching a
+// '/'-separated relative path.
+function globRe(glob) {
+  let re = '';
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === '*' && glob[i + 1] === '*') {
+      re += glob[i + 2] === '/' ? '(?:.*/)?' : '.*';
+      i += glob[i + 2] === '/' ? 2 : 1;
+    } else if (c === '*') re += '[^/]*';
+    else if (c === '?') re += '[^/]';
+    else if (c === '{') re += '(?:';
+    else if (c === '}') re += ')';
+    else if (c === ',') re += '|';
+    else if (c === '[' || c === ']') re += c;
+    else re += c.replace(/[.+^$()|\\]/g, '\\$&');
+  }
+  return new RegExp(`^${re}$`, process.platform === 'win32' ? 'i' : '');
+}
+
+class RelativePattern {
+  constructor(base, pattern) {
+    this.baseUri = typeof base === 'string' ? Uri.file(base) : base.uri || base;
+    this.base = this.baseUri.fsPath;
+    this.pattern = pattern;
+  }
+}
+
+// ponytail: walks the folder on each call, skipping `files.exclude` (not
+// `search.exclude` or .gitignore); an index if extensions call it often.
+async function findFiles(include, exclude, maxResults = Infinity, token) {
+  const base = include?.base || root;
+  if (!base) return [];
+  const inc = globRe(include?.pattern ?? include);
+  const fromSettings = { '**/.git': true, '**/.svn': true, '**/.hg': true, '**/CVS': true, '**/.DS_Store': true, '**/Thumbs.db': true, ...settings['files.exclude'] };
+  const excl = (exclude === undefined ? Object.keys(fromSettings).filter((k) => fromSettings[k] === true) : exclude ? [exclude.pattern ?? exclude] : []).map(globRe);
+  const skip = (rel) => excl.some((r) => r.test(rel));
+  const found = [];
+  const walk = async (dir, rel) => {
+    let entries = [];
+    try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch {}
+    for (const e of entries) {
+      if (found.length >= maxResults || token?.isCancellationRequested) return;
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (skip(r)) continue;
+      if (e.isDirectory()) await walk(path.join(dir, e.name), r);
+      else if (inc.test(r)) found.push(Uri.file(path.join(dir, e.name)));
+    }
+  };
+  await walk(base, '');
+  return found;
+}
+
+// VS Code's own strings are English here: `t` fills in `{0}` or `{name}`.
+const l10n = {
+  bundle: undefined, uri: undefined,
+  t(message, ...args) {
+    if (typeof message === 'object') ({ message, args = [] } = message);
+    const named = args.length === 1 && typeof args[0] === 'object' ? args[0] : args;
+    return String(message).replace(/\{(\w+)\}/g, (m, k) => (named[k] === undefined ? m : String(named[k])));
+  },
+};
+
 const vscodeWorkspace = {
+  notebookDocuments: [],
   getConfiguration: configuration,
+  findFiles,
   get workspaceFolders() { return folders; },
   get rootPath() { return root || undefined; },
   get name() { return root ? path.basename(root) : undefined; },
+  workspaceFile: undefined,
   getWorkspaceFolder(uri) { return this.workspaceFolders && uri.fsPath.toLowerCase().startsWith(root.toLowerCase()) ? this.workspaceFolders[0] : undefined; },
   asRelativePath(p) { const f = typeof p === 'string' ? p : p.fsPath; return root ? path.relative(root, f).replace(/\\/g, '/') : f; },
   get textDocuments() { return [...documents.values()]; },
@@ -463,20 +560,26 @@ const vscodeWorkspace = {
   createFileSystemWatcher: () => ({ onDidCreate: never, onDidChange: never, onDidDelete: never, dispose() {} }),
   isTrusted: true,
   onDidChangeConfiguration: never,
-  fs: {
+  // Node's errors come out as VS Code's, which extensions test by code.
+  fs: Object.fromEntries(Object.entries({
     readFile: async (uri) => new Uint8Array(await fs.promises.readFile(uri.fsPath)),
     writeFile: async (uri, data) => fs.promises.writeFile(uri.fsPath, data),
     stat: async (uri) => { const s = await fs.promises.stat(uri.fsPath); return { type: s.isDirectory() ? 2 : 1, ctime: s.ctimeMs, mtime: s.mtimeMs, size: s.size }; },
     readDirectory: async (uri) => (await fs.promises.readdir(uri.fsPath, { withFileTypes: true })).map((d) => [d.name, d.isDirectory() ? 2 : 1]),
     createDirectory: async (uri) => fs.promises.mkdir(uri.fsPath, { recursive: true }),
     delete: async (uri, o) => fs.promises.rm(uri.fsPath, { recursive: !!(o && o.recursive), force: true }),
-  },
+    copy: async (from, to, o) => fs.promises.cp(from.fsPath, to.fsPath, { recursive: true, force: !!o?.overwrite, errorOnExist: !o?.overwrite }),
+    rename: async (from, to) => fs.promises.rename(from.fsPath, to.fsPath),
+  }).map(([k, f]) => [k, (uri, ...a) => f(uri, ...a).catch((err) => {
+    const code = { ENOENT: 'FileNotFound', EEXIST: 'FileExists', ERR_FS_CP_EEXIST: 'FileExists', ENOTDIR: 'FileNotADirectory', EISDIR: 'FileIsADirectory', EPERM: 'NoPermissions', EACCES: 'NoPermissions' }[err.code];
+    throw code ? FileSystemError[code](uri) : err;
+  })]).concat([['isWritableFileSystem', () => true]])),
 };
 
 const vscodeExtensions = {
   getExtension(id) {
     const e = extensions.get(String(id).toLowerCase());
-    return e && { id: e.id, extensionPath: e.dir, extensionUri: Uri.file(e.dir), packageJSON: e.manifest, isActive: e.active, exports: e.exports, activate: async () => e.exports };
+    return e && { id: e.id, extensionPath: e.dir, extensionUri: Uri.file(e.dir), packageJSON: e.manifest, get isActive() { return !!e.isActive; }, get exports() { return e.exports; }, activate: () => activate(e.id).then(() => e.exports) };
   },
   get all() { return [...extensions.keys()].map((id) => vscodeExtensions.getExtension(id)); },
   onDidChange: never,
@@ -491,6 +594,11 @@ const env = {
   clipboard: { readText: async () => '', writeText: async () => {} },
   openExternal: async () => false,
   asExternalUri: async (u) => u,
+  // Telemetry is off, so the sender is never called.
+  createTelemetryLogger: () => ({
+    isUsageEnabled: false, isErrorsEnabled: false, onDidChangeEnableStates: never,
+    logUsage() {}, logError() {}, dispose() {},
+  }),
 };
 
 // ---- source control ----------------------------------------------------------
@@ -611,9 +719,12 @@ async function treeJson(id) {
   let items = [];
   try { items = await walk(undefined, '', 0); } catch (err) { log(errorText(err)); }
   t.handles = handles;
-  const v = t.view || {};
-  return { m: 'tree', view: id, items, title: v.title ?? null, message: v.message ?? null, description: v.description ?? null };
+  t.items = items;
+  return treeMessage(t, id);
 }
+
+const treeMessage = (t, id, v = t.view || {}) =>
+  ({ m: 'tree', view: id, items: t.items, title: v.title ?? null, message: v.message ?? null, description: v.description ?? null });
 
 function refreshTree(id) {
   const t = trees.get(id);
@@ -623,7 +734,7 @@ function refreshTree(id) {
 }
 
 function registerTreeDataProvider(id, provider) {
-  const t = { provider, view: undefined, handles: [], open: new Map(), pending: false, chain: Promise.resolve() };
+  const t = { provider, view: undefined, handles: [], items: [], open: new Map(), pending: false, chain: Promise.resolve() };
   trees.set(id, t);
   const sub = provider.onDidChangeTreeData && provider.onDidChangeTreeData(() => refreshTree(id));
   refreshTree(id);
@@ -641,7 +752,9 @@ function createTreeView(id, options) {
     title: undefined, message: undefined, description: undefined, badge: undefined, visible: true, selection: [],
     onDidChangeVisibility: never, onDidChangeSelection: never, onDidExpandElement: never, onDidCollapseElement: never,
     onDidChangeCheckboxState: never, reveal: async () => {}, dispose: () => d.dispose(),
-  }, () => refreshTree(id));
+  // Its title or message only, without fetching the items again: a
+  // getChildren() that sets them would otherwise run forever.
+  }, () => trees.get(id)?.view && send(treeMessage(trees.get(id), id)));
   trees.get(id).view = view;
   return view;
 }
@@ -915,11 +1028,15 @@ const stubs = (name, set = new Map()) => new Proxy(() => {}, {
   set(_, k, v) { set.set(k, v); return true; },
   get(_, k) {
     if (set.has(k)) return set.get(k);
-    // Iterates as empty, so `for (const g of window.tabGroups.all)` runs.
+    // Iterates as empty, so `for (const x of stub)` runs.
     if (k === Symbol.iterator) return function* () {};
+    // Reads as '' in a string, so `${stub}` and `stub + 'x'` don't throw.
+    if (k === Symbol.toPrimitive) return () => '';
     if (typeof k !== 'string' || k === 'then') return undefined;
     if (k.startsWith('onDid') || k.startsWith('onWill')) return never;
     if (k === 'dispose') return () => {};
+    // Ends a chain, so `while (x.parent) x = x.parent` stops.
+    if (name.split('.').length > 8) return undefined;
     return stubs(`${name}.${k}`);
   },
   apply() {
@@ -928,34 +1045,153 @@ const stubs = (name, set = new Map()) => new Proxy(() => {}, {
     return stubs(`${name}()`);
   },
 });
+// VS Code's enums, from its vscode.d.ts: `Name:A B C` counts from 0, `A=1`
+// sets a value. Each also maps its values back to names, as TypeScript's do.
+const ENUMS = `
+TextEditorSelectionChangeKind:Keyboard=1 Mouse=2 Command=3
+TextEditorCursorStyle:Line=1 Block=2 Underline=3 LineThin=4 BlockOutline=5 UnderlineThin=6
+TextEditorLineNumbersStyle:Off On Relative Interval
+TextEditorRevealType:Default InCenter InCenterIfOutsideViewport AtTop
+OverviewRulerLane:Left=1 Center=2 Right=4 Full=7
+DecorationRangeBehavior:OpenOpen ClosedClosed OpenClosed ClosedOpen
+EndOfLine:LF=1 CRLF=2
+QuickPickItemKind:Separator=-1 Default=0
+InputBoxValidationSeverity:Info=1 Warning=2 Error=3
+CodeActionTriggerKind:Invoke=1 Automatic=2
+DocumentHighlightKind:Text Read Write
+SymbolKind:File Module Namespace Package Class Method Property Field Constructor Enum Interface Function Variable Constant String Number Boolean Array Object Key Null EnumMember Struct Event Operator TypeParameter
+SymbolTag:Deprecated=1
+SignatureHelpTriggerKind:Invoke=1 TriggerCharacter=2 ContentChange=3
+CompletionItemKind:Text Method Function Constructor Field Variable Class Interface Module Property Unit Value Enum Keyword Snippet Color File Reference Folder EnumMember Constant Struct Event Operator TypeParameter User Issue
+CompletionItemTag:Deprecated=1
+CompletionTriggerKind:Invoke TriggerCharacter TriggerForIncompleteCompletions
+InlineCompletionTriggerKind:Invoke Automatic
+InlayHintKind:Type=1 Parameter=2
+FoldingRangeKind:Comment=1 Imports=2 Region=3
+IndentAction:None Indent IndentOutdent Outdent
+SyntaxTokenType:Other Comment String RegEx
+ConfigurationTarget:Global=1 Workspace=2 WorkspaceFolder=3
+DiagnosticSeverity:Error Warning Information Hint
+DiagnosticTag:Unnecessary=1 Deprecated=2
+LanguageStatusSeverity:Information Warning Error
+ViewColumn:Active=-1 Beside=-2 One=1 Two=2 Three=3 Four=4 Five=5 Six=6 Seven=7 Eight=8 Nine=9
+StatusBarAlignment:Left=1 Right=2
+TerminalLocation:Panel=1 Editor=2
+ExtensionKind:UI=1 Workspace=2
+ExtensionMode:Production=1 Development=2 Test=3
+ColorThemeKind:Light=1 Dark=2 HighContrast=3 HighContrastLight=4
+TaskRevealKind:Always=1 Silent=2 Never=3
+TaskPanelKind:Shared=1 Dedicated=2 New=3
+ShellQuoting:Escape=1 Strong=2 Weak=3
+TaskScope:Global=1 Workspace=2
+FileType:Unknown=0 File=1 Directory=2 SymbolicLink=64
+FilePermission:Readonly=1
+FileChangeType:Changed=1 Created=2 Deleted=3
+UIKind:Desktop=1 Web=2
+LogLevel:Off Trace Debug Info Warning Error
+TreeItemCollapsibleState:None Collapsed Expanded
+TreeItemCheckboxState:Unchecked Checked
+TerminalExitReason:Unknown Shutdown Process User Extension
+EnvironmentVariableMutatorType:Replace=1 Append=2 Prepend=3
+ProgressLocation:SourceControl=1 Window=10 Notification=15
+TextDocumentChangeReason:Undo=1 Redo=2
+TextDocumentSaveReason:Manual=1 AfterDelay=2 FocusOut=3
+NotebookEditorRevealType:Default InCenter InCenterIfOutsideViewport AtTop
+NotebookCellKind:Markup=1 Code=2
+NotebookControllerAffinity:Default=1 Preferred=2
+NotebookCellStatusBarAlignment:Left=1 Right=2
+DebugConsoleMode:Separate MergeWithParent
+DebugConfigurationProviderTriggerKind:Initial=1 Dynamic=2
+CommentThreadCollapsibleState:Collapsed Expanded
+CommentMode:Editing Preview
+CommentThreadState:Unresolved Resolved
+TestRunProfileKind:Run=1 Debug=2 Coverage=3
+ChatResultFeedbackKind:Unhelpful Helpful
+LanguageModelChatMessageRole:User=1 Assistant=2
+LanguageModelChatToolMode:Auto=1 Required=2`;
+const enums = Object.fromEntries(ENUMS.trim().split('\n').map((line) => {
+  const [name, members] = line.split(':');
+  const e = {};
+  let v = -1;
+  for (const m of members.split(' ')) {
+    const [k, n] = m.split('=');
+    v = n === undefined ? v + 1 : Number(n);
+    e[(e[k] = v)] = k;
+  }
+  return [name, e];
+}));
+
+// The rest of VS Code's classes, keeping their constructor's arguments as
+// these fields. ponytail: plain data; methods only where extensions call them
+// at activation (add more as extensions need them).
+const CLASSES = `CodeLens:range,command EvaluatableExpression:range,expression
+InlineValueText:range,text InlineValueVariableLookup:range,variableName,caseSensitiveLookup
+InlineValueEvaluatableExpression:range,expression DocumentHighlight:range,kind
+SymbolInformation:name,kind,containerName,location DocumentSymbol:name,detail,kind,range,selectionRange
+SnippetTextEdit:range,snippet NotebookEdit:range,newCells SemanticTokensLegend:tokenTypes,tokenModifiers
+SemanticTokensBuilder:legend SemanticTokens:data,resultId SemanticTokensEdits:edits,resultId
+SemanticTokensEdit:start,deleteCount,data InlineCompletionList:items InlineCompletionItem:insertText,range,command
+DocumentLink:range,target Color:red,green,blue,alpha ColorInformation:range,color ColorPresentation:label
+InlayHintLabelPart:value InlayHint:position,label,kind FoldingRange:start,end,kind SelectionRange:range,parent
+CallHierarchyItem:kind,name,detail,uri,range,selectionRange CallHierarchyIncomingCall:from,fromRanges
+CallHierarchyOutgoingCall:to,fromRanges TypeHierarchyItem:kind,name,detail,uri,range,selectionRange
+LinkedEditingRanges:ranges,wordPattern DocumentDropEdit:insertText TerminalLink:startIndex,length,tooltip
+TerminalProfile:options FileDecoration:badge,tooltip,color TaskGroup:id,label ProcessExecution:process,args,options
+ShellExecution:commandLine,args,options CustomExecution:callback
+Task:definition,scope,name,source,execution,problemMatchers DataTransferItem:value DataTransfer
+QuickInputButtons NotebookRange:start,end NotebookCellOutputItem:data,mime NotebookCellOutput:items,metadata
+NotebookCellData:kind,value,languageId NotebookData:cells NotebookCellStatusBarItem:text,alignment
+DebugAdapterExecutable:command,args,options DebugAdapterServer:port,host DebugAdapterNamedPipeServer:path
+DebugAdapterInlineImplementation:implementation Breakpoint:enabled,condition,hitCondition,logMessage
+SourceBreakpoint:location,enabled,condition,hitCondition,logMessage
+FunctionBreakpoint:functionName,enabled,condition,hitCondition,logMessage DebugThread:session,threadId
+DebugStackFrame:session,threadId,frameId TestTag:id TestRunRequest:include,exclude,profile
+TestMessageStackFrame:label,uri,position TestMessage:message TestCoverageCount:covered,total
+FileCoverage:uri,statementCoverage,branchCoverage,declarationCoverage StatementCoverage:executed,location,branches
+BranchCoverage:executed,location,label DeclarationCoverage:name,executed,location TabInputText:uri
+TabInputTextDiff:original,modified TabInputCustom:uri,viewType TabInputWebview:viewType
+TabInputNotebook:uri,notebookType TabInputNotebookDiff:original,modified,notebookType TabInputTerminal
+TelemetryTrustedValue:value ChatRequestTurn ChatResponseTurn ChatResponseMarkdownPart ChatResponseFileTreePart
+ChatResponseAnchorPart ChatResponseProgressPart ChatResponseReferencePart ChatResponseCommandButtonPart
+LanguageModelChatMessage LanguageModelError LanguageModelToolCallPart LanguageModelToolResultPart
+LanguageModelTextPart LanguageModelPromptTsxPart LanguageModelToolResult`;
+const classes = Object.fromEntries(CLASSES.split(/\s+/).map((c) => {
+  const [name, f] = c.split(':');
+  const fields = f ? f.split(',') : [];
+  return [name, { [name]: class { constructor(...a) { fields.forEach((k, i) => (this[k] = a[i])); } } }[name]];
+}));
+for (const [id, label] of [['clean', 'Clean'], ['build', 'Build'], ['rebuild', 'Rebuild'], ['test', 'Test']]) {
+  classes.TaskGroup[label] = new classes.TaskGroup(id, label);
+}
+classes.QuickInputButtons.Back = { iconPath: new ThemeIcon('arrow-left') };
+
+class CancellationError extends Error {
+  constructor() { super('Canceled'); this.name = 'Canceled'; }
+}
+class FileSystemError extends Error {
+  constructor(m, code = 'Unknown') { super(m && typeof m === 'object' ? String(m) : m); this.code = code; this.name = `${code} (FileSystemError)`; }
+}
+for (const code of ['FileNotFound', 'FileExists', 'FileNotADirectory', 'FileIsADirectory', 'NoPermissions', 'Unavailable']) {
+  FileSystemError[code] = (m) => new FileSystemError(m, code);
+}
+
 // A namespace whose missing members are stubs.
 const withStubs = (ns, obj) => new Proxy(obj, {
   get(t, k, r) { return k in t || typeof k !== 'string' || k === 'then' ? Reflect.get(t, k, r) : stubs(ns)[k]; },
 });
 const known = {
+  ...enums, ...classes,
   version: '1.95.0',
   // TypeScript's `import * as vscode` then uses the module as is.
   __esModule: true,
-  commands: vscodeCommands, extensions: vscodeExtensions, env,
+  commands: vscodeCommands, extensions: vscodeExtensions, env, l10n, RelativePattern,
   window: withStubs('window', vscodeWindow), workspace: withStubs('workspace', vscodeWorkspace), languages: withStubs('languages', vscodeLanguages),
   scm: withStubs('scm', { createSourceControl }),
+  // Present from the start: esbuild's `__toESM` copies only what's there.
+  ...Object.fromEntries('debug tests tasks notebooks authentication comments chat lm interactive'.split(' ').map((n) => [n, stubs(n)])),
   Disposable, EventEmitter, Uri, Position, Range, Selection, ThemeColor, ThemeIcon, CancellationTokenSource,
   TreeItem, Location, Diagnostic, DiagnosticRelatedInformation, MarkdownString, Hover, SnippetString, CompletionItem, CompletionList, TextEdit, CodeActionKind,
-  WorkspaceEdit, CodeAction, CodeActionTriggerKind: { Invoke: 1, Automatic: 2 },
-  SignatureHelp, SignatureInformation, ParameterInformation, SignatureHelpTriggerKind: { Invoke: 1, TriggerCharacter: 2, ContentChange: 3 },
-  DiagnosticTag: { Unnecessary: 1, Deprecated: 2 },
-  CompletionItemKind: Object.fromEntries('Text Method Function Constructor Field Variable Class Interface Module Property Unit Value Enum Keyword Snippet Color File Reference Folder EnumMember Constant Struct Event Operator TypeParameter User Issue'.split(' ').map((k, i) => [k, i])),
-  CompletionTriggerKind: { Invoke: 0, TriggerCharacter: 1, TriggerForIncompleteCompletions: 2 },
-  TextDocumentSaveReason: { Manual: 1, AfterDelay: 2, FocusOut: 3 },
-  StatusBarAlignment: { Left: 1, Right: 2 },
-  ConfigurationTarget: { Global: 1, Workspace: 2, WorkspaceFolder: 3 },
-  ViewColumn: { Active: -1, Beside: -2, One: 1, Two: 2, Three: 3 },
-  DiagnosticSeverity: { Error: 0, Warning: 1, Information: 2, Hint: 3 },
-  ExtensionMode: { Production: 1, Development: 2, Test: 3 },
-  ProgressLocation: { SourceControl: 1, Window: 10, Notification: 15 },
-  FileType: { Unknown: 0, File: 1, Directory: 2, SymbolicLink: 64 },
-  EndOfLine: { LF: 1, CRLF: 2 },
-  TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 },
+  WorkspaceEdit, CodeAction, SignatureHelp, SignatureInformation, ParameterInformation, CancellationError, FileSystemError,
 };
 const vscode = new Proxy(known, {
   get(t, k) {
@@ -999,7 +1235,12 @@ function memento(file) {
 
 async function activate(id) {
   const e = extensions.get(id);
-  if (!e || e.active) return;
+  if (!e || e.active) return e?.activating;
+  e.active = true;
+  let done;
+  e.activating = new Promise((r) => (done = r));
+  // Its dependencies first, as VS Code does.
+  await Promise.all((e.manifest.extensionDependencies || []).map((d) => activate(d.toLowerCase())));
   const storage = path.join(os.homedir(), '.vsn', 'globalStorage', id);
   // Per folder, as VS Code's workspaceStorage/<hash>; none without a folder.
   const hash = root && require('crypto').createHash('md5').update(root.toLowerCase()).digest('hex');
@@ -1018,18 +1259,22 @@ async function activate(id) {
     extension: vscodeExtensions.getExtension(id),
     environmentVariableCollection: stubs('environmentVariableCollection'),
   };
-  e.active = true;
   try {
     const main = require(path.resolve(e.dir, e.manifest.main));
     e.deactivate = () => Promise.all([main.deactivate?.(), ...context.subscriptions.map((d) => d?.dispose?.())]);
     e.exports = main.activate ? await main.activate(context) : undefined;
+    e.isActive = true;
     send({ m: 'activated', id });
   } catch (err) {
     send({ m: 'error', text: `Activating extension '${id}' failed: ${errorText(err)}` });
   }
+  done();
 }
 
 async function run(command, args) {
+  // Its extension may still be activating, as another's slow activate()
+  // doesn't hold up the rest.
+  if (!commands.has(command)) await Promise.all([...extensions.values()].map((e) => e.activating));
   const fn = commands.get(command);
   if (!fn) return send({ m: 'error', text: `command '${command}' not found` });
   try {
@@ -1042,7 +1287,7 @@ async function run(command, args) {
   }
 }
 
-// Requests run in order, so a command waits for its extension's activation.
+// Requests run in order; activations run side by side, as in VS Code.
 let queue = Promise.resolve();
 const rl = readline.createInterface({ input: process.stdin });
 rl.on('line', (line) => {
@@ -1067,7 +1312,8 @@ rl.on('line', (line) => {
         settings = msg.settings || {};
         return;
       case 'activate':
-        return activate(msg.id);
+        activate(msg.id);
+        return;
       case 'run':
         // Not awaited: a command waiting on a quick pick mustn't hold up the rest.
         run(msg.command, msg.args);
@@ -1108,3 +1354,9 @@ rl.on('close', () => {
   const all = [...extensions.values()].map((e) => e.deactivate && Promise.resolve().then(e.deactivate).catch(() => {}));
   Promise.race([Promise.all(all), new Promise((r) => setTimeout(r, 5000))]).then(() => process.exit(0));
 });
+// Closes the host when vsn is gone, from a thread of its own, as an
+// extension may keep this one too busy to see stdin close.
+new (require('worker_threads').Worker)(`
+  const { ppid, pid } = require('worker_threads').workerData;
+  setInterval(() => { try { process.kill(ppid, 0); } catch { process.kill(pid); } }, 2000);
+`, { eval: true, workerData: { ppid: process.ppid, pid: process.pid } }).unref();

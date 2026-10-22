@@ -509,6 +509,13 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [ ] Built-ins that return results (`vscode.executeHoverProvider` and friends) and ones without a vsn action log "not found"; built-ins ignore their arguments; `type` leaves the cursor before the text it inserts.
 - [x] Extensions' `deactivate()` and `context.subscriptions` run when vsn closes or restarts the host (install, uninstall, enable, disable), up to 5s, under Node and Bun.
 - [ ] Under Bun, `process.on('exit')` listeners don't run when vsn closes.
+- [x] A host left running after vsn closed (an extension keeping it busy): it watches vsn and exits with it, and vsn ends it 6s after closing.
+- [x] Installing from search took the universal build, without rust-analyzer's or clangd's native server; it takes the build for this platform.
+- [x] An extension setting a tree view's `message` from `getChildren()` (GitLens) refetched it forever, growing the host to 4 GB.
+- [x] The 20 most-downloaded JS extensions on Open VSX activate under Node and Bun: VS Code's enums and classes, `extensionDependencies` first, `getExtension().activate()`, `FileSystemError`, `workspace.fs.copy`, configuration values as properties.
+- [ ] Accepted but doing nothing (logged "not implemented"): `debug.register*`, `tests.createTestController`, `tasks.registerTaskProvider`/`fetchTasks`, `notebooks.*`, `chat.*`, `lm.registerTool`/`registerMcpServerDefinitionProvider`, `environmentVariableCollection`, `createLanguageStatusItem`, `setLanguageConfiguration`, and `languages.register*Provider` beyond hover, completion, definition, references, rename, formatting, code actions and signature help; `window.createTextEditorDecorationType`, `registerWebviewViewProvider`, `registerCustomEditorProvider`, `registerFileDecorationProvider`, `registerUriHandler`, `registerTerminalLinkProvider`; `workspace.registerFileSystemProvider`, `registerTextDocumentContentProvider`.
+- [ ] The Bun host uses ~2.6x Node's memory with the same 20 extensions (620 MB vs 235 MB).
+- [ ] `workspace.fs.rename` ignores `overwrite: false`; `tabGroups` is always one empty group.
 - [x] `window.activeTextEditor` with its document, selection, `edit()` and `insertSnippet()`; `workspace.applyEdit`.
 - [ ] The active editor is sent on a tab switch and before a command: selection changes in between aren't (`onDidChangeTextEditorSelection` never fires), closing a tab doesn't send the next one, `setDecorations` draws nothing, and only one editor is visible.
 - [ ] `secrets` is a stub that stores nothing; `setKeysForSync` does nothing (no settings sync).

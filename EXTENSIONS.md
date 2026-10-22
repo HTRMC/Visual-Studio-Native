@@ -243,17 +243,44 @@ the phase 3 test extension (Windows 11, Node 24.14, Bun 1.3.13):
 | `fs.watch` on a file | works | works |
 | `deactivate()` and `context.subscriptions` on close | works | works |
 | `process.on('exit')` when vsn closes | works | **doesn't run** |
+| N-API `.node` addons (golang.go's, Jupyter's `zeromq`) | load | load |
+| The 20 most-downloaded JS extensions on Open VSX | 20 of 20 activate | 20 of 20 activate |
+| Host with those 20 active, 40 s in | 235 MB | 620 MB |
 
 So Node is preferred; `VSN_JS_RUNTIME` picks another runtime. Bun quirks
 met on the way: it ignores `Module._load` hooks, and when the main module's
 exports have `fetch` it starts `Bun.serve` on its own, so the `vscode` shim
 can't be a Proxy exported from the main module, and after vsn exits its
 `process.exit` skips `'exit'` listeners (`deactivate()` still runs, so that's
-the cleanup to use). Still to run on both, as they need third-party
-downloads:
+the cleanup to use). The host evens out three more for extensions: Bun's
+`process.env` has no `hasOwnProperty`, its child processes don't see
+changes to `process.env` unless passed it, and its `spawn()` honors
+`encoding`, turning output into strings.
 
-- N-API `.node` addons (some extensions ship them)
-- Activating the 20 most-downloaded JS extensions on Open VSX
+The 20, picked on 2026-10-22 by download count, leaving out AI assistants
+(vsn has no AI features), each with its `win32-x64` build when it has one,
+all activated at once in a folder with a `.py`, `.go` and `.c` file:
+
+| Extension | Activates | Extension | Activates |
+|---|---|---|---|
+| meta.pyrefly | yes | vscjava.vscode-java-dependency | yes |
+| ms-python.debugpy | yes | llvm-vs-code-extensions.vscode-clangd | yes |
+| ms-python.python | yes | vscjava.vscode-maven | yes |
+| redhat.java | yes | vscjava.vscode-gradle | yes |
+| ms-python.vscode-python-envs | yes | vscjava.vscode-java-debug | yes |
+| shopify.ruby-lsp | yes | vscjava.vscode-java-test | yes |
+| golang.go | yes | vscjava.vscode-java-pack | yes |
+| devsense.composer-php-vscode | yes | eamodio.gitlens | yes |
+| devsense.profiler-php-vscode | yes | ms-azuretools.vscode-containers | yes |
+| devsense.phptools-vscode | yes | ms-toolsai.jupyter | yes |
+
+Activating isn't working: what they register beyond vsn's API (debug
+adapters, tests, tasks, webviews, CodeLens, inlay hints, semantic tokens,
+notebooks and others, listed in [GAPS.md](GAPS.md)) is accepted and does
+nothing. Getting them there took every VS Code enum and class in the
+shim, `extensionDependencies` activating first, `workspace.findFiles`,
+`l10n` and `RelativePattern`; GitLens setting a tree view's message from
+its `getChildren()` had the host refetch it forever, growing to 4 GB.
 
 ## Dependencies
 

@@ -267,6 +267,34 @@ fn search_open_vsx(query: &str) -> Result<Vec<Listing>, String> {
     Ok(listings.collect())
 }
 
+/// The .vsix built for this platform, as VS Code installs, when the
+/// extension has one: a search lists only the universal one, which some
+/// (rust-analyzer's) ship without their native server.
+fn platform_download(id: &str) -> Option<String> {
+    let target = format!(
+        "{}-{}",
+        match std::env::consts::OS {
+            "windows" => "win32",
+            "macos" => "darwin",
+            os => os,
+        },
+        match std::env::consts::ARCH {
+            "x86_64" => "x64",
+            "aarch64" => "arm64",
+            arch => arch,
+        }
+    );
+    let (namespace, name) = id.split_once('.')?;
+    let text = ureq::get(format!("{OPEN_VSX}/{namespace}/{name}"))
+        .call()
+        .ok()?
+        .body_mut()
+        .read_to_string()
+        .ok()?;
+    let e: Value = serde_json::from_str(&text).ok()?;
+    Some(e["downloads"][target].as_str()?.to_string())
+}
+
 /// Downloads the .vsix at `url` and installs it, returning its name.
 fn install_from(url: &str) -> Result<String, String> {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -1440,7 +1468,11 @@ impl Workbench {
         }
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let done = cx.background_spawn(async move { install_from(&url) }).await;
+            let of = id.clone();
+            let done = (cx.background_spawn(async move {
+                install_from(&platform_download(&of).unwrap_or(url))
+            }))
+            .await;
             this.update(cx, |this, cx| {
                 this.market.installing.remove(&id);
                 this.extension_installed(done, cx);
