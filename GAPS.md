@@ -206,8 +206,11 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] The breadcrumb shows VS Code's 3px scrollbar while the mouse is over
       it (and briefly after a scroll), when the path overflows.
 - [ ] The breadcrumb's items aren't clickable pickers.
-- [ ] The editor tab strip and the explorer tree have no scrollbars (VS Code
-      shows a 3px one under the tabs and a 10px one on the tree on hover).
+- [x] The editor tab strip and the explorer tree have no scrollbars (VS Code
+      shows a 3px one under the tabs and a 10px one on the tree on hover);
+      many tabs widened the editor and pushed its actions off-screen.
+- [ ] The active tab isn't scrolled into view in the tab strip (VS Code
+      reveals it on a switch).
 - [x] Go menu: Back/Forward (Alt+Left/Right, the title bar arrows) and
       Last Edit Location (Ctrl+K Ctrl+Q) were placeholders.
 - [ ] Go to Symbol in Workspace (Ctrl+T) is still a placeholder.

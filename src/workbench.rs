@@ -22,7 +22,7 @@ use gpui_kit::component::{
     v_resizable,
 };
 use gpui_kit::{
-    base::{Scrollbar, ScrollbarMode, ScrollbarThumbStyle, h_flex, v_flex},
+    base::{Scrollbar, ScrollbarHandle, ScrollbarMode, ScrollbarThumbStyle, h_flex, v_flex},
     prelude::FluentBuilder as _,
     *,
 };
@@ -453,8 +453,11 @@ pub struct Workbench {
     /// The file and row width the breadcrumb was last scrolled for, so it
     /// can be scrolled back by hand in between.
     crumbs_at: (PathBuf, Pixels),
-    /// The mouse is over the breadcrumb, which shows its scrollbar.
-    crumbs_hover: bool,
+    /// The tab strip's scroll, for its scrollbar.
+    tabs_scroll: ScrollHandle,
+    /// The area under the mouse whose scrollbar shows ("tabs", "crumbs",
+    /// "tree").
+    scroll_hover: Option<&'static str>,
     /// Notifications added since the center was last open: the bell's dot.
     unseen: usize,
     /// Whether the bell's notification center is open.
@@ -514,7 +517,8 @@ impl Workbench {
             notes: Vec::new(),
             crumbs: ScrollHandle::new(),
             crumbs_at: Default::default(),
-            crumbs_hover: false,
+            tabs_scroll: ScrollHandle::new(),
+            scroll_hover: None,
             unseen: 0,
             center: false,
             act_hover: None,
@@ -1672,7 +1676,9 @@ impl Workbench {
             );
 
         v_flex()
+            .id("explorer-view")
             .size_full()
+            .on_hover(self.hover_slider("tree", cx))
             .map(|d| match self.root_name() {
                 Some(name) => d
                     .child(
@@ -1701,7 +1707,8 @@ impl Workbench {
                         .group("explorer-tree")
                         .flex_1()
                         .min_h_0(),
-                    ),
+                    )
+                    .child(self.slider("tree", &self.tree_scroll, Axis::Vertical, 10.)),
                 None => d
                     .child(section_header("no-folder", "No Folder Opened", true))
                     .child(
@@ -1934,6 +1941,49 @@ impl Workbench {
         }
     }
 
+    /// VS Code's scrollbar slider, `size` px thick: shown while the mouse is
+    /// over the `area` (see `hover_slider`) and briefly after a scroll.
+    fn slider(
+        &self,
+        area: &'static str,
+        handle: &(impl ScrollbarHandle + Clone),
+        axis: Axis,
+        size: f32,
+    ) -> Scrollbar {
+        let thumb = move |bg| {
+            move |t: ScrollbarThumbStyle| t.width(px(size)).inset(px(0.)).radius(px(0.)).bg(ca(bg))
+        };
+        Scrollbar::new(handle)
+            .id(area)
+            .axis(axis)
+            .mode(match self.scroll_hover == Some(area) {
+                true => ScrollbarMode::Always,
+                false => ScrollbarMode::Scrolling,
+            })
+            .styles(|s| {
+                s.track(|t| t.width(px(size)).bg(transparent_black()))
+                    .thumb(thumb(0x79797966))
+                    .thumb_hover(thumb(0x646464B3))
+                    .thumb_active(thumb(0xBFBFBF66))
+            })
+    }
+
+    /// Tracks the mouse over a `slider`'s area.
+    fn hover_slider(
+        &self,
+        area: &'static str,
+        cx: &mut Context<Self>,
+    ) -> impl Fn(&bool, &mut Window, &mut App) + 'static {
+        cx.listener(move |this, hover: &bool, _, cx| {
+            if *hover {
+                this.scroll_hover = Some(area);
+            } else if this.scroll_hover == Some(area) {
+                this.scroll_hover = None;
+            }
+            cx.notify();
+        })
+    }
+
     fn render_tree_row(
         &self,
         (path, depth, is_dir): &(PathBuf, usize, bool),
@@ -2033,6 +2083,7 @@ impl Workbench {
             return watermark().into_any_element();
         }
         let wb = cx.weak_entity();
+        let tabs_hover = self.hover_slider("tabs", cx);
         let tabs = self.docs.iter().enumerate().map(|(ix, doc)| {
             let active = ix == self.active;
             let name = doc
@@ -2133,25 +2184,32 @@ impl Workbench {
             .bg(col::editor())
             .child(
                 h_flex()
+                    .id("tab-bar")
                     .h(px(35.))
                     .flex_none()
                     .bg(col::bg())
                     .text_size(px(13.))
+                    .on_hover(tabs_hover)
+                    // Absolute, so many tabs scroll instead of widening the
+                    // editor; the tabs paint over the strip's bottom border.
                     .child(
                         div()
-                            .id("tabs")
-                            .flex()
-                            .h_full()
-                            .overflow_x_scroll()
-                            .children(tabs),
-                    )
-                    .child(
-                        div()
+                            .relative()
                             .flex_1()
                             .h_full()
-                            .border_b_1()
-                            .border_color(col::border()),
+                            .child(div().absolute().bottom_0().w_full().h(px(1.)).bg(col::border()))
+                            .child(
+                                div()
+                                    .id("tabs")
+                                    .absolute()
+                                    .size_full()
+                                    .flex()
+                                    .overflow_x_scroll()
+                                    .track_scroll(&self.tabs_scroll)
+                                    .children(tabs),
+                            ),
                     )
+                    .child(self.slider("tabs", &self.tabs_scroll, Axis::Horizontal, 3.))
                     .child(
                         h_flex()
                             .h_full()
@@ -2186,10 +2244,7 @@ impl Workbench {
                     .relative()
                     .h(px(22.))
                     .flex_none()
-                    .on_hover(cx.listener(|this, hover: &bool, _, cx| {
-                        this.crumbs_hover = *hover;
-                        cx.notify();
-                    }))
+                    .on_hover(self.hover_slider("crumbs", cx))
                     .child(
                     h_flex()
                         .id("breadcrumbs")
@@ -2202,26 +2257,7 @@ impl Workbench {
                         .track_scroll(&self.crumbs)
                         .children(crumbs),
                     )
-                    // VS Code's 3px breadcrumb scrollbar, shown while the
-                    // mouse is over the row and briefly after a scroll.
-                    .child(
-                        Scrollbar::horizontal(&self.crumbs)
-                            .mode(match self.crumbs_hover {
-                                true => ScrollbarMode::Always,
-                                false => ScrollbarMode::Scrolling,
-                            })
-                            .styles(|s| {
-                                let thumb = |bg| {
-                                    move |t: ScrollbarThumbStyle| {
-                                        t.width(px(3.)).inset(px(0.)).radius(px(0.)).bg(ca(bg))
-                                    }
-                                };
-                                s.track(|t| t.width(px(3.)).bg(transparent_black()))
-                                    .thumb(thumb(0x79797966))
-                                    .thumb_hover(thumb(0x646464B3))
-                                    .thumb_active(thumb(0xBFBFBF66))
-                            }),
-                    ),
+                    .child(self.slider("crumbs", &self.crumbs, Axis::Horizontal, 3.)),
             )
             .child(
                 div().flex_1().min_h_0().map(|d| {
