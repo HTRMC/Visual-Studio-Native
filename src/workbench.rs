@@ -116,6 +116,8 @@ actions!(
         MoveLinesDown,
         ToggleLineComment,
         AddNextOccurrence,
+        ExpandSelection,
+        ShrinkSelection,
         SelectAllOccurrences,
         AddLineComment,
         RemoveLineComment,
@@ -244,6 +246,16 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("alt-down", MoveLinesDown, Some("Input && mode == editor")),
         KeyBinding::new("ctrl-/", ToggleLineComment, Some("Input && mode == editor")),
         KeyBinding::new("ctrl-d", AddNextOccurrence, Some("Input && mode == editor")),
+        KeyBinding::new(
+            "shift-alt-right",
+            ExpandSelection,
+            Some("Input && mode == editor"),
+        ),
+        KeyBinding::new(
+            "shift-alt-left",
+            ShrinkSelection,
+            Some("Input && mode == editor"),
+        ),
         KeyBinding::new(
             "ctrl-shift-l",
             SelectAllOccurrences,
@@ -468,6 +480,71 @@ fn word_around(text: &str, at: usize) -> Option<Range<usize>> {
     let start = text[..at].trim_end_matches(word).len();
     let end = text.len() - text[at..].trim_start_matches(word).len();
     (start < end).then_some(start..end)
+}
+
+/// The smallest range around `sel` that's bigger than it: the word, the
+/// inside of the brackets around it, the brackets too, the line's text, the
+/// whole line, or the whole text.
+// ponytail: brackets and words, not VS Code's syntax tree, so strings and
+// brackets inside strings or comments don't count.
+fn expanded(text: &str, sel: Range<usize>) -> Option<Range<usize>> {
+    let mut found: Vec<Range<usize>> = word_around(text, sel.start).into_iter().collect();
+    let lines = selected_lines(text, &sel);
+    // Without a CRLF's \r, which the editor won't end a selection on.
+    let line = text[lines.clone()].trim_end_matches('\r');
+    let start = lines.start + line.len() - line.trim_start().len();
+    found.extend([
+        start..lines.start + line.trim_end().len(),
+        lines.start..lines.start + line.len(),
+        0..text.len(),
+    ]);
+    let (mut from, mut to) = (sel.start, sel.end);
+    while let Some((open, close)) = enclosing_brackets(text, from, to) {
+        found.extend([open + 1..close, open..close + 1]);
+        (from, to) = (open, close + 1);
+    }
+    let around = |r: &Range<usize>| r.start <= sel.start && sel.end <= r.end && r.len() > sel.len();
+    found.into_iter().filter(around).min_by_key(|r| r.len())
+}
+
+/// The nearest bracket pair around `from..to` in `text`: the open and close
+/// bracket's offsets.
+fn enclosing_brackets(text: &str, mut from: usize, to: usize) -> Option<(usize, usize)> {
+    let pairs = [('(', ')'), ('[', ']'), ('{', '}')];
+    loop {
+        let mut depth = 0;
+        let (open, (o, c)) = text[..from].char_indices().rev().find_map(|(i, ch)| {
+            if pairs.iter().any(|p| p.1 == ch) {
+                depth += 1;
+            } else if let Some(&p) = pairs.iter().find(|p| p.0 == ch) {
+                if depth == 0 {
+                    return Some((i, p));
+                }
+                depth -= 1;
+            }
+            None
+        })?;
+        let mut depth = 0;
+        let close = text[open + 1..]
+            .char_indices()
+            .find_map(|(i, ch)| match ch {
+                _ if ch == c && depth == 0 => Some(open + 1 + i),
+                _ if ch == c => {
+                    depth -= 1;
+                    None
+                }
+                _ if ch == o => {
+                    depth += 1;
+                    None
+                }
+                _ => None,
+            })?;
+        // A pair closing inside the selection doesn't enclose it.
+        if close >= to {
+            return Some((open, close));
+        }
+        from = open;
+    }
 }
 
 /// Language `lang`'s line comment token, from VS Code's language
@@ -782,6 +859,9 @@ pub struct Workbench {
     /// After Ctrl+D: the editor, its selection then, and where the last
     /// match it added ends, so the next Ctrl+D searches on from there.
     next_match: Option<(EntityId, Range<usize>, usize)>,
+    /// The editor Expand Selection last ran in and its selections, the
+    /// current last, for Shrink Selection to step back through.
+    expand_history: Option<(EntityId, Vec<Range<usize>>)>,
     debug: debug::Debug,
     /// Spawned when the Terminal tab first shows; the error if the shell didn't start.
     terminals: terminal::Terminals,
@@ -841,6 +921,7 @@ impl Workbench {
             word_wrap: word_wrap(&terminal::settings()),
             menu_focus: None,
             next_match: None,
+            expand_history: None,
             debug: debug::Debug::new(window, cx),
             terminals: Default::default(),
         };
@@ -1886,6 +1967,41 @@ impl Workbench {
     // ponytail: the active selection only; VS Code moves every cursor's lines.
     fn line_op(&mut self, up: bool, copy: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.edit_lines(|text, sel| lines_moved(text, sel, up, copy), window, cx)
+    }
+
+    /// Selection > Expand Selection (Shift+Alt+Right), or Shrink Selection
+    /// back to what it was before the last expand.
+    fn expand_selection(&mut self, expand: bool, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.get(self.active).filter(|d| !d.binary) else {
+            return;
+        };
+        let id = doc.editor.entity_id();
+        let mut history = match self.expand_history.take() {
+            Some((i, h)) if i == id => h,
+            _ => Vec::new(),
+        };
+        doc.editor.update(cx, |e, cx| {
+            let sel = e.selected_range();
+            if history.last() != Some(&sel) {
+                history = vec![sel.clone()];
+            }
+            let next = match expand {
+                true => expanded(&e.value(), sel),
+                false if history.len() > 1 => {
+                    history.pop();
+                    history.last().cloned()
+                }
+                false => None,
+            };
+            if let Some(next) = next {
+                e.set_selected_range(next, cx);
+                // As the editor adjusted it, to recognize it next time.
+                if expand {
+                    history.push(e.selected_range());
+                }
+            }
+        });
+        self.expand_history = Some((id, history));
     }
 
     /// Selection > Add Next Occurrence (Ctrl+D), or with `all` Select All
@@ -4378,6 +4494,12 @@ impl Render for Workbench {
             .on_action(
                 cx.listener(|this, _: &SelectAllOccurrences, _, cx| this.add_occurrences(true, cx)),
             )
+            .on_action(
+                cx.listener(|this, _: &ExpandSelection, _, cx| this.expand_selection(true, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ShrinkSelection, _, cx| this.expand_selection(false, cx)),
+            )
             .on_action(cx.listener(|this, _: &ToggleLineComment, window, cx| {
                 this.comment_lines(None, window, cx)
             }))
@@ -4689,8 +4811,8 @@ fn app_menu(
             .menu("Toggle Block Comment", Box::new(ToggleBlockComment)),
         "Selection" => menu
             .menu("Select All", Box::new(input::SelectAll))
-            .menu("Expand Selection", noop())
-            .menu("Shrink Selection", noop())
+            .menu("Expand Selection", Box::new(ExpandSelection))
+            .menu("Shrink Selection", Box::new(ShrinkSelection))
             .separator()
             .menu("Copy Line Up", Box::new(CopyLinesUp))
             .menu("Copy Line Down", Box::new(CopyLinesDown))
@@ -4783,9 +4905,39 @@ fn app_menu(
 #[cfg(test)]
 mod tests {
     use super::{
-        Encoding, block_toggled, comment_toggled, copy_all, copy_target, detect_indent,
+        Encoding, block_toggled, comment_toggled, copy_all, copy_target, detect_indent, expanded,
         lines_moved, with_eol, word_around,
     };
+
+    #[test]
+    fn expand_selection() {
+        let text = "f(a, [bc d])\nx";
+        let steps = |mut sel| {
+            let mut out = vec![];
+            while let Some(next) = expanded(text, sel) {
+                out.push(&text[next.clone()]);
+                sel = next;
+            }
+            out
+        };
+        assert_eq!(
+            steps(7..7),
+            [
+                "bc",
+                "bc d",
+                "[bc d]",
+                "a, [bc d]",
+                "(a, [bc d])",
+                "f(a, [bc d])",
+                text
+            ]
+        );
+        // A CRLF line stops before its \r; an open bracket inside the
+        // selection doesn't pair with the enclosing closer.
+        let text = "{\r\nif (1) {\r\nx;\r\n}\r\n}";
+        assert_eq!(expanded(text, 3..11), Some(1..text.len() - 1));
+        assert_eq!(expanded(" ab\r\nc", 1..3), Some(0..3));
+    }
 
     #[test]
     fn word_around_cursor() {

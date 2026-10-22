@@ -197,6 +197,8 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("Copy", Box::new(gpui_kit::base::input::Copy)),
         ("Paste", Box::new(gpui_kit::base::input::Paste)),
         ("Select All", Box::new(gpui_kit::base::input::SelectAll)),
+        ("Expand Selection", Box::new(ExpandSelection)),
+        ("Shrink Selection", Box::new(ShrinkSelection)),
         (
             "Add Selection To Next Find Match",
             Box::new(AddNextOccurrence),

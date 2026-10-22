@@ -256,7 +256,7 @@ Differences from VS Code still to close, smallest first within each area.
       active one as VS Code does.
 - [ ] Still-inert menu entries: Open Recent > More..., Preferences >
       Keyboard Shortcuts / Themes;
-      Selection > Expand/Shrink Selection; View > Open View..., Editor Layout > Split
+      View > Open View..., Editor Layout > Split
       Up/Down; Go to Symbol in Workspace...; Run > Open/Add
       Configuration..., Run Task..., Run Build Task...; Help's entries.
 - [x] Edit and Selection menu entries (Undo, Cut, Select All...) never
@@ -285,6 +285,12 @@ Differences from VS Code still to close, smallest first within each area.
       (VS Code matches whole words after selecting one), and Add Previous
       Occurrence and Ctrl+K Ctrl+D (Move Last Selection to Next Find
       Match) are missing.
+- [x] Selection > Expand/Shrink Selection were inert; they and
+      Shift+Alt+Right/Left step out through the word, brackets, line and
+      file, and back.
+- [ ] Expand Selection uses brackets, not the syntax tree, so strings,
+      comments and brackets inside them don't count; it handles the
+      active selection only.
 - [x] File > Auto Save was inert; it and "File: Toggle Auto Save" flip
       files.autoSave, and "afterDelay" saves dirty files after
       files.autoSaveDelay.
