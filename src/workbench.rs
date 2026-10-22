@@ -482,6 +482,25 @@ fn word_around(text: &str, at: usize) -> Option<Range<usize>> {
     (start < end).then_some(start..end)
 }
 
+/// Where `needle` occurs in `text`: as a whole word, case-sensitively, or
+/// anywhere in any case.
+// ponytail: ASCII case folding only, so "É" doesn't match "é".
+fn occurrences(text: &str, needle: &str, whole: bool) -> Vec<usize> {
+    if whole {
+        let word = |&at: &usize| word_around(text, at) == Some(at..at + needle.len());
+        return text
+            .match_indices(needle)
+            .map(|(at, _)| at)
+            .filter(word)
+            .collect();
+    }
+    let lower = text.to_ascii_lowercase();
+    lower
+        .match_indices(&needle.to_ascii_lowercase())
+        .map(|(at, _)| at)
+        .collect()
+}
+
 /// The smallest range around `sel` that's bigger than it: the word, the
 /// inside of the brackets around it, the brackets too, the line's text, the
 /// whole line, or the whole text.
@@ -857,8 +876,9 @@ pub struct Workbench {
     /// Selection entries reach that editor rather than the menu's own path.
     menu_focus: Option<FocusHandle>,
     /// After Ctrl+D: the editor, its selection then, and where the last
-    /// match it added ends, so the next Ctrl+D searches on from there.
-    next_match: Option<(EntityId, Range<usize>, usize)>,
+    /// match it added ends, so the next Ctrl+D searches on from there, and
+    /// whether it matches whole words.
+    next_match: Option<(EntityId, Range<usize>, usize, bool)>,
     /// The editor Expand Selection last ran in and its selections, the
     /// current last, for Shrink Selection to step back through.
     expand_history: Option<(EntityId, Vec<Range<usize>>)>,
@@ -1117,6 +1137,10 @@ impl Workbench {
             &editor,
             window,
             |this, editor, ev: &InputEvent, window, cx| {
+                if matches!(ev, InputEvent::Change) {
+                    // An edit ends a run of Ctrl+D.
+                    this.next_match = None;
+                }
                 if matches!(ev, InputEvent::Change)
                     && let Some(doc) = this.docs.iter_mut().find(|d| &d.editor == editor)
                 {
@@ -2006,9 +2030,9 @@ impl Workbench {
 
     /// Selection > Add Next Occurrence (Ctrl+D), or with `all` Select All
     /// Occurrences (Ctrl+Shift+L), of the active editor's selected text; an
-    /// empty selection first selects the word around the cursor.
-    // ponytail: case-sensitive substring matches, also inside other words;
-    // VS Code matches whole words after selecting one by Ctrl+D.
+    /// empty selection first selects the word around the cursor, and then
+    /// matches whole words only, case-sensitively; otherwise any match, in any
+    /// case, as VS Code's find defaults.
     fn add_occurrences(&mut self, all: bool, cx: &mut Context<Self>) {
         let Some(doc) = self.docs.get(self.active).filter(|d| !d.binary) else {
             return;
@@ -2018,28 +2042,30 @@ impl Workbench {
         self.next_match = doc.editor.update(cx, |e, cx| {
             let text = e.value();
             let mut sel = e.selected_range();
+            // Selections other than the first aren't readable, so remember the last.
+            let (from, mut whole) = match last {
+                Some((i, s, end, whole)) if i == id && s == sel => (end, whole),
+                _ => (sel.end, false),
+            };
             if sel.is_empty() {
                 sel = word_around(&text, sel.start)?;
                 e.set_selected_range(sel.clone(), cx);
                 if !all {
-                    return None;
+                    return Some((id, sel.clone(), sel.end, true));
                 }
+                whole = true;
             }
-            let needle = &text[sel.clone()];
+            let len = sel.len();
+            let found = occurrences(&text, &text[sel.clone()], whole);
             if all {
-                for (at, _) in text.match_indices(needle) {
-                    e.add_selection(at..at + needle.len(), cx);
+                for at in found {
+                    e.add_selection(at..at + len, cx);
                 }
                 return None;
             }
-            // Selections other than the first aren't readable, so remember the last.
-            let from = match last {
-                Some((i, s, end)) if i == id && s == sel => end,
-                _ => sel.end,
-            };
-            let at = (text[from..].find(needle).map(|i| from + i)).or_else(|| text.find(needle))?;
-            e.add_selection(at..at + needle.len(), cx);
-            Some((id, sel, at + needle.len()))
+            let at = *found.iter().find(|&&at| at >= from).or(found.first())?;
+            e.add_selection(at..at + len, cx);
+            Some((id, sel, at + len, whole))
         });
     }
 
@@ -4906,7 +4932,7 @@ fn app_menu(
 mod tests {
     use super::{
         Encoding, block_toggled, comment_toggled, copy_all, copy_target, detect_indent, expanded,
-        lines_moved, with_eol, word_around,
+        lines_moved, occurrences, with_eol, word_around,
     };
 
     #[test]
@@ -4937,6 +4963,12 @@ mod tests {
         let text = "{\r\nif (1) {\r\nx;\r\n}\r\n}";
         assert_eq!(expanded(text, 3..11), Some(1..text.len() - 1));
         assert_eq!(expanded(" ab\r\nc", 1..3), Some(0..3));
+    }
+
+    #[test]
+    fn find_occurrences() {
+        assert_eq!(occurrences("a ab a_ A a", "a", true), [0, 10]);
+        assert_eq!(occurrences("a ab a_ A a", "a", false), [0, 2, 5, 8, 10]);
     }
 
     #[test]

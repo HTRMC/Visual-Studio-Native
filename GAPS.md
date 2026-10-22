@@ -281,10 +281,12 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Ctrl+D (Add Next Occurrence) and Ctrl+Shift+L (Select All
       Occurrences) were missing; they're in the Selection menu and the
       palette, and the palette has Cut/Copy/Paste and Select All.
-- [ ] Ctrl+D matches case-sensitive substrings, also inside other words
-      (VS Code matches whole words after selecting one), and Add Previous
-      Occurrence and Ctrl+K Ctrl+D (Move Last Selection to Next Find
-      Match) are missing.
+- [x] Ctrl+D matched case-sensitive substrings; now a word it picked from
+      the cursor matches whole words, case-sensitively, and a selection
+      matches anywhere in any case, as in VS Code.
+- [ ] Ctrl+D folds ASCII case only, and ignores the find widget's Match
+      Case / Whole Word toggles; Add Previous Occurrence and Ctrl+K Ctrl+D
+      (Move Last Selection to Next Find Match) are missing.
 - [x] Selection > Expand/Shrink Selection were inert; they and
       Shift+Alt+Right/Left step out through the word, brackets, line and
       file, and back.
