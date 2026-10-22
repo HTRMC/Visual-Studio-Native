@@ -224,7 +224,9 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Dragging an explorer file onto the terminal doesn't type its path.
 - [x] Files dragged in from Windows Explorer aren't accepted (VS Code opens
       them in the editor, or types their paths into the terminal).
-- [ ] Files from Windows dropped on a tab open at the end, not at that tab.
+- [x] Files from Windows dropped on a tab open at the end, not at that tab.
+- [ ] A drag over a tab only tints it faintly; VS Code also draws
+      `tab.dragAndDropBorder` on the side the tab will land.
 - [ ] Files from Windows dropped on the explorer aren't copied into the
       folder under the mouse.
 - [ ] Dragging in the explorer can't move files between folders.

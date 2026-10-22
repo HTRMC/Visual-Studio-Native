@@ -6,6 +6,7 @@ use std::{
     fs,
     ops::Range,
     path::{Path, PathBuf},
+    slice,
     time::{Duration, Instant},
 };
 
@@ -738,6 +739,29 @@ impl Workbench {
     }
 
     /// A tab dropped onto another's place: it moves there and is shown.
+    /// Dropped files open at tab `at` (else after the others), in order; a
+    /// dropped folder becomes the workspace.
+    fn drop_paths(
+        &mut self,
+        paths: &[PathBuf],
+        mut at: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for path in paths {
+            if path.is_dir() {
+                self.set_root(path.clone(), cx);
+                continue;
+            }
+            self.open_path(path.clone(), window, cx);
+            let from = self.docs.iter().position(|d| &d.path == path);
+            if let (Some(from), Some(to)) = (from, at) {
+                self.move_doc(from, to, window, cx);
+                at = Some(to + 1);
+            }
+        }
+    }
+
     fn move_doc(&mut self, from: usize, to: usize, window: &mut Window, cx: &mut Context<Self>) {
         let doc = self.docs.remove(from);
         self.docs.insert(to, doc);
@@ -2200,10 +2224,12 @@ impl Workbench {
                 }))
                 .drag_over::<DraggedFile>(|s, _, _, _| s.bg(col::drop()))
                 .on_drop(cx.listener(move |this, file: &DraggedFile, window, cx| {
-                    this.open_path(file.0.clone(), window, cx);
-                    if let Some(from) = this.docs.iter().position(|d| d.path == file.0) {
-                        this.move_doc(from, ix, window, cx);
-                    }
+                    this.drop_paths(slice::from_ref(&file.0), Some(ix), window, cx);
+                    cx.stop_propagation();
+                }))
+                .drag_over::<ExternalPaths>(|s, _, _, _| s.bg(col::drop()))
+                .on_drop(cx.listener(move |this, paths: &ExternalPaths, window, cx| {
+                    this.drop_paths(paths.paths(), Some(ix), window, cx);
                     cx.stop_propagation();
                 }))
                 .context_menu({
@@ -3023,12 +3049,7 @@ impl Render for Workbench {
                 this.open_path(file.0.clone(), window, cx)
             }))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
-                for path in paths.paths() {
-                    match path.is_dir() {
-                        true => this.set_root(path.clone(), cx),
-                        false => this.open_path(path.clone(), window, cx),
-                    }
-                }
+                this.drop_paths(paths.paths(), None, window, cx)
             }))
             .child(self.render_editor_group(cx))
             // The highlight goes over the editor, below the tab strip (whose
