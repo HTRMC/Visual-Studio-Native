@@ -2195,8 +2195,29 @@ impl Workbench {
 
     /// Opens `path`'s folders in the explorer and scrolls its row into view;
     /// `show` also brings up the explorer (Reveal in Explorer View), else it
-    /// follows the active editor as VS Code's `explorer.autoReveal` does.
+    /// follows the active editor as VS Code's `explorer.autoReveal` does:
+    /// `false` turns that off, `"focusNoScroll"` doesn't scroll, and files
+    /// matching `explorer.autoRevealExclude` aren't followed.
     fn reveal_in_tree(&mut self, path: &Path, show: bool, cx: &mut Context<Self>) {
+        let mut scroll = true;
+        if !show {
+            let settings = terminal::settings();
+            let auto = &settings["explorer.autoReveal"];
+            if *auto == false {
+                return;
+            }
+            scroll = *auto != "focusNoScroll";
+            let globs = search::glob_map(
+                &settings,
+                &["explorer.autoRevealExclude"],
+                &["**/node_modules", "**/bower_components"],
+            );
+            let root = self.root.as_deref().unwrap_or(path);
+            let excluded = search::overrides(root, "", "", &globs);
+            if excluded.is_ok_and(|o| o.matched(path, false).is_ignore()) {
+                return;
+            }
+        }
         self.tree_sel = Some(path.to_path_buf());
         self.tree_cursor = self.tree_sel.clone();
         let Some(root) = self.root.clone().filter(|r| path.starts_with(r)) else {
@@ -2209,7 +2230,7 @@ impl Workbench {
         }
         let mut rows = Vec::new();
         self.tree_rows(&root, 0, &mut rows);
-        if let Some(ix) = rows.iter().position(|(p, ..)| p == path) {
+        if let Some(ix) = rows.iter().position(|(p, ..)| p == path).filter(|_| scroll) {
             self.tree_scroll.scroll_to_item(ix, ScrollStrategy::Center);
         }
         cx.notify();

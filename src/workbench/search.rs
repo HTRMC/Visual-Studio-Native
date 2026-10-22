@@ -98,22 +98,33 @@ const FILES_EXCLUDE: [&str; 5] = [
 /// VS Code's default `search.exclude`, on top of `files.exclude`.
 const SEARCH_EXCLUDE: [&str; 3] = ["**/node_modules", "**/bower_components", "**/*.code-search"];
 
-/// The `files.exclude` (and, for `search`, also `search.exclude`) globs in force:
-/// the defaults, overlaid by `settings` where `false` turns one off.
+/// The globs a VS Code glob map setting turns on: `defaults`, overlaid by
+/// `settings[key]` for each of `keys`, where `false` turns one off.
 // ponytail: a `{"when": ...}` sibling condition counts as off.
-fn exclude_set(settings: &serde_json::Value, search: bool) -> Vec<String> {
-    let mut on: BTreeMap<String, bool> = FILES_EXCLUDE
-        .iter()
-        .chain(if search { &SEARCH_EXCLUDE[..] } else { &[] })
-        .map(|g| (g.to_string(), true))
-        .collect();
-    let keys = ["files.exclude", "search.exclude"];
-    for key in &keys[..1 + search as usize] {
+pub(super) fn glob_map(
+    settings: &serde_json::Value,
+    keys: &[&str],
+    defaults: &[&str],
+) -> Vec<String> {
+    let mut on: BTreeMap<String, bool> = defaults.iter().map(|g| (g.to_string(), true)).collect();
+    for key in keys {
         for (g, v) in settings[key].as_object().into_iter().flatten() {
             on.insert(g.clone(), v == true);
         }
     }
     on.into_iter().filter(|(_, v)| *v).map(|(g, _)| g).collect()
+}
+
+/// The `files.exclude` (and, for `search`, also `search.exclude`) globs in force.
+fn exclude_set(settings: &serde_json::Value, search: bool) -> Vec<String> {
+    match search {
+        false => glob_map(settings, &["files.exclude"], &FILES_EXCLUDE),
+        true => glob_map(
+            settings,
+            &["files.exclude", "search.exclude"],
+            &[&FILES_EXCLUDE[..], &SEARCH_EXCLUDE].concat(),
+        ),
+    }
 }
 
 /// `exclude_set` from the user's settings.json.

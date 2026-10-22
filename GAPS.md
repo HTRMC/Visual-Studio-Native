@@ -128,8 +128,11 @@ Differences from VS Code still to close, smallest first within each area.
 - [ ] The tab menu lacks Keep Open/Pin, Split and Share.
 - [x] The explorer follows the active editor (VS Code's
       `explorer.autoReveal`): each switch opens its folders and scrolls it in.
-- [ ] There's no `explorer.autoReveal` setting to turn following off (no
+- [x] There's no `explorer.autoReveal` setting to turn following off (no
       general settings.json yet; only the terminal reads one).
+- [ ] Settings are read from settings.json as each feature needs them; there's
+      no file watcher, no workspace `.vscode/settings.json`, and no JSONC
+      (a comment or trailing comma makes the whole file unread).
 - [x] The explorer draws indent guides while the mouse is over the tree.
 - [x] The selection's guide (its folder's, or an open folder's own) is lit
       and stays shown; the others are dimmer and show on hover.
