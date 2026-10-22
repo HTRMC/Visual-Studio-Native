@@ -209,8 +209,10 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] The editor tab strip and the explorer tree have no scrollbars (VS Code
       shows a 3px one under the tabs and a 10px one on the tree on hover);
       many tabs widened the editor and pushed its actions off-screen.
-- [ ] The active tab isn't scrolled into view in the tab strip (VS Code
+- [x] The active tab isn't scrolled into view in the tab strip (VS Code
       reveals it on a switch).
+- [ ] Double-clicking the tab strip's empty space doesn't open a new
+      untitled file, as VS Code's does.
 - [x] Go menu: Back/Forward (Alt+Left/Right, the title bar arrows) and
       Last Edit Location (Ctrl+K Ctrl+Q) were placeholders.
 - [ ] Go to Symbol in Workspace (Ctrl+T) is still a placeholder.

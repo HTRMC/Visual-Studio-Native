@@ -450,8 +450,8 @@ pub struct Workbench {
     notes: Vec<SharedString>,
     /// The breadcrumb row, scrolled to show the file name.
     crumbs: ScrollHandle,
-    /// The file and row width the breadcrumb was last scrolled for, so it
-    /// can be scrolled back by hand in between.
+    /// The file and row width the breadcrumb and the tab strip were last
+    /// scrolled for, so they can be scrolled back by hand in between.
     crumbs_at: (PathBuf, Pixels),
     /// The tab strip's scroll, for its scrollbar.
     tabs_scroll: ScrollHandle,
@@ -2177,6 +2177,7 @@ impl Workbench {
         if self.crumbs_at != at {
             self.crumbs_at = at;
             self.crumbs.scroll_to_item(crumbs.len().saturating_sub(1));
+            self.tabs_scroll.scroll_to_item(self.active);
         }
 
         v_flex()
