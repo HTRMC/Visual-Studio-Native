@@ -1570,13 +1570,12 @@ impl Workbench {
             "aarch64" => "arm64",
             arch => arch,
         };
-        // ponytail: no OS version number (VS Code's "10.0.26200"); it needs
-        // RtlGetVersion, as GetVersionEx lies to unmanifested apps.
         let detail = format!(
-            "Version: {}\nCommit: {}\nDate: {}\nOS: Windows_NT {arch}",
+            "Version: {}\nCommit: {}\nDate: {}\nOS: Windows_NT {arch} {}",
             env!("CARGO_PKG_VERSION"),
             env!("VSN_COMMIT"),
             env!("VSN_COMMIT_DATE"),
+            os_version(),
         );
         let answer = window.prompt(
             PromptLevel::Info,
@@ -4889,6 +4888,35 @@ fn center_line(
     let x = e.scroll_offset().x;
     e.set_scroll_offset(point(x, -(y - (height - lh) / 2.).max(px(0.))), cx);
     true
+}
+
+/// Windows' "major.minor.build", as About shows it. RtlGetVersion, since
+/// GetVersionEx reports 6.2 to apps without a compatibility manifest.
+fn os_version() -> String {
+    #[repr(C)]
+    struct OsVersionInfoW {
+        size: u32,
+        major: u32,
+        minor: u32,
+        build: u32,
+        platform: u32,
+        csd: [u16; 128],
+    }
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn RtlGetVersion(info: *mut OsVersionInfoW) -> i32;
+    }
+    let mut info = OsVersionInfoW {
+        size: size_of::<OsVersionInfoW>() as u32,
+        major: 0,
+        minor: 0,
+        build: 0,
+        platform: 0,
+        csd: [0; 128],
+    };
+    // SAFETY: `info` is a valid OSVERSIONINFOW with its size filled in.
+    unsafe { RtlGetVersion(&mut info) };
+    format!("{}.{}.{}", info.major, info.minor, info.build)
 }
 
 fn search_box(state: &Entity<InputState>) -> impl IntoElement + use<> {

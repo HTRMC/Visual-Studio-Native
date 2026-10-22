@@ -263,7 +263,9 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Help > About (and Help: About) showed nothing; it's VS Code's version
       box with Copy.
 - [ ] The About box's title bar reads "Info" (gpui titles prompts by level;
-      VS Code's reads its name) and its OS line lacks the version number.
+      VS Code's reads its name).
+- [x] The About box's OS line lacks the Windows version (now RtlGetVersion's
+      "10.0.26200", as VS Code shows it).
 - [x] Edit and Selection menu entries (Undo, Cut, Select All...) never
       reached the editor and showed no shortcuts; they now go to whatever
       had focus when the menu opened. Selection > Add Cursor Above/Below
