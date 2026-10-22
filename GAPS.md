@@ -481,4 +481,5 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [ ] Format Selection, format on save/type, rename, references, signature help, code actions and document symbols from language servers.
 - [ ] Completion ignores the server's trigger characters and snippets (`snippetSupport` is off).
 - [ ] Problems panel: collapsing a file, filter, related information, and the Explorer's red file decorations.
-- [ ] A crashed language server isn't restarted; its logs go nowhere (no Output channel).
+- [x] A crashed language server restarts and reopens its files, up to 5 times.
+- [ ] Language server logs go nowhere (no Output channel); a server given up on leaves its squiggles behind.

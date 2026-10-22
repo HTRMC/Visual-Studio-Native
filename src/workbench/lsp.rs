@@ -65,6 +65,8 @@ pub(super) struct Lsp {
     servers: HashMap<&'static str, Option<Arc<Server>>>,
     /// Each file's diagnostics, as its server last published them.
     problems: BTreeMap<PathBuf, Vec<Problem>>,
+    /// How often each server has died on its own.
+    crashes: HashMap<&'static str, u32>,
 }
 
 struct Server {
@@ -438,7 +440,11 @@ impl Workbench {
         self.lsp = Lsp::default();
     }
 
-    fn start_server(&mut self, cmd: &[&str], cx: &mut Context<Self>) -> Option<Arc<Server>> {
+    fn start_server(
+        &mut self,
+        cmd: &'static [&'static str],
+        cx: &mut Context<Self>,
+    ) -> Option<Arc<Server>> {
         let mut command = Command::new(cmd[0]);
         command
             .args(&cmd[1..])
@@ -510,6 +516,11 @@ impl Workbench {
             });
             child.kill().ok();
             child.wait().ok();
+            // Still wanted, so it died on its own.
+            if weak.upgrade().is_some() {
+                tx.unbounded_send(json!({ "method": "vsn/exited", "params": cmd[0] }))
+                    .ok();
+            }
         });
         cx.spawn(async move |this, cx| {
             while let Some(msg) = rx.next().await {
@@ -581,6 +592,32 @@ impl Workbench {
                 }
                 self.show_diagnostics(&path, cx);
                 cx.notify();
+            }
+            Some("vsn/exited") => {
+                let Some(&(_, cmd)) = SERVERS.iter().find(|(_, c)| msg["params"] == c[0]) else {
+                    return;
+                };
+                let crashes = self.lsp.crashes.entry(cmd[0]).or_default();
+                *crashes += 1;
+                // VS Code's limit, without its 3-minute window.
+                if *crashes >= 5 {
+                    self.lsp.servers.insert(cmd[0], None);
+                    let text = format!(
+                        "The {} server crashed 5 times. The server will not be restarted.",
+                        cmd[0]
+                    );
+                    self.note(text.into(), Severity::Error, cx);
+                    return;
+                }
+                self.lsp.servers.remove(cmd[0]);
+                for ix in 0..self.docs.len() {
+                    if SERVERS
+                        .iter()
+                        .any(|(l, c)| c == &cmd && l.contains(&self.docs[ix].lang))
+                    {
+                        self.lsp_open(ix, cx);
+                    }
+                }
             }
             Some("window/showMessage") => {
                 let text = msg["params"]["message"]
