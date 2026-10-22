@@ -737,6 +737,13 @@ impl Workbench {
         editor
     }
 
+    /// A tab dropped onto another's place: it moves there and is shown.
+    fn move_doc(&mut self, from: usize, to: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let doc = self.docs.remove(from);
+        self.docs.insert(to, doc);
+        self.activate(to, window, cx);
+    }
+
     fn activate(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.active = ix;
         if let Some(doc) = self.docs.get(ix) {
@@ -2122,7 +2129,7 @@ impl Workbench {
                     )
                 })
                 .child(file_icon(&doc.path))
-                .child(div().flex_1().whitespace_nowrap().child(name))
+                .child(div().flex_1().whitespace_nowrap().child(name.clone()))
                 .child(
                     div()
                         .id(("tab-close", ix))
@@ -2174,6 +2181,13 @@ impl Workbench {
                     if ev.is_middle_click() {
                         this.close(ix, window, cx);
                     }
+                }))
+                .on_drag(DraggedEditor(ix, name.clone().into()), |tab, _, _, cx| {
+                    cx.new(|_| tab.clone())
+                })
+                .drag_over::<DraggedEditor>(|s, _, _, _| s.bg(col::drop()))
+                .on_drop(cx.listener(move |this, tab: &DraggedEditor, window, cx| {
+                    this.move_doc(tab.0, ix, window, cx)
                 }))
                 .context_menu({
                     let (wb, editor) = (wb.clone(), doc.editor.clone());
@@ -2241,7 +2255,16 @@ impl Workbench {
                                     // The space after the tabs: a double click
                                     // opens a new untitled file.
                                     .child(
-                                        div().id("tabs-empty").flex_1().h_full().on_click(
+                                        div()
+                                            .id("tabs-empty")
+                                            .flex_1()
+                                            .h_full()
+                                            .drag_over::<DraggedEditor>(|s, _, _, _| s.bg(col::drop()))
+                                            .on_drop(cx.listener(|this, tab: &DraggedEditor, window, cx| {
+                                                let last = this.docs.len() - 1;
+                                                this.move_doc(tab.0, last, window, cx)
+                                            }))
+                                            .on_click(
                                             |ev, window, cx| {
                                                 if ev.click_count() == 2 {
                                                     window.dispatch_action(Box::new(NewTextFile), cx);
@@ -3672,4 +3695,19 @@ fn editor_tab_menu(
         this.activate(ix, w, cx);
         this.reveal_in_tree(&this.docs[ix].path.clone(), true, cx)
     }))
+}
+
+/// An editor tab being dragged: its index, and its name to draw under the mouse.
+#[derive(Clone)]
+struct DraggedEditor(usize, SharedString);
+
+impl Render for DraggedEditor {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(8.))
+            .py(px(2.))
+            .bg(col::selected())
+            .text_color(col::fg())
+            .child(self.1.clone())
+    }
 }

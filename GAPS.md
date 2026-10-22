@@ -218,7 +218,9 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] A tab's close button has no "Close (Ctrl+F4)" tooltip.
 - [x] A dirty tab's dot doesn't turn into the close X on hover, as VS
       Code's does.
-- [ ] Editor tabs can't be dragged to reorder them.
+- [x] Editor tabs can't be dragged to reorder them.
+- [ ] Dragging a file from the explorer onto the tab strip or editor
+      doesn't open it.
 - [x] Go menu: Back/Forward (Alt+Left/Right, the title bar arrows) and
       Last Edit Location (Ctrl+K Ctrl+Q) were placeholders.
 - [ ] Go to Symbol in Workspace (Ctrl+T) is still a placeholder.

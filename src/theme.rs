@@ -48,6 +48,10 @@ pub mod col {
     pub fn selected() -> Hsla {
         ca(0xFFFFFF22)
     }
+    /// editorGroup.dropBackground
+    pub fn drop() -> Hsla {
+        ca(0x53595D80)
+    }
     pub fn toolbar_hover() -> Hsla {
         ca(0xFFFFFF10)
     }
