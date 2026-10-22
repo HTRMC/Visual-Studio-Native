@@ -824,7 +824,7 @@ impl Workbench {
         let Some(t) = self.terminals.list.get_mut(self.terminals.active) else {
             return;
         };
-        t.matches = re.map_or(Vec::new(), |re| find_all(t.parser.screen_mut(), &re));
+        t.matches = re.map_or(Vec::new(), |re| find_all(t.parser.screen_mut(), &re, 0));
         // The old match's selection goes with it.
         if t.current.is_some() {
             t.selection = None;
@@ -1061,16 +1061,23 @@ impl Workbench {
         };
         match msg {
             Msg::Out(bytes) => {
+                // Output only moves lines above the screen into the scrollback.
+                let old = t.parser.screen();
+                let kept = (!old.alternate_screen()).then(|| old.scrollback_len());
                 t.parser.process(&bytes);
                 let trimmed = std::mem::take(&mut t.parser.callbacks_mut().trimmed);
                 if trimmed > 0 {
                     t.trim(trimmed);
                 }
                 if let Some(re) = re {
-                    // ponytail: the whole scrollback again per chunk of
-                    // output; search only the lines it touched if that lags.
+                    let screen = t.parser.screen_mut();
+                    let from = match kept.filter(|_| !screen.alternate_screen()) {
+                        Some(len) => wrapped_lines(screen, len.saturating_sub(trimmed)).0,
+                        None => 0,
+                    };
                     let current = t.current.map(|i| t.matches[i]);
-                    t.matches = find_all(t.parser.screen_mut(), &re);
+                    t.matches.retain(|m| m.0.0 < from);
+                    t.matches.extend(find_all(screen, &re, from));
                     t.current = current.and_then(|m| t.matches.iter().position(|&n| n == m));
                 }
                 let replies = std::mem::take(&mut t.parser.callbacks_mut().out);
@@ -2321,13 +2328,12 @@ fn shell_name(profile: &Profile) -> String {
     (profile.program.file_stem()).map_or("shell".into(), |s| s.to_string_lossy().into())
 }
 
-/// Every match of `re` along the wrapped lines, as selection spans, oldest
-/// first.
-fn find_all(screen: &mut vt100::Screen, re: &regex::Regex) -> Vec<Span> {
+/// Every match of `re` along the wrapped lines from `line` on, which starts
+/// one, as selection spans, oldest first.
+fn find_all(screen: &mut vt100::Screen, re: &regex::Regex, mut line: usize) -> Vec<Span> {
     let cols = screen.size().1.get() as usize;
     let last = screen.scrollback_len() + screen.size().0.get() as usize - 1;
     let mut found = Vec::new();
-    let mut line = 0;
     while line <= last {
         let (l0, l1) = wrapped_lines(screen, line);
         let text: String = (l0..=l1)
@@ -2726,7 +2732,7 @@ mod tests {
         p.process(b"Item one\r\nxx item two wraps\r\n");
         let mut find = |q: &str| {
             let re = regex::RegexBuilder::new(q).case_insensitive(true).build();
-            find_all(p.screen_mut(), &re.unwrap())
+            find_all(p.screen_mut(), &re.unwrap(), 0)
         };
         assert_eq!(find("item"), [((0, 0), (0, 4)), ((1, 3), (1, 7))]);
         assert_eq!(find("two"), [((1, 8), (2, 1))]);
