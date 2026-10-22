@@ -128,8 +128,10 @@ Differences from VS Code still to close, smallest first within each area.
 - [ ] The tab menu lacks Keep Open/Pin, Split and Share.
 - [ ] The explorer doesn't follow the active editor (VS Code's
       `explorer.autoReveal` opens folders to it on every switch).
-- [ ] The explorer's selected row hugs its name instead of spanning the
-      side bar's width.
+- [x] The explorer's selected row hugged its name instead of spanning the
+      side bar's width (long names now end in an ellipsis too).
+- [ ] The explorer has no indent guides, and a folder row has no icon or
+      selection of its own (clicking only toggles it).
 - [x] The explorer's files and folders have a right-click menu: Open,
       Reveal in File Explorer, Open in Integrated Terminal (a new shell in
       that folder), Copy Path, Copy Relative Path.

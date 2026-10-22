@@ -1841,6 +1841,7 @@ impl Workbench {
         h_flex()
             .id(ElementId::Name(path.to_string_lossy().to_string().into()))
             .h(px(22.))
+            .w_full()
             .pl(px(8. + depth as f32 * 8.))
             .pr(px(12.))
             .text_size(px(13.))
