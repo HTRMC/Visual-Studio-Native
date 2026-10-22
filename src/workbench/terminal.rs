@@ -1196,6 +1196,27 @@ impl Workbench {
         cx.notify();
     }
 
+    /// A tab dropped on a terminal: it leaves its group to split beside that
+    /// one, before or `after` it, and becomes active.
+    fn join_terminal(
+        &mut self,
+        src: u64,
+        dst: u64,
+        after: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let list = &mut self.terminals.list;
+        let Some(from) = list.iter().position(|t| t.id == src).filter(|_| src != dst) else {
+            return;
+        };
+        let mut t = list.remove(from);
+        let to = list.iter().position(|u| u.id == dst).unwrap();
+        t.group = list[to].group;
+        list.insert(to + after as usize, t);
+        self.activate_terminal(src, window, cx);
+    }
+
     pub(super) fn kill_active_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(t) = self.terminals.list.get(self.terminals.active) {
             self.kill_terminal(t.id, window, cx);
@@ -1504,6 +1525,21 @@ impl Workbench {
             .into_iter()
             .enumerate()
             .map(|(i, ix)| {
+                let id = self.terminals.list[ix].id;
+                // A tab dropped on either half splits beside this terminal.
+                let half = |after: bool| {
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(relative(if after { 0.5 } else { 0. }))
+                        .w(relative(0.5))
+                        .drag_over::<DraggedTab>(|s, _, _, _| s.bg(ca(0x53595D80)))
+                        .on_drop(cx.listener(move |this, tab: &DraggedTab, window, cx| {
+                            this.join_terminal(tab.0, id, after, window, cx)
+                        }))
+                };
+                let halves = [half(false), half(true)];
                 div()
                     .flex_1()
                     .min_w_0()
@@ -1514,6 +1550,7 @@ impl Workbench {
                     .when(ix == self.terminals.active, |d| {
                         d.children(self.render_terminal_find(cx))
                     })
+                    .children(halves)
             })
             .collect();
 

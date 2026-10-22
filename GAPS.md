@@ -49,6 +49,7 @@ Differences from VS Code still to close, smallest first within each area.
       (needs OpenConsole's conpty.dll for ClearPseudoConsole; clearing only
       our side would desync conhost's cursor).
 - [x] Drag tabs to reorder terminals, or whole split groups.
-- [ ] Drag a tab onto a terminal to move it into that split group.
+- [x] Drag a tab onto a terminal to move it into that split group.
+- [ ] Dragging a tab onto the editor area moves the terminal into an editor.
 - [ ] Shell integration: command decorations, run recent command, go to
       recent directory.
