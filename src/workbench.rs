@@ -2093,8 +2093,10 @@ impl Workbench {
                 .to_string_lossy()
                 .to_string();
             let group = SharedString::from(format!("tab-{ix}"));
+            let full = SharedString::from(doc.path.display().to_string());
             h_flex()
                 .id(("tab", ix))
+                .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
                 .group(group.clone())
                 .relative()
                 .flex_none()
