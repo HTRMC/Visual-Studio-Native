@@ -354,6 +354,24 @@ impl Workbench {
         summary(&f.results, &include, &exclude, f.open_only)
     }
 
+    /// The empty result's Open Settings: the user settings.json, created
+    /// empty if missing, as VS Code's Open User Settings (JSON) does.
+    // ponytail: VS Code opens its Settings UI filtered to ".exclude"; there's
+    // no Settings UI here, and search doesn't read exclude settings yet.
+    fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = super::terminal::settings_path() else {
+            return;
+        };
+        if !path.exists() {
+            let made = (path.parent().map_or(Ok(()), fs::create_dir_all))
+                .and_then(|_| fs::write(&path, "{}\n"));
+            if let Err(err) = made {
+                return self.warn(format!("Unable to create '{}' ({err})", path.display()), cx);
+            }
+        }
+        self.open_path(path, window, cx);
+    }
+
     /// With "Search only in Open Editors" on, opening or closing an editor searches again.
     pub(super) fn open_editors_changed(&mut self, cx: &mut Context<Self>) {
         if self.find.open_only {
@@ -965,7 +983,36 @@ impl Workbench {
                         .py(px(6.))
                         .text_size(px(12.))
                         .text_color(col::fg_muted())
-                        .child(msg),
+                        .child(match msg.strip_suffix('.') {
+                            // An empty result links to the settings and the docs, as VS Code's does.
+                            Some(m) if m.starts_with("No results found") => {
+                                let text = format!("{m} - Open Settings - Learn More");
+                                let at = |s: &str| {
+                                    let i = text.rfind(s).unwrap_or(0);
+                                    i..i + s.len()
+                                };
+                                let links = vec![at("Open Settings"), at("Learn More")];
+                                let link = HighlightStyle {
+                                    color: Some(col::accent()),
+                                    ..Default::default()
+                                };
+                                let wb = cx.weak_entity();
+                                InteractiveText::new(
+                                    "search-message",
+                                    StyledText::new(text)
+                                        .with_highlights(links.iter().map(|r| (r.clone(), link))),
+                                )
+                                .on_click(links, move |ix, window, cx| match ix {
+                                    0 => {
+                                        _ = wb.update(cx, |this, cx| this.open_settings(window, cx))
+                                    }
+                                    _ => cx
+                                        .open_url("https://go.microsoft.com/fwlink/?linkid=853977"),
+                                })
+                                .into_any_element()
+                            }
+                            _ => msg.into_any_element(),
+                        }),
                 )
             })
             .child(

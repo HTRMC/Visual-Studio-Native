@@ -248,8 +248,10 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] With "Search only in Open Editors" on, opening or closing an editor
       doesn't re-run the search, and an empty result lacks VS Code's
       "No results found in open editors" wording.
-- [ ] The search's empty-result message lacks VS Code's trailing "Open
+- [x] The search's empty-result message lacks VS Code's trailing "Open
       Settings" and "Learn More" links.
+- [ ] Preferences > Settings (Ctrl+,) is inert, and Open Settings opens
+      settings.json rather than a Settings UI filtered to ".exclude".
 - [x] The "files to exclude" box lacks VS Code's "Use Exclude Settings and
       Ignore Files" toggle (the search always honours .gitignore).
 - [ ] Search and the explorer ignore the `files.exclude` and `search.exclude`

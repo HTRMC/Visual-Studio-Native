@@ -639,7 +639,7 @@ fn wsl_distros() -> &'static [String] {
 }
 
 /// User settings, a subset of VS Code's `settings.json`.
-fn settings_path() -> Option<PathBuf> {
+pub(super) fn settings_path() -> Option<PathBuf> {
     Some(dirs::config_dir()?.join("vsn").join("settings.json"))
 }
 
