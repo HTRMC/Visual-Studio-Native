@@ -478,7 +478,9 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [x] The WIT API had no file or network access; `vsn.permissions` asks the user for it.
 - [ ] A WASM plugin's permission answers last until vsn closes, and there's no list of them to revoke.
 - [x] Brackets, auto-closing pairs and indent rules from extensions' language configurations.
-- [ ] Icon themes from extensions.
+- [x] Icon themes from extensions.
+- [ ] Icon themes' light and high contrast variants, and font (glyph) icons, are skipped; only image icons show.
+- [ ] Picking "None" as the icon theme saves `""`, not `null` (settings can't hold a null yet).
 - [ ] Extension indentation patterns with lookaround (JS regex) are skipped; the editor's regex has none.
 - [ ] A line matching the decrease-indent pattern outdents only on Enter, not as it's typed (gpui-base).
 - [x] JS extensions run in a Node (or Bun) host: commands in the palette and keys, messages, status bar items, configuration defaults, activation events, restart on crash.

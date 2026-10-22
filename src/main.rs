@@ -39,8 +39,7 @@ fn main() {
                 .load_themes_from_str(include_str!("../assets/themes/dark-2026.json"))
                 .expect("load theme");
             workbench::extensions::reload();
-            let theme = workbench::extensions::configured_theme();
-            workbench::extensions::apply_theme(&theme, cx);
+            workbench::extensions::apply_themes(cx);
 
             let keys = workbench::key_bindings(cx.keyboard_mapper().as_ref());
             cx.bind_keys(keys);

@@ -281,6 +281,7 @@ fn builtin_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("Debug: Open 'launch.json'", Box::new(OpenLaunchJson)),
         ("Preferences: Open User Settings", Box::new(OpenSettings)),
         ("Preferences: Color Theme", Box::new(SelectColorTheme)),
+        ("Preferences: File Icon Theme", Box::new(SelectIconTheme)),
         (
             "Extensions: Install from VSIX...",
             Box::new(InstallFromVsix),
@@ -429,6 +430,8 @@ pub(super) struct Items {
 pub(super) enum Picker {
     /// `workbench.colorTheme` names.
     Theme(Vec<String>),
+    /// `workbench.iconTheme` ids, None for no icons.
+    IconTheme(Vec<Option<String>>),
     Snippet(Vec<extensions::Snippet>),
     /// Find All References' places.
     Location(Vec<(PathBuf, Position)>),

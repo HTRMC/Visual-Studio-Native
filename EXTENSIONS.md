@@ -123,8 +123,9 @@ there.
    `workbench.colorTheme`; Snippets: Insert Snippet, and snippets completed by
    prefix, Tab and Shift+Tab moving between their tab stops; languages' ids, file
    extensions and comments; language configurations' brackets,
-   auto-closing pairs and indentation rules. *Left:* the details page, icon
-   themes.
+   auto-closing pairs and indentation rules; Preferences: File Icon Theme
+   with extensions' icon themes (`workbench.iconTheme`, image and folder
+   icons). *Left:* the details page.
 2. **Core API and command registry.** Extension commands in the palette,
    menus and keybindings; activation events (`onCommand`, `onLanguage`,
    `workspaceContains`, `onStartupFinished`, `*`).

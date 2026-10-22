@@ -581,6 +581,7 @@ fn builtin_action(id: &str) -> Option<Box<dyn Action>> {
         "workbench.action.openSettings" => Box::new(OpenSettings),
         "workbench.action.openSettingsJson" => Box::new(OpenSettingsJson),
         "workbench.action.selectTheme" => Box::new(SelectColorTheme),
+        "workbench.action.selectIconTheme" => Box::new(SelectIconTheme),
         "workbench.action.debug.start" => Box::new(StartDebugging),
         "workbench.action.debug.stop" => Box::new(StopDebugging),
         "editor.action.formatDocument" => Box::new(FormatDocument),

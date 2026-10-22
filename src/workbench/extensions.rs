@@ -1181,6 +1181,66 @@ pub(crate) fn apply_theme(name: &str, cx: &mut App) -> bool {
     true
 }
 
+/// The configured color and file icon themes, shown.
+pub(crate) fn apply_themes(cx: &mut App) {
+    apply_theme(&configured_theme(), cx);
+    apply_icon_theme(configured_icon_theme().as_deref());
+}
+
+// ---- file icon themes -----------------------------------------------------
+
+/// The built-in file icon theme, which `workbench.iconTheme` defaults to.
+const DEFAULT_ICON_THEME: &str = "vs-seti";
+
+/// Every enabled extension's file icon themes: id, label and file.
+pub(crate) fn icon_themes() -> Vec<(String, String, PathBuf)> {
+    let mut out = Vec::new();
+    for ext in installed().iter().filter(|e| e.enabled) {
+        for t in ext.contributes("iconThemes") {
+            let (Some(id), Some(path)) = (t["id"].as_str(), ext.file(&t["path"])) else {
+                continue;
+            };
+            let label = t["label"].as_str().unwrap_or(id);
+            let label = match label.strip_prefix('%').and_then(|l| l.strip_suffix('%')) {
+                Some(key) => ext.nls[key].as_str().unwrap_or(label),
+                None => label,
+            };
+            out.push((id.to_string(), label.to_string(), path));
+        }
+    }
+    out
+}
+
+/// Shows file icon theme `id` (`workbench.iconTheme`; None for no icons),
+/// or Seti if no extension has it or it won't load.
+pub(crate) fn apply_icon_theme(id: Option<&str>) {
+    let Some(id) = id else {
+        return crate::theme::set_file_icons(&Value::Null, None);
+    };
+    let theme = (icon_themes().into_iter().find(|t| t.0 == id)).and_then(|(_, _, path)| {
+        let json = serde_json::from_str(&strip_jsonc(&fs::read_to_string(&path).ok()?)).ok()?;
+        Some((json, path))
+    });
+    match theme {
+        Some((json, path)) => crate::theme::set_file_icons(&json, path.parent()),
+        None => crate::theme::set_file_icons(&crate::theme::seti_json(), None),
+    }
+}
+
+/// The configured `workbench.iconTheme`; None when it's null or "" (no
+/// icons).
+pub(crate) fn configured_icon_theme() -> Option<String> {
+    match super::terminal::settings().get("workbench.iconTheme") {
+        Some(Value::Null) => None,
+        Some(Value::String(id)) if id.is_empty() => None,
+        v => Some(
+            v.and_then(Value::as_str)
+                .unwrap_or(DEFAULT_ICON_THEME)
+                .to_string(),
+        ),
+    }
+}
+
 /// The configured `workbench.colorTheme`.
 pub(crate) fn configured_theme() -> String {
     (super::terminal::settings()["workbench.colorTheme"].as_str())
@@ -1288,7 +1348,7 @@ impl Workbench {
             self.error(format!("Unable to install extension: {err}"), cx);
         }
         // Its theme or languages may be the configured ones.
-        apply_theme(&configured_theme(), cx);
+        apply_themes(cx);
         // A new version replaces the running one.
         self.restart_extension_host(cx);
         self.activate_extensions("*", cx);
@@ -1421,7 +1481,7 @@ impl Workbench {
             self.error(format!("Unable to uninstall extension: {err}"), cx);
         }
         self.restart_extension_host(cx);
-        apply_theme(&configured_theme(), cx);
+        apply_themes(cx);
         cx.notify();
     }
 
@@ -1431,7 +1491,7 @@ impl Workbench {
         }
         self.restart_extension_host(cx);
         self.activate_extensions("*", cx);
-        apply_theme(&configured_theme(), cx);
+        apply_themes(cx);
         cx.notify();
     }
 
@@ -1531,6 +1591,31 @@ impl Workbench {
         self.open_items(items, window, cx);
     }
 
+    /// Preferences: File Icon Theme: none, Seti, then extensions' themes.
+    pub(super) fn select_icon_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut themes = icon_themes();
+        themes.sort_by_key(|t| t.1.to_lowercase());
+        let mut ids = vec![None, Some(DEFAULT_ICON_THEME.to_string())];
+        let mut rows = vec![
+            ("None".to_string(), "Disable File Icons".to_string()),
+            ("Seti (Visual Studio Code)".to_string(), String::new()),
+        ];
+        for (id, label, _) in themes {
+            ids.push(Some(id));
+            rows.push((label, String::new()));
+        }
+        let current = configured_icon_theme();
+        let current = ids.iter().position(|id| *id == current).unwrap_or(1);
+        let items = super::palette::Items {
+            picker: super::palette::Picker::IconTheme(ids),
+            rows,
+            groups: Vec::new(),
+            placeholder: "Select File Icon Theme".into(),
+            current,
+        };
+        self.open_items(items, window, cx);
+    }
+
     /// Snippets: Insert Snippet, for the active editor's language.
     pub(super) fn insert_snippet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.docs.get(self.active).filter(|d| !d.binary) else {
@@ -1577,6 +1662,17 @@ impl Workbench {
                 {
                     self.settings_error(err, cx);
                 }
+            }
+            super::palette::Picker::IconTheme(ids) => {
+                // "" for none, as null would remove the setting.
+                apply_icon_theme(ids[ix].as_deref());
+                if let Err(err) = super::terminal::set_setting(
+                    "workbench.iconTheme",
+                    json!(ids[ix].as_deref().unwrap_or("")),
+                ) {
+                    self.settings_error(err, cx);
+                }
+                cx.notify();
             }
             super::palette::Picker::Snippet(snippets) => {
                 self.expand_snippet(&snippets[ix], window, cx)

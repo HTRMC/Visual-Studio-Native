@@ -42,7 +42,8 @@ mod terminal;
 mod wasmhost;
 
 use crate::theme::{
-    action_button, c, ca, codicon, col, file_icon, icon, kbds, language_id, language_label, tip,
+    action_button, c, ca, codicon, col, file_icon, folder_icon, icon, kbds, language_id,
+    language_label, tip,
 };
 
 actions!(
@@ -173,6 +174,7 @@ actions!(
         OpenSettings,
         InstallFromVsix,
         SelectColorTheme,
+        SelectIconTheme,
         InsertSnippet,
     ]
 );
@@ -1718,9 +1720,10 @@ impl Workbench {
                 self.lsp_saved(&path);
                 if let Some(old) = old {
                     self.relanguage(&old, window, cx);
-                    let theme = &terminal::settings()["workbench.colorTheme"];
-                    if old["workbench.colorTheme"] != *theme {
-                        extensions::apply_theme(&extensions::configured_theme(), cx);
+                    let new = terminal::settings();
+                    let changed = |key: &str| old[key] != new[key];
+                    if changed("workbench.colorTheme") || changed("workbench.iconTheme") {
+                        extensions::apply_themes(cx);
                     }
                 }
             }
@@ -3458,8 +3461,9 @@ impl Workbench {
                     icon::CHEVRON_RIGHT
                 }))
             }))
-            .when(!is_dir, |d| {
-                d.child(div().mr(px(6.)).child(file_icon(path)))
+            .map(|d| match is_dir {
+                true => d.children(folder_icon(path, open).map(|i| div().mr(px(6.)).child(i))),
+                false => d.child(div().mr(px(6.)).child(file_icon(path))),
             })
             .child(div().overflow_hidden().text_ellipsis().child(name))
             .on_click(cx.listener(move |this, _, window, cx| {
@@ -5066,6 +5070,9 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &InstallFromVsix, _, cx| this.install_from_vsix(cx)))
             .on_action(cx.listener(|this, _: &SelectColorTheme, window, cx| {
                 this.select_color_theme(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SelectIconTheme, window, cx| {
+                this.select_icon_theme(window, cx)
             }))
             .on_action(
                 cx.listener(|this, _: &InsertSnippet, window, cx| this.insert_snippet(window, cx)),

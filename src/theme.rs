@@ -2,8 +2,8 @@
 
 use std::{
     collections::HashMap,
-    path::Path,
-    sync::{Arc, LazyLock, OnceLock},
+    path::{Path, PathBuf},
+    sync::{Arc, LazyLock, RwLock},
 };
 
 use gpui_kit::*;
@@ -225,53 +225,105 @@ pub fn action_button(id: impl Into<ElementId>, ch: char) -> Stateful<Div> {
         .child(codicon(ch))
 }
 
-// ---- Seti file icons -------------------------------------------------------
+// ---- file icon themes ------------------------------------------------------
 
-struct Seti {
-    defs: HashMap<String, (char, Hsla)>,
+enum FileIcon {
+    /// A Seti font glyph and its color.
+    Glyph(char, Hsla),
+    Image(PathBuf),
+}
+
+/// A file icon theme (`workbench.iconTheme`): icons by id, and which id
+/// each file name, extension, language and folder takes.
+#[derive(Default)]
+struct IconTheme {
+    defs: HashMap<String, FileIcon>,
     extensions: HashMap<String, String>,
     names: HashMap<String, String>,
     languages: HashMap<String, String>,
-    default: String,
+    folder_names: HashMap<String, String>,
+    folder_names_expanded: HashMap<String, String>,
+    file: Option<String>,
+    folder: Option<String>,
+    folder_expanded: Option<String>,
 }
 
-fn seti() -> &'static Seti {
-    static SETI: OnceLock<Seti> = OnceLock::new();
-    SETI.get_or_init(|| {
-        let json: serde_json::Value =
-            serde_json::from_str(include_str!("../assets/vs-seti-icon-theme.json"))
-                .expect("seti json");
+/// The built-in Seti icon theme's JSON.
+pub fn seti_json() -> serde_json::Value {
+    serde_json::from_str(include_str!("../assets/vs-seti-icon-theme.json")).expect("seti json")
+}
+
+static ICONS: LazyLock<RwLock<Arc<IconTheme>>> =
+    LazyLock::new(|| RwLock::new(Arc::new(IconTheme::parse(&seti_json(), None))));
+
+fn icons() -> Arc<IconTheme> {
+    ICONS.read().unwrap().clone()
+}
+
+/// Shows the icon theme `json` (Null for none): its icon paths start at
+/// `dir`, or its glyphs are Seti's when there's no `dir`.
+pub fn set_file_icons(json: &serde_json::Value, dir: Option<&Path>) {
+    *ICONS.write().unwrap() = Arc::new(IconTheme::parse(json, dir));
+}
+
+impl IconTheme {
+    // ponytail: an extension's font glyph icons and the `light` and
+    // `highContrast` variants are skipped; image icons cover the popular
+    // themes.
+    fn parse(json: &serde_json::Value, dir: Option<&Path>) -> Self {
         let map = |key: &str| -> HashMap<String, String> {
-            json[key]
-                .as_object()
-                .map(|o| {
-                    o.iter()
-                        .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string()))
-                        .collect()
-                })
-                .unwrap_or_default()
+            (json[key].as_object().into_iter().flatten())
+                .filter_map(|(k, v)| Some((k.to_lowercase(), v.as_str()?.to_string())))
+                .collect()
         };
-        let defs = json["iconDefinitions"]
-            .as_object()
-            .unwrap()
-            .iter()
+        let id = |key: &str| json[key].as_str().map(String::from);
+        let defs = (json["iconDefinitions"].as_object().into_iter().flatten())
             .filter_map(|(id, d)| {
-                let ch = d["fontCharacter"].as_str()?.trim_start_matches('\\');
-                let ch = char::from_u32(u32::from_str_radix(ch, 16).ok()?)?;
-                let color = d["fontColor"]
-                    .as_str()
-                    .and_then(|s| u32::from_str_radix(&s[1..], 16).ok())?;
-                Some((id.clone(), (ch, c(color))))
+                let icon = match dir {
+                    Some(dir) => FileIcon::Image(dir.join(d["iconPath"].as_str()?)),
+                    None => {
+                        let ch = d["fontCharacter"].as_str()?.trim_start_matches('\\');
+                        let ch = char::from_u32(u32::from_str_radix(ch, 16).ok()?)?;
+                        let color = (d["fontColor"].as_str())
+                            .and_then(|s| u32::from_str_radix(&s[1..], 16).ok())?;
+                        FileIcon::Glyph(ch, c(color))
+                    }
+                };
+                Some((id.clone(), icon))
             })
             .collect();
-        Seti {
+        IconTheme {
             defs,
             extensions: map("fileExtensions"),
             names: map("fileNames"),
             languages: map("languageIds"),
-            default: json["file"].as_str().unwrap_or("_default").to_string(),
+            folder_names: map("folderNames"),
+            folder_names_expanded: map("folderNamesExpanded"),
+            file: id("file"),
+            folder: id("folder"),
+            folder_expanded: id("folderExpanded"),
         }
-    })
+    }
+
+    fn icon(&self, id: Option<&String>) -> AnyElement {
+        let slot = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .w(px(16.))
+            .h(px(22.));
+        match id.and_then(|id| self.defs.get(id)) {
+            Some(FileIcon::Glyph(ch, color)) => slot
+                .font_family("seti")
+                .text_size(px(19.5))
+                .text_color(*color)
+                .child(ch.to_string()),
+            Some(FileIcon::Image(path)) => slot.child(img(path.clone()).size(px(16.))),
+            None => slot,
+        }
+        .into_any_element()
+    }
 }
 
 /// VS Code language id for a file, used for both Seti icons and the status bar.
@@ -409,10 +461,10 @@ pub fn language_label(id: &str) -> &'static str {
     }
 }
 
-/// Seti icon for a file, resolved the way VS Code does: file name, then
+/// A file's icon, resolved the way VS Code does: file name, then
 /// extensions (longest first), then language id, then the default.
 pub fn file_icon(path: &Path) -> AnyElement {
-    let s = seti();
+    let s = icons();
     let name = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -427,34 +479,25 @@ pub fn file_icon(path: &Path) -> AnyElement {
         .get(&name)
         .or(by_ext)
         .or_else(|| s.languages.get(language_id(path)))
-        .unwrap_or(&s.default);
-    seti_glyph(id)
+        .or(s.file.as_ref());
+    s.icon(id)
 }
 
-/// Seti icon for a language id, as Change Language Mode's rows show it.
+/// A folder's icon, `open` or not, when the icon theme has folder icons.
+pub fn folder_icon(path: &Path, open: bool) -> Option<AnyElement> {
+    let s = icons();
+    let name = (path.file_name()?.to_str()?).to_lowercase();
+    let id = match open {
+        true => (s.folder_names_expanded.get(&name))
+            .or(s.folder_expanded.as_ref())
+            .or(s.folder.as_ref()),
+        false => s.folder_names.get(&name).or(s.folder.as_ref()),
+    };
+    id.is_some().then(|| s.icon(id))
+}
+
+/// A language id's icon, as Change Language Mode's rows show it.
 pub fn language_icon(id: &str) -> AnyElement {
-    let s = seti();
-    seti_glyph(s.languages.get(id).unwrap_or(&s.default))
-}
-
-fn seti_glyph(id: &str) -> AnyElement {
-    let s = seti();
-    let (ch, color) = s
-        .defs
-        .get(id)
-        .or_else(|| s.defs.get(&s.default))
-        .copied()
-        .unwrap_or(('\u{E023}', col::fg()));
-    div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .justify_center()
-        .w(px(16.))
-        .h(px(22.))
-        .font_family("seti")
-        .text_size(px(19.5))
-        .text_color(color)
-        .child(ch.to_string())
-        .into_any_element()
+    let s = icons();
+    s.icon(s.languages.get(id).or(s.file.as_ref()))
 }
