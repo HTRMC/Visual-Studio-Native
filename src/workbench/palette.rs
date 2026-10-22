@@ -2446,6 +2446,13 @@ impl Workbench {
 
         if let Some(q) = query.strip_prefix("view ") {
             let q = q.trim();
+            // As VS Code: a row whose group name contains the filter stays,
+            // unhighlighted.
+            let lower = q.to_lowercase();
+            let matches = |label: &str, group: &str| {
+                command_matches(q, label)
+                    .or_else(|| group.to_lowercase().contains(&lower).then(Vec::new))
+            };
             let mut shown: Vec<_> = (0..VIEWS.len())
                 .filter_map(|ix| {
                     let group = if ix < SIDE_BAR_VIEWS {
@@ -2453,11 +2460,11 @@ impl Workbench {
                     } else {
                         "Panel"
                     };
-                    Some((group, Pick::View(ix, command_matches(q, VIEWS[ix])?)))
+                    Some((group, Pick::View(ix, matches(VIEWS[ix], group)?)))
                 })
                 .collect();
             for (id, label) in self.terminal_views() {
-                if let Some(hits) = command_matches(q, &label) {
+                if let Some(hits) = matches(&label, "Terminal") {
                     shown.push(("Terminal", Pick::TermView(id, label, hits)));
                 }
             }

@@ -314,7 +314,7 @@ Differences from VS Code still to close, smallest first within each area.
       "group.index: name" as VS Code does, and picking one focuses it.
 - [ ] Open View lists whole containers, not their sub-views (Open Editors,
       Outline, Timeline), and has no Output-channel rows.
-- [ ] Open View filters on labels only; VS Code also keeps rows whose group
+- [x] Open View filters on labels only; VS Code also keeps rows whose group
       name contains the filter ("view term" lists every terminal).
 - [x] File > Auto Save was inert; it and "File: Toggle Auto Save" flip
       files.autoSave, and "afterDelay" saves dirty files after
