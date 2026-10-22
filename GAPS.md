@@ -164,5 +164,6 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Menus and the command palette showed only a chord's first key
       ("Ctrl+K" for Last Edit Location's Ctrl+K Ctrl+Q, Save All's Ctrl+K S).
 - [x] Do Not Disturb (the center's bell-slash button, Notifications: Toggle Do Not Disturb Mode): the bell turns bell-slash and warnings skip the toast.
-- [ ] Do Not Disturb isn't remembered across restarts (VS Code keeps it in application storage), and lacks VS Code's per-extension source filter.
+- [x] Do Not Disturb is remembered across restarts (state.json, as VS Code's application storage).
+- [ ] Do Not Disturb lacks VS Code's per-source filter (needs extensions as notification sources).
 - [ ] Notifications: several toasts stacked (only one warning exists so far).

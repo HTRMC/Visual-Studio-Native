@@ -299,6 +299,9 @@ pub(super) struct Palette {
     rank: Option<Task<()>>,
     /// Parses the active editor for `@` off the UI thread.
     parse: Option<Task<()>>,
+    /// Do Not Disturb: warnings only reach the center, not a toast. Kept
+    /// here to be saved with the histories.
+    pub(super) dnd: bool,
 }
 
 impl Palette {
@@ -321,6 +324,7 @@ impl Palette {
             stale: true,
             editors,
             recent: serde_json::from_value(state["commands"].clone()).unwrap_or_default(),
+            dnd: state["doNotDisturb"].as_bool().unwrap_or_default(),
             defs: None,
             profiles: None,
             renaming: None,
@@ -372,14 +376,18 @@ impl Palette {
     /// Writes the histories on a background thread. Writes can finish out of
     /// order, so each carries a generation and an older one never replaces a
     /// newer file; the temp file and rename keep a crash from leaving half a file.
-    fn save(&self, cx: &App) {
+    pub(super) fn save(&self, cx: &App) {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         static WRITTEN: Mutex<u64> = Mutex::new(0);
         let Some(path) = state_path() else {
             return;
         };
         let generation = NEXT.fetch_add(1, Relaxed) + 1;
-        let state = serde_json::json!({ "commands": self.recent, "editors": self.editors });
+        let state = serde_json::json!({
+            "commands": self.recent,
+            "editors": self.editors,
+            "doNotDisturb": self.dnd,
+        });
         cx.background_spawn(async move {
             let mut written = WRITTEN.lock().unwrap();
             if generation < *written {
@@ -435,7 +443,7 @@ fn trim_trailing(text: &str) -> String {
         .collect()
 }
 
-/// Where the histories survive restarts: VS Code's user data folder layout
+/// Where the histories and Do Not Disturb survive restarts: VS Code's user data folder layout
 /// (`%APPDATA%`, `~/Library/Application Support`, `~/.config`).
 fn state_path() -> Option<PathBuf> {
     Some(dirs::config_dir()?.join("vsn").join("state.json"))

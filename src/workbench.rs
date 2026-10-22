@@ -426,8 +426,6 @@ pub struct Workbench {
     unseen: usize,
     /// Whether the bell's notification center is open.
     center: bool,
-    /// Do Not Disturb: warnings only reach the center, not a toast.
-    dnd: bool,
     /// The OS window's title, as last set.
     title: String,
     /// Go Back/Forward's history of editor locations, and the current one.
@@ -469,7 +467,6 @@ impl Workbench {
             find: search::Find::new(window, cx),
             palette: palette::Palette::new(window, cx),
             toast: None,
-            dnd: false,
             notes: Vec::new(),
             crumbs: ScrollHandle::new(),
             unseen: 0,
@@ -2058,7 +2055,7 @@ impl Workbench {
         }
         // VS Code's notificationsStatus tooltips.
         let bell_tip: SharedString = match (self.center, self.notes.len(), self.unseen) {
-            _ if self.dnd => "Do Not Disturb Mode is Enabled".into(),
+            _ if self.palette.dnd => "Do Not Disturb Mode is Enabled".into(),
             (true, ..) => "Hide Notifications".into(),
             (_, 0, _) => "No Notifications".into(),
             (_, _, 0) => "No New Notifications".into(),
@@ -2068,7 +2065,7 @@ impl Workbench {
         right.push(
             item("sb-bell", bell_tip)
                 .child(
-                    codicon(match (self.dnd, self.unseen > 0) {
+                    codicon(match (self.palette.dnd, self.unseen > 0) {
                         (false, false) => icon::BELL,
                         (false, true) => icon::BELL_DOT,
                         (true, false) => icon::BELL_SLASH,
@@ -2160,7 +2157,7 @@ impl Workbench {
         }
         self.unseen += 1;
         // VS Code's Do Not Disturb still toasts errors, but there are none yet.
-        if self.dnd {
+        if self.palette.dnd {
             return cx.notify();
         }
         let hide = cx.spawn(async move |this, cx| {
@@ -2194,10 +2191,12 @@ impl Workbench {
         cx.notify();
     }
 
-    /// Toggle Do Not Disturb Mode; turning it on hides the toast.
+    /// Toggle Do Not Disturb Mode; turning it on hides the toast. It
+    /// survives restarts, as in VS Code.
     fn toggle_dnd(&mut self, cx: &mut Context<Self>) {
-        self.dnd = !self.dnd;
-        if self.dnd {
+        self.palette.dnd = !self.palette.dnd;
+        self.palette.save(cx);
+        if self.palette.dnd {
             self.toast = None;
         }
         cx.notify();
