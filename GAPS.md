@@ -489,7 +489,9 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [x] Find All References (Shift+F12) from language servers and extensions, as a pick list grouped by file.
 - [ ] References show in a pick list, not a peek view or the References panel; no Go to References or Shift+Alt+F12.
 - [x] Format Selection (Ctrl+K Ctrl+F; the cursor's line when nothing is selected) from language servers and extensions.
-- [ ] Format on save/type, signature help and document symbols from language servers.
+- [ ] Format on save/type and document symbols from language servers.
+- [x] Parameter hints after `(` and `,` or on Ctrl+Shift+Space, from language servers and extensions.
+- [ ] Parameter hints ignore the server's trigger characters, don't follow cursor moves, can't cycle overloads, and show markdown as plain text.
 - [ ] Completion ignores the server's trigger characters and snippets (`snippetSupport` is off).
 - [ ] Problems panel: collapsing a file, filter, related information, and the Explorer's red file decorations.
 - [x] A crashed language server restarts and reopens its files, up to 5 times.
@@ -498,6 +500,6 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [x] An extension's `update(key, undefined)` removes the setting instead of writing `null`.
 - [ ] Host providers: document selectors' `pattern`/`scheme` aren't checked, completion snippets are flattened to plain text, and several diagnostic collections for one file overwrite each other.
 - [ ] `createFileSystemWatcher` never fires; `openTextDocument` reads the disk, not the open editor.
-- [ ] Only hover, completion, definition, (range) formatting, code action, rename and reference providers; the rest log "not implemented". Only the first matching provider answers.
+- [ ] Only hover, completion, definition, (range) formatting, code action, rename, reference and signature help providers; the rest log "not implemented". Only the first matching provider answers.
 - [ ] A language extension claiming a TypeScript-family language stops the shared built-in server for the others until their next file.
 - [ ] Completion list isn't filtered by the typed prefix while it's open.

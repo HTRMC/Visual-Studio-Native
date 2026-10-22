@@ -205,6 +205,7 @@ fn builtin_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("Format Selection", Box::new(FormatSelection)),
         ("Rename Symbol", Box::new(RenameSymbol)),
         ("Find All References", Box::new(FindAllReferences)),
+        ("Trigger Parameter Hints", Box::new(TriggerParameterHints)),
         ("Toggle Line Comment", Box::new(ToggleLineComment)),
         ("Add Line Comment", Box::new(AddLineComment)),
         ("Remove Line Comment", Box::new(RemoveLineComment)),

@@ -154,6 +154,7 @@ actions!(
         FormatSelection,
         RenameSymbol,
         FindAllReferences,
+        TriggerParameterHints,
         NewTextFile,
         RevertFile,
         SaveAs,
@@ -238,6 +239,7 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-k ctrl-f", FormatSelection, None),
         KeyBinding::new("f2", RenameSymbol, None),
         KeyBinding::new("shift-f12", FindAllReferences, None),
+        KeyBinding::new("ctrl-shift-space", TriggerParameterHints, None),
         KeyBinding::new("ctrl-pagedown", NextEditor, None),
         KeyBinding::new("ctrl-pageup", PreviousEditor, None),
         // Shells read Alt+arrows themselves (VS Code doesn't skip them).
@@ -1267,7 +1269,11 @@ impl Workbench {
                     this.breakpoints_moved(&path, editor, cx);
                     if let Some(ix) = this.docs.iter().position(|d| &d.editor == editor) {
                         this.lsp_change(ix, cx);
+                        this.signature_on_change(cx);
                     }
+                }
+                if matches!(ev, InputEvent::Blur) {
+                    this.hide_signature(cx);
                 }
                 // Cursor moves also land here; re-render keeps "Ln, Col" current.
                 cx.notify();
@@ -4577,6 +4583,7 @@ impl Render for Workbench {
         let panel = self.render_panel(window, cx);
         let palette = self.render_palette(window, cx);
         let toolbar = self.render_debug_toolbar(window, cx);
+        let signature = self.render_signature(cx);
 
         v_flex()
             .key_context(match self.center || !self.toasts.is_empty() {
@@ -4584,6 +4591,12 @@ impl Render for Workbench {
                 false => "Workbench",
             })
             .track_focus(&self.focus)
+            .children(signature)
+            .capture_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {
+                if e.keystroke.key == "escape" {
+                    this.hide_signature(cx);
+                }
+            }))
             .on_action(cx.listener(Self::open_file))
             .on_action(cx.listener(|this, _: &GoBack, window, cx| this.navigate(true, window, cx)))
             .on_action(cx.listener(|this, _: &NextEditor, window, cx| this.cycle(1, window, cx)))
@@ -4902,6 +4915,9 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &FindAllReferences, window, cx| {
                 this.find_references(window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &TriggerParameterHints, _, cx| this.signature_help(cx)),
+            )
             .on_action(cx.listener(|this, _: &ChangeLanguageMode, window, cx| {
                 this.change_language(window, cx)
             }))

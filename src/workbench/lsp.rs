@@ -77,6 +77,8 @@ pub(super) struct Lsp {
     crashes: HashMap<&'static str, u32>,
     /// The languages the extension host's providers serve.
     hosted: HashSet<String>,
+    /// The parameter hints shown above the cursor in this file.
+    signature: Option<(PathBuf, lsp_types::SignatureHelp)>,
 }
 
 struct Server {
@@ -664,6 +666,130 @@ impl Workbench {
         .detach();
     }
 
+    /// After an edit in the active editor: `(` and `,` ask for the call's
+    /// parameter hints, and while they show every edit asks again.
+    // ponytail: the server's trigger characters are ignored, and moving the
+    // cursor without typing leaves the hints as they were.
+    pub(super) fn signature_on_change(&mut self, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.get(self.active) else {
+            return;
+        };
+        let e = doc.editor.read(cx);
+        let before = e.value()[..e.selected_range().start].chars().next_back();
+        if self.lsp.signature.is_some() || matches!(before, Some('(' | ',')) {
+            self.signature_help(cx);
+        }
+    }
+
+    /// Ctrl+Shift+Space: parameter hints for the call at the cursor; an
+    /// empty answer hides them.
+    pub(super) fn signature_help(&mut self, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.get(self.active) else {
+            return;
+        };
+        let e = doc.editor.read(cx);
+        let at = e.text().offset_to_position(e.selected_range().start);
+        let path = doc.path.clone();
+        let params = json!({ "textDocument": { "uri": path_uri(&path) }, "position": at });
+        let Some(reply) = self.request_for(&path, "textDocument/signatureHelp", params) else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let reply = reply.await.unwrap_or_default();
+            let help = serde_json::from_value::<Option<lsp_types::SignatureHelp>>(reply);
+            let help = help.ok().flatten().filter(|h| !h.signatures.is_empty());
+            this.update(cx, |this, cx| {
+                this.lsp.signature = help.map(|h| (path, h));
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    pub(super) fn hide_signature(&mut self, cx: &mut Context<Self>) {
+        if self.lsp.signature.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// The parameter hints: the signature with its active parameter in bold,
+    /// and that parameter's documentation or else the signature's.
+    pub(super) fn render_signature(&self, cx: &App) -> Option<impl IntoElement + use<>> {
+        let (path, help) = self.lsp.signature.as_ref()?;
+        let doc = self.docs.get(self.active).filter(|d| d.path == *path)?;
+        let e = doc.editor.read(cx);
+        let at = e.selected_range().start;
+        let cursor = e.range_to_bounds(&(at..at))?;
+        let sig = (help
+            .signatures
+            .get(help.active_signature.unwrap_or(0) as usize))
+        .or(help.signatures.first())?;
+        let label = &sig.label;
+        let param = (sig.active_parameter.or(help.active_parameter))
+            .and_then(|i| sig.parameters.as_ref()?.get(i as usize));
+        let range = param.and_then(|p| match &p.label {
+            lsp_types::ParameterLabel::Simple(name) => {
+                // Past the name, which could hold the parameter's text too.
+                let open = label.find('(').unwrap_or(0);
+                let start = open + label[open..].find(name.as_str())?;
+                Some(start..start + name.len())
+            }
+            lsp_types::ParameterLabel::LabelOffsets([a, b]) => {
+                let byte = |n: u32| {
+                    let mut units = 0;
+                    (label.char_indices())
+                        .find(|(_, ch)| {
+                            let hit = units >= n;
+                            units += ch.len_utf16() as u32;
+                            hit
+                        })
+                        .map_or(label.len(), |(i, _)| i)
+                };
+                Some(byte(*a)..byte(*b))
+            }
+        });
+        let text = |d: &lsp_types::Documentation| match d {
+            lsp_types::Documentation::String(s) => s.clone(),
+            lsp_types::Documentation::MarkupContent(m) => m.value.clone(),
+        };
+        let docs = (param.and_then(|p| p.documentation.as_ref()))
+            .or(sig.documentation.as_ref())
+            .map(text)
+            .filter(|d| !d.trim().is_empty());
+        let bold = HighlightStyle {
+            font_weight: Some(FontWeight::BOLD),
+            color: Some(c(0x48A0C7)),
+            ..Default::default()
+        };
+        let label = StyledText::new(label.clone()).with_highlights(range.map(|r| (r, bold)));
+        Some(deferred(
+            anchored()
+                .anchor(Anchor::BottomLeft)
+                .position(cursor.origin)
+                .child(
+                    v_flex()
+                        .mb(px(4.))
+                        .max_w(px(600.))
+                        .px(px(8.))
+                        .py(px(4.))
+                        .gap(px(4.))
+                        .bg(c(0x202122))
+                        .border_1()
+                        .border_color(col::input_border())
+                        .rounded(px(4.))
+                        .shadow_md()
+                        .text_size(px(13.))
+                        .text_color(col::fg())
+                        .font_family("Consolas")
+                        .child(label)
+                        .when_some(docs, |d, docs| {
+                            d.child(div().font_family(".SystemUIFont").child(docs))
+                        }),
+                ),
+        ))
+    }
+
     /// Sends `method` to the server that has `path` open.
     fn request_for(
         &self,
@@ -942,6 +1068,9 @@ impl Workbench {
                         "formatting": {},
                         "rangeFormatting": {},
                         "rename": {},
+                        "signatureHelp": { "signatureInformation": {
+                            "parameterInformation": { "labelOffsetSupport": true },
+                        } },
                         "codeAction": { "codeActionLiteralSupport": { "codeActionKind": {
                             "valueSet": ["", "quickfix", "refactor", "refactor.extract",
                                 "refactor.inline", "refactor.rewrite", "source",

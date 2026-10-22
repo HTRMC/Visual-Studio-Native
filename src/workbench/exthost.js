@@ -181,6 +181,9 @@ class WorkspaceEdit {
   renameFile() {}
 }
 class CodeAction { constructor(title, kind) { this.title = title; this.kind = kind; } }
+class SignatureHelp { constructor() { this.signatures = []; this.activeSignature = 0; this.activeParameter = 0; } }
+class SignatureInformation { constructor(label, documentation) { this.label = label; this.documentation = documentation; this.parameters = []; } }
+class ParameterInformation { constructor(label, documentation) { this.label = label; this.documentation = documentation; } }
 
 // A document vsn has open, as vscode.TextDocument.
 class TextDocument {
@@ -245,7 +248,7 @@ const changed = new EventEmitter();
 const closed = new EventEmitter();
 const saved = new EventEmitter();
 // Each language feature's providers: { selector, provider }.
-const providers = { hover: [], completion: [], definition: [], formatting: [], rangeFormatting: [], codeAction: [], rename: [], references: [] };
+const providers = { hover: [], completion: [], definition: [], formatting: [], rangeFormatting: [], codeAction: [], rename: [], references: [], signatureHelp: [] };
 
 // ---- the vscode API ----------------------------------------------------------
 
@@ -514,6 +517,7 @@ const vscodeLanguages = {
   registerCodeActionsProvider: register('codeAction'),
   registerRenameProvider: register('rename'),
   registerReferenceProvider: register('references'),
+  registerSignatureHelpProvider: register('signatureHelp'),
   onDidChangeDiagnostics: never,
 };
 
@@ -548,7 +552,7 @@ async function provide(method, params) {
     return c && vscodeCommands.executeCommand(c.command, ...(c.arguments || []));
   }
   const doc = documents.get(params.textDocument.uri);
-  let feature = { 'textDocument/hover': 'hover', 'textDocument/completion': 'completion', 'textDocument/definition': 'definition', 'textDocument/formatting': 'formatting', 'textDocument/rangeFormatting': 'rangeFormatting', 'textDocument/codeAction': 'codeAction', 'textDocument/rename': 'rename', 'textDocument/references': 'references' }[method];
+  let feature = { 'textDocument/hover': 'hover', 'textDocument/completion': 'completion', 'textDocument/definition': 'definition', 'textDocument/formatting': 'formatting', 'textDocument/rangeFormatting': 'rangeFormatting', 'textDocument/codeAction': 'codeAction', 'textDocument/rename': 'rename', 'textDocument/references': 'references', 'textDocument/signatureHelp': 'signatureHelp' }[method];
   const find = (f) => doc && f && providers[f].find((p) => match(p.selector, doc));
   let entry = find(feature);
   // Format Document falls back on formatting the whole range.
@@ -592,6 +596,17 @@ async function provide(method, params) {
     case 'references': {
       const r = await p.provideReferences(doc, pos, params.context, token);
       return r && r.map((l) => ({ uri: l.uri.toString(), range: lspRange(l.range) }));
+    }
+    case 'signatureHelp': {
+      const r = await p.provideSignatureHelp(doc, pos, token, { triggerKind: 1, isRetrigger: false });
+      const text = (d) => d && (typeof d === 'string' ? d : { kind: 'markdown', value: markdown(d) });
+      return r && {
+        activeSignature: r.activeSignature, activeParameter: r.activeParameter,
+        signatures: r.signatures.map((s) => ({
+          label: s.label, documentation: text(s.documentation), activeParameter: s.activeParameter,
+          parameters: (s.parameters || []).map((q) => ({ label: q.label, documentation: text(q.documentation) })),
+        })),
+      };
     }
   }
   return null;
@@ -668,6 +683,7 @@ const known = {
   Disposable, EventEmitter, Uri, Position, Range, Selection, ThemeColor, ThemeIcon, CancellationTokenSource,
   Location, Diagnostic, DiagnosticRelatedInformation, MarkdownString, Hover, SnippetString, CompletionItem, CompletionList, TextEdit, CodeActionKind,
   WorkspaceEdit, CodeAction, CodeActionTriggerKind: { Invoke: 1, Automatic: 2 },
+  SignatureHelp, SignatureInformation, ParameterInformation, SignatureHelpTriggerKind: { Invoke: 1, TriggerCharacter: 2, ContentChange: 3 },
   DiagnosticTag: { Unnecessary: 1, Deprecated: 2 },
   CompletionItemKind: Object.fromEntries('Text Method Function Constructor Field Variable Class Interface Module Property Unit Value Enum Keyword Snippet Color File Reference Folder EnumMember Constant Struct Event Operator TypeParameter User Issue'.split(' ').map((k, i) => [k, i])),
   CompletionTriggerKind: { Invoke: 0, TriggerCharacter: 1, TriggerForIncompleteCompletions: 2 },
