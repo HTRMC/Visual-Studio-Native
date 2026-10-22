@@ -233,6 +233,12 @@ Differences from VS Code still to close, smallest first within each area.
       tints the whole target folder with its children.
 - [x] Dragging in the explorer can't move files between folders.
 - [x] Ctrl+drag in the explorer doesn't copy.
+- [x] The explorer has no Cut/Copy/Paste (Ctrl+X/C/V and the row menu).
+- [ ] Explorer Paste is always enabled in the row menu (VS Code greys it out
+      with nothing copied), and files copied in Windows Explorer can't be
+      pasted into it (nor explorer items pasted out to Windows).
+- [ ] The explorer handles one item at a time: no Ctrl/Shift+click
+      multi-select for drag, cut, copy or paste.
 - [ ] An explorer move or copy can't be undone (Ctrl+Z in the explorer), and
       the move prompt lacks VS Code's "Do not ask me again"
       (`explorer.confirmDragAndDrop`).

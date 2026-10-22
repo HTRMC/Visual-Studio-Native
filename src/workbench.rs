@@ -126,6 +126,9 @@ actions!(
         ClearAllNotifications,
         ToggleDoNotDisturb,
         Noop,
+        CutFile,
+        CopyFile,
+        PasteFile,
     ]
 );
 
@@ -154,6 +157,9 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-j", TogglePanel, None),
         KeyBinding::new("ctrl-`", ToggleTerminal, None),
         KeyBinding::new("ctrl-shift-e", ShowExplorer, None),
+        KeyBinding::new("ctrl-x", CutFile, Some("Explorer")),
+        KeyBinding::new("ctrl-c", CopyFile, Some("Explorer")),
+        KeyBinding::new("ctrl-v", PasteFile, Some("Explorer")),
         KeyBinding::new("ctrl-shift-f", ShowSearch, None),
         KeyBinding::new("ctrl-shift-h", ReplaceInFiles, None),
         KeyBinding::new("ctrl-alt-enter", ReplaceAll, None),
@@ -422,6 +428,8 @@ pub struct Workbench {
     expanded: HashSet<PathBuf>,
     /// The explorer folder a drag would drop into, tinted with its children.
     drop_dir: Option<PathBuf>,
+    /// The explorer item copied (or, true, cut) for a paste.
+    clip: Option<(PathBuf, bool)>,
     tree_scroll: UniformListScrollHandle,
     /// The explorer's selected row: the active editor's file, or a folder
     /// clicked since.
@@ -497,6 +505,7 @@ impl Workbench {
             root,
             expanded: HashSet::new(),
             drop_dir: None,
+            clip: None,
             tree_scroll: UniformListScrollHandle::new(),
             tree_sel: None,
             tree_cursor: None,
@@ -822,37 +831,91 @@ impl Workbench {
         .detach();
     }
 
-    /// Moves an explorer item into the folder `dir` once confirmed, as VS
-    /// Code's explorer drag does (`explorer.confirmDragAndDrop`).
-    fn move_into(
+    /// An explorer item dropped on the folder `dir`: Ctrl copies it there.
+    fn drop_file(
         &mut self,
         from: PathBuf,
         dir: PathBuf,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        match window.modifiers().control {
+            true => self.copy_into(&from, dir, cx),
+            false => self.move_into(from, dir, true, window, cx),
+        }
+    }
+
+    /// Copies an explorer item into `dir`, beside any namesake rather than over it.
+    fn copy_into(&mut self, from: &Path, dir: PathBuf, cx: &mut Context<Self>) {
         let Some(name) = from.file_name() else {
             return;
         };
-        if dir.starts_with(&from) {
+        if dir.starts_with(from) {
             return;
         }
-        // Ctrl+drop copies, beside any namesake rather than over it.
-        if window.modifiers().control {
-            let to = copy_target(&dir, name);
-            if let Err(err) = copy_all(&from, &to) {
-                return self.warn(format!("Unable to copy '{}' ({err})", from.display()), cx);
-            }
-            self.expanded.insert(dir);
-            self.tree_sel = Some(to.clone());
-            self.tree_cursor = Some(to);
-            self.dirs.clear();
+        let to = copy_target(&dir, name);
+        if let Err(err) = copy_all(from, &to) {
+            return self.warn(format!("Unable to copy '{}' ({err})", from.display()), cx);
+        }
+        self.expanded.insert(dir);
+        self.tree_sel = Some(to.clone());
+        self.tree_cursor = Some(to);
+        self.dirs.clear();
+        cx.notify();
+    }
+
+    /// Pastes the cut or copied explorer item into the folder at `at`, or
+    /// the folder of the file there, as VS Code's explorer Paste does.
+    fn paste_file(&mut self, at: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some((from, cut)), Some(root)) = (self.clip.clone(), self.root.clone()) else {
+            return;
+        };
+        if !from.exists() {
+            self.clip = None;
             return cx.notify();
         }
-        if from.parent() == Some(&dir) {
+        let at = at.unwrap_or(root);
+        let mut dir = match at.is_dir() {
+            true => at,
+            false => at.parent().unwrap_or(&at).to_path_buf(),
+        };
+        // A folder pasted onto itself goes beside it.
+        if dir == from {
+            dir = from.parent().unwrap_or(&from).to_path_buf();
+        }
+        if dir.starts_with(&from) {
+            return self.warn("File to paste is an ancestor of the destination folder", cx);
+        }
+        match cut {
+            true => {
+                self.clip = None;
+                self.move_into(from, dir, false, window, cx);
+            }
+            false => self.copy_into(&from, dir, cx),
+        }
+    }
+
+    /// Moves an explorer item into the folder `dir`, once confirmed when
+    /// `confirm` (as VS Code's explorer drag does, `explorer.confirmDragAndDrop`)
+    /// or when it would replace a namesake.
+    fn move_into(
+        &mut self,
+        from: PathBuf,
+        dir: PathBuf,
+        confirm: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(name) = from.file_name() else {
+            return;
+        };
+        if dir.starts_with(&from) || from.parent() == Some(&dir) {
             return;
         }
         let to = dir.join(name);
+        if !confirm && !to.exists() {
+            return self.rename_into(&from, &to, &dir, cx);
+        }
         let name = name.to_string_lossy();
         let (message, detail, ok) = match to.exists() {
             true => (
@@ -876,34 +939,37 @@ impl Workbench {
             if answer.await != Ok(0) {
                 return;
             }
-            this.update(cx, |this, cx| {
-                let replaced = match to.is_dir() {
-                    true => fs::remove_dir_all(&to),
-                    false if to.exists() => fs::remove_file(&to),
-                    false => Ok(()),
-                };
-                if let Err(err) = replaced.and_then(|_| fs::rename(&from, &to)) {
-                    return this.warn(format!("Unable to move '{}' ({err})", from.display()), cx);
-                }
-                // Open editors and expanded folders follow the move.
-                let moved = |p: &Path| p.strip_prefix(&from).ok().map(|rest| to.join(rest));
-                for doc in &mut this.docs {
-                    if let Some(path) = moved(&doc.path) {
-                        doc.path = path;
-                    }
-                }
-                this.expanded = (this.expanded.drain())
-                    .map(|p| moved(&p).unwrap_or(p))
-                    .collect();
-                this.expanded.insert(dir.clone());
-                this.tree_sel = Some(to.clone());
-                this.tree_cursor = Some(to.clone());
-                this.dirs.clear();
-                cx.notify();
-            })
-            .ok();
+            this.update(cx, |this, cx| this.rename_into(&from, &to, &dir, cx))
+                .ok();
         })
         .detach();
+    }
+
+    /// Moves `from` to `to` in the folder `dir`, replacing what's there.
+    fn rename_into(&mut self, from: &Path, to: &Path, dir: &Path, cx: &mut Context<Self>) {
+        let replaced = match to.is_dir() {
+            true => fs::remove_dir_all(to),
+            false if to.exists() => fs::remove_file(to),
+            false => Ok(()),
+        };
+        if let Err(err) = replaced.and_then(|_| fs::rename(from, to)) {
+            return self.warn(format!("Unable to move '{}' ({err})", from.display()), cx);
+        }
+        // Open editors and expanded folders follow the move.
+        let moved = |p: &Path| p.strip_prefix(from).ok().map(|rest| to.join(rest));
+        for doc in &mut self.docs {
+            if let Some(path) = moved(&doc.path) {
+                doc.path = path;
+            }
+        }
+        self.expanded = (self.expanded.drain())
+            .map(|p| moved(&p).unwrap_or(p))
+            .collect();
+        self.expanded.insert(dir.to_path_buf());
+        self.tree_sel = Some(to.to_path_buf());
+        self.tree_cursor = Some(to.to_path_buf());
+        self.dirs.clear();
+        cx.notify();
     }
 
     /// Points an explorer drag at `dir`, unless dropping the item `moving`
@@ -1934,7 +2000,15 @@ impl Workbench {
                         )
                         .track_scroll(&self.tree_scroll)
                         .track_focus(&self.tree_focus)
+                        .key_context("Explorer")
                         .on_key_down(cx.listener(Self::tree_key))
+                        .on_action(cx.listener(|this, _: &CutFile, _, cx| this.clip_file(true, cx)))
+                        .on_action(
+                            cx.listener(|this, _: &CopyFile, _, cx| this.clip_file(false, cx)),
+                        )
+                        .on_action(cx.listener(|this, _: &PasteFile, window, cx| {
+                            this.paste_file(this.tree_cursor.clone(), window, cx)
+                        }))
                         // Left alone, a drag over the tree drops into the
                         // root; the row under the mouse moves it after this.
                         .on_drag_move(cx.listener(|this, e: &DragMoveEvent<DraggedFile>, _, cx| {
@@ -1967,7 +2041,7 @@ impl Workbench {
                         )
                         .on_drop(cx.listener(|this, file: &DraggedFile, window, cx| {
                             if let Some(root) = this.root.clone() {
-                                this.move_into(file.0.clone(), root, window, cx)
+                                this.drop_file(file.0.clone(), root, window, cx)
                             }
                         }))
                         .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
@@ -2178,6 +2252,14 @@ impl Workbench {
         cx.notify();
     }
 
+    /// Copy or Cut on the explorer's focused row.
+    fn clip_file(&mut self, cut: bool, cx: &mut Context<Self>) {
+        if let Some(path) = self.tree_cursor.clone() {
+            self.clip = Some((path, cut));
+            cx.notify();
+        }
+    }
+
     /// Visible explorer rows (path, depth, is_dir), reading folders only on a cache miss.
     fn tree_rows(&mut self, dir: &Path, depth: usize, rows: &mut Vec<(PathBuf, usize, bool)>) {
         let entries = self
@@ -2308,7 +2390,7 @@ impl Workbench {
                 )
                 .on_drop(cx.listener(move |this, file: &DraggedFile, window, cx| {
                     cx.stop_propagation();
-                    this.move_into(file.0.clone(), into.clone(), window, cx)
+                    this.drop_file(file.0.clone(), into.clone(), window, cx)
                 }))
                 .on_drop(cx.listener(
                     move |this, paths: &ExternalPaths, window, cx| {
@@ -2338,6 +2420,9 @@ impl Workbench {
                 d.border_color(col::focus())
             })
             .when(!active, |d| d.hover(|s| s.bg(col::hover())))
+            .when(self.clip.as_ref() == Some(&(path.clone(), true)), |d| {
+                d.opacity(0.5)
+            })
             // Indent guides under each ancestor folder's chevron, shown while
             // the mouse is over the tree (`workbench.tree.renderIndentGuides`).
             .children(
@@ -3270,8 +3355,8 @@ fn reveal_path(path: &Path) {
 }
 
 /// An explorer row's right-click menu, as VS Code's for a file or folder.
-// ponytail: no Open to the Side, Find in Folder, Cut/Copy/Paste, Rename or
-// Delete yet (no split editors, file operations or inline rename).
+// ponytail: no Open to the Side, Find in Folder, Rename or Delete yet (no
+// split editors, recycle bin or inline rename).
 fn explorer_menu(
     menu: PopupMenu,
     wb: &WeakEntity<Workbench>,
@@ -3309,6 +3394,18 @@ fn explorer_menu(
             };
             this.open_terminal_at(dir.to_path_buf(), w, cx)
         },
+    ))
+    .separator()
+    .item(item("Cut", Some(Box::new(CutFile)), |this, _, _, cx| {
+        this.clip_file(true, cx)
+    }))
+    .item(item("Copy", Some(Box::new(CopyFile)), |this, _, _, cx| {
+        this.clip_file(false, cx)
+    }))
+    .item(item(
+        "Paste",
+        Some(Box::new(PasteFile)),
+        |this, path, w, cx| this.paste_file(Some(path.to_path_buf()), w, cx),
     ))
     .separator()
     .item(item(
