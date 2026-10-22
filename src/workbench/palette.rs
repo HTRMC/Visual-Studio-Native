@@ -92,6 +92,10 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ),
         ("Terminal: Focus Find", Box::new(FindInTerminal)),
         (
+            "Terminal: Toggle Size to Content Width",
+            Box::new(ToggleSizeToContentWidth),
+        ),
+        (
             "Terminal: Select Default Profile",
             Box::new(SelectDefaultProfile),
         ),

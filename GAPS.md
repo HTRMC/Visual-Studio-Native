@@ -55,8 +55,10 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Unsplit Terminal (a split terminal's tab menu, and the palette).
 - [ ] Terminal: Join Terminals merges the selected tabs into one split group
       (needs multi-select in the tab list: Ctrl/Shift+click).
-- [ ] Terminal: Toggle Size to Content Width (Alt+Z) stops wrapping at the
-      panel's width.
+- [x] Terminal: Toggle Size to Content Width (Alt+Z) stops wrapping at the
+      panel's width; Shift+wheel scrolls sideways.
+- [ ] The sideways scrollbar's thumb can be dragged, and fades in on hover
+      like VS Code's.
 - [ ] Dragging a tab onto the editor area moves the terminal into an editor.
 - [ ] Shell integration: command decorations, run recent command, go to
       recent directory.

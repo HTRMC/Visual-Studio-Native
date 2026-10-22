@@ -102,6 +102,10 @@ pub(super) struct Terminal {
     hover: Option<Hover>,
     /// Wheel movement not yet a whole line.
     scroll: f32,
+    /// Toggle Size to Content Width's width, kept through panel resizes, and
+    /// how far the grid is scrolled left to show it.
+    fixed_cols: Option<u16>,
+    scroll_x: f32,
     /// The cell the last mouse report was for, to send motion once per cell.
     mouse_cell: Option<(u16, u16)>,
     /// Find's matches, oldest first, and the one selected.
@@ -128,7 +132,7 @@ impl Terminal {
     fn cell(&self, position: Point<Pixels>, round: bool) -> (u16, u16) {
         let (rows, cols) = self.parser.screen().size();
         let at = position - self.bounds.get().origin;
-        let col = (f32::from(at.x) - PAD_L) / self.cell_w;
+        let col = (f32::from(at.x) + self.scroll_x - PAD_L) / self.cell_w;
         let col = if round { col.round() } else { col.floor() };
         let row = (f32::from(at.y) / LINE_H).floor();
         (
@@ -706,6 +710,8 @@ impl Workbench {
             autoscrolling: false,
             hover: None,
             scroll: 0.,
+            fixed_cols: None,
+            scroll_x: 0.,
             mouse_cell: None,
             matches: Vec::new(),
             current: None,
@@ -1217,6 +1223,30 @@ impl Workbench {
         self.activate_terminal(src, window, cx);
     }
 
+    /// VS Code's Toggle Size to Content Width (Alt+Z): stops wrapping the
+    /// lines on screen at the panel's width, scrolling sideways to show them.
+    pub(super) fn toggle_size_to_content_width(&mut self, cx: &mut Context<Self>) {
+        let ts = &mut self.terminals;
+        let Some(t) = ts.list.get_mut(ts.active) else {
+            return;
+        };
+        if t.fixed_cols.take().is_none() {
+            let screen = t.parser.screen();
+            let (rows, cols) = screen.size();
+            let (mut widest, mut len) = (0, 0);
+            for row in 0..rows.get() {
+                len += line_end(screen, row);
+                if !screen.row_wrapped(row) {
+                    widest = widest.max(len);
+                    len = 0;
+                }
+            }
+            t.fixed_cols = (widest > cols.get()).then_some(widest);
+        }
+        t.scroll_x = 0.;
+        cx.notify();
+    }
+
     /// VS Code's Unsplit Terminal: the active terminal leaves its split group
     /// for a group of its own at the end of the list.
     pub(super) fn unsplit_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1369,7 +1399,13 @@ impl Workbench {
         let Some(t) = self.terminal(id) else {
             return;
         };
-        t.scroll += f32::from(ev.delta.pixel_delta(px(LINE_H)).y) / LINE_H;
+        let delta = ev.delta.pixel_delta(px(LINE_H));
+        if t.fixed_cols.is_some() && (ev.modifiers.shift || delta.x != px(0.)) {
+            let dx = if delta.x != px(0.) { delta.x } else { delta.y };
+            t.scroll_x -= f32::from(dx);
+            return cx.notify();
+        }
+        t.scroll += f32::from(delta.y) / LINE_H;
         let lines = t.scroll.trunc();
         t.scroll -= lines;
         if lines == 0. {
@@ -1701,7 +1737,7 @@ impl Workbench {
         if size.width > px(0.) {
             let rows = (f32::from(size.height) / LINE_H).floor().max(1.) as u16;
             let cols = (f32::from(size.width) - PAD_L - PAD_R) / t.cell_w;
-            let cols = cols.floor().max(1.) as u16;
+            let cols = t.fixed_cols.unwrap_or(cols.floor().max(1.) as u16);
             let (r, c) = t.parser.screen().size();
             if (r.get(), c.get()) != (rows, cols) {
                 t.resize(rows, cols);
@@ -1718,6 +1754,12 @@ impl Workbench {
         let screen = t.parser.screen();
         let (rows, cols) = screen.size();
         let (fg0, bg0) = (c(0xCCCCCC), col::bg());
+        // The grid's width past the panel's, when its size is fixed.
+        let grid_w = PAD_L + cols.get() as f32 * t.cell_w + PAD_R;
+        let over = (grid_w - f32::from(size.width)).max(0.);
+        let scrolled = t.fixed_cols.is_some() && over > 0.;
+        t.scroll_x = t.scroll_x.clamp(0., over);
+        let scroll_x = t.scroll_x;
         let (selection, block) = (t.selection, t.block);
         let top = t.top();
         let bottom = top + rows.get() as usize;
@@ -1941,9 +1983,31 @@ impl Workbench {
                     .text_size(px(FONT_SIZE))
                     .line_height(px(LINE_H))
                     .text_color(fg0)
+                    // Out of the flow, so a fixed width can't widen the panel.
+                    .absolute()
+                    .top_0()
+                    .left(px(-scroll_x))
+                    .map(|d| match scrolled {
+                        true => d.w(px(grid_w)),
+                        false => d.w_full(),
+                    })
                     .child(v_flex().pl(px(PAD_L)).children(lines))
                     .children(cursor),
             )
+            // ponytail: the thumb shows where the view is but can't be
+            // dragged; Shift+wheel scrolls.
+            .when(scrolled, |d| {
+                let w = f32::from(size.width);
+                d.child(
+                    div()
+                        .absolute()
+                        .bottom_0()
+                        .left(px(scroll_x / grid_w * w))
+                        .w(px(w / grid_w * w))
+                        .h(px(10.))
+                        .bg(ca(0x79797966)),
+                )
+            })
             .context_menu(move |menu: PopupMenu, _, _| {
                 type Act = fn(&mut Workbench, u64, &mut Window, &mut Context<Workbench>);
                 let item = |label: &'static str, act: Act| {

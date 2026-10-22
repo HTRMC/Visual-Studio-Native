@@ -74,6 +74,7 @@ actions!(
         FocusNextTerminal,
         FocusPreviousTerminal,
         FindInTerminal,
+        ToggleSizeToContentWidth,
         SelectDefaultProfile,
         NewTextFile,
         Noop,
@@ -120,6 +121,7 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         shifted("ctrl-shift-`", Box::new(NewTerminal), None),
         shifted("ctrl-shift-5", Box::new(SplitTerminal), Some("Terminal")),
         KeyBinding::new("ctrl-f", FindInTerminal, Some("Terminal")),
+        KeyBinding::new("alt-z", ToggleSizeToContentWidth, Some("Terminal")),
         KeyBinding::new("ctrl-pagedown", FocusNextTerminalGroup, Some("Terminal")),
         KeyBinding::new("ctrl-pageup", FocusPreviousTerminalGroup, Some("Terminal")),
         KeyBinding::new("ctrl-n", NewTextFile, None),
@@ -1766,6 +1768,9 @@ impl Render for Workbench {
                     this.find_in_terminal(window, cx)
                 }),
             )
+            .on_action(cx.listener(|this, _: &ToggleSizeToContentWidth, _, cx| {
+                this.toggle_size_to_content_width(cx)
+            }))
             .on_action(cx.listener(|this, _: &SelectDefaultProfile, window, cx| {
                 this.select_default_profile(window, cx)
             }))
