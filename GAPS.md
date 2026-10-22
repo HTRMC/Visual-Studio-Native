@@ -285,8 +285,10 @@ Differences from VS Code still to close, smallest first within each area.
       the cursor matches whole words, case-sensitively, and a selection
       matches anywhere in any case, as in VS Code.
 - [ ] Ctrl+D folds ASCII case only, and ignores the find widget's Match
-      Case / Whole Word toggles; Add Previous Occurrence and Ctrl+K Ctrl+D
-      (Move Last Selection to Next Find Match) are missing.
+      Case / Whole Word toggles; Ctrl+K Ctrl+D (Move Last Selection to Next
+      Find Match) is missing.
+- [x] Selection > Add Previous Occurrence was missing; it's in the menu
+      and the palette (Add Selection To Previous Find Match).
 - [x] Selection > Expand/Shrink Selection were inert; they and
       Shift+Alt+Right/Left step out through the word, brackets, line and
       file, and back.

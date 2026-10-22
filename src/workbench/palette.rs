@@ -204,6 +204,10 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
             Box::new(AddNextOccurrence),
         ),
         (
+            "Add Selection To Previous Find Match",
+            Box::new(AddPreviousOccurrence),
+        ),
+        (
             "Select All Occurrences of Find Match",
             Box::new(SelectAllOccurrences),
         ),

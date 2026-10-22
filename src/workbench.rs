@@ -116,6 +116,7 @@ actions!(
         MoveLinesDown,
         ToggleLineComment,
         AddNextOccurrence,
+        AddPreviousOccurrence,
         ExpandSelection,
         ShrinkSelection,
         SelectAllOccurrences,
@@ -875,10 +876,10 @@ pub struct Workbench {
     /// What had focus when a menu bar menu was opened, so its Edit and
     /// Selection entries reach that editor rather than the menu's own path.
     menu_focus: Option<FocusHandle>,
-    /// After Ctrl+D: the editor, its selection then, and where the last
-    /// match it added ends, so the next Ctrl+D searches on from there, and
-    /// whether it matches whole words.
-    next_match: Option<(EntityId, Range<usize>, usize, bool)>,
+    /// After Ctrl+D: the editor, its selection then, where the last match it
+    /// added ends and the first starts, so the next Add Next / Previous
+    /// Occurrence searches on from there, and whether it matches whole words.
+    next_match: Option<(EntityId, Range<usize>, usize, usize, bool)>,
     /// The editor Expand Selection last ran in and its selections, the
     /// current last, for Shrink Selection to step back through.
     expand_history: Option<(EntityId, Vec<Range<usize>>)>,
@@ -2028,12 +2029,13 @@ impl Workbench {
         self.expand_history = Some((id, history));
     }
 
-    /// Selection > Add Next Occurrence (Ctrl+D), or with `all` Select All
-    /// Occurrences (Ctrl+Shift+L), of the active editor's selected text; an
+    /// Selection > Add Next Occurrence (Ctrl+D) with `next` true, Add Previous
+    /// Occurrence with false, or with None Select All Occurrences
+    /// (Ctrl+Shift+L), of the active editor's selected text; an
     /// empty selection first selects the word around the cursor, and then
     /// matches whole words only, case-sensitively; otherwise any match, in any
     /// case, as VS Code's find defaults.
-    fn add_occurrences(&mut self, all: bool, cx: &mut Context<Self>) {
+    fn add_occurrences(&mut self, next: Option<bool>, cx: &mut Context<Self>) {
         let Some(doc) = self.docs.get(self.active).filter(|d| !d.binary) else {
             return;
         };
@@ -2043,29 +2045,38 @@ impl Workbench {
             let text = e.value();
             let mut sel = e.selected_range();
             // Selections other than the first aren't readable, so remember the last.
-            let (from, mut whole) = match last {
-                Some((i, s, end, whole)) if i == id && s == sel => (end, whole),
-                _ => (sel.end, false),
+            let (after, before, mut whole) = match last {
+                Some((i, s, after, before, whole)) if i == id && s == sel => (after, before, whole),
+                _ => (sel.end, sel.start, false),
             };
             if sel.is_empty() {
                 sel = word_around(&text, sel.start)?;
                 e.set_selected_range(sel.clone(), cx);
-                if !all {
-                    return Some((id, sel.clone(), sel.end, true));
+                if next.is_some() {
+                    return Some((id, sel.clone(), sel.end, sel.start, true));
                 }
                 whole = true;
             }
             let len = sel.len();
             let found = occurrences(&text, &text[sel.clone()], whole);
-            if all {
+            let Some(next) = next else {
                 for at in found {
                     e.add_selection(at..at + len, cx);
                 }
                 return None;
-            }
-            let at = *found.iter().find(|&&at| at >= from).or(found.first())?;
+            };
+            let (at, after, before) = match next {
+                true => {
+                    let at = *found.iter().find(|&&at| at >= after).or(found.first())?;
+                    (at, at + len, before)
+                }
+                false => {
+                    let at = *(found.iter().rfind(|&&at| at + len <= before)).or(found.last())?;
+                    (at, after, at)
+                }
+            };
             e.add_selection(at..at + len, cx);
-            Some((id, sel, at + len, whole))
+            Some((id, sel, after, before, whole))
         });
     }
 
@@ -4514,12 +4525,15 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &MoveLinesDown, window, cx| {
                 this.line_op(false, false, window, cx)
             }))
+            .on_action(cx.listener(|this, _: &AddNextOccurrence, _, cx| {
+                this.add_occurrences(Some(true), cx)
+            }))
             .on_action(
-                cx.listener(|this, _: &AddNextOccurrence, _, cx| this.add_occurrences(false, cx)),
+                cx.listener(|this, _: &SelectAllOccurrences, _, cx| this.add_occurrences(None, cx)),
             )
-            .on_action(
-                cx.listener(|this, _: &SelectAllOccurrences, _, cx| this.add_occurrences(true, cx)),
-            )
+            .on_action(cx.listener(|this, _: &AddPreviousOccurrence, _, cx| {
+                this.add_occurrences(Some(false), cx)
+            }))
             .on_action(
                 cx.listener(|this, _: &ExpandSelection, _, cx| this.expand_selection(true, cx)),
             )
@@ -4854,6 +4868,7 @@ fn app_menu(
                 Box::new(gpui_kit::base::input::AddCursorBelow),
             )
             .menu("Add Next Occurrence", Box::new(AddNextOccurrence))
+            .menu("Add Previous Occurrence", Box::new(AddPreviousOccurrence))
             .menu("Select All Occurrences", Box::new(SelectAllOccurrences)),
         "View" => menu
             .menu("Command Palette...", Box::new(CommandPalette))
