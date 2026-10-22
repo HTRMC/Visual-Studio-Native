@@ -124,7 +124,13 @@ Differences from VS Code still to close, smallest first within each area.
       Right, Close Saved, Close All, Copy (Relative) Path, Reveal in File
       Explorer; each is in the palette too.
 - [ ] The tab menu lacks Reveal in Explorer View, Keep Open/Pin, Split and
-      Share; the explorer's files have no right-click menu at all.
+      Share.
+- [x] The explorer's files and folders have a right-click menu: Open,
+      Reveal in File Explorer, Open in Integrated Terminal (a new shell in
+      that folder), Copy Path, Copy Relative Path.
+- [ ] The explorer menu lacks New File/Folder, Open to the Side, Find in
+      Folder, Cut/Copy/Paste, Rename and Delete; the right-clicked row gets
+      no outline as VS Code's does.
 - [ ] A gpui tooltip stays on screen when its button moves away under a
       still mouse (e.g. after Restore Panel Size) until the mouse moves.
 - [x] Activity bar tooltips show under the mouse; VS Code puts them to the

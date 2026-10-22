@@ -965,24 +965,24 @@ impl Workbench {
 
     /// Copy Path / Copy Relative Path (to the folder, else the full path).
     fn copy_path(&mut self, ix: usize, relative: bool, cx: &mut Context<Self>) {
-        let Some(doc) = self.docs.get(ix) else { return };
+        if let Some(doc) = self.docs.get(ix) {
+            self.copy_file_path(&doc.path.clone(), relative, cx);
+        }
+    }
+
+    fn copy_file_path(&self, path: &Path, relative: bool, cx: &mut Context<Self>) {
         let path = (self.root.as_ref())
             .filter(|_| relative)
-            .and_then(|r| doc.path.strip_prefix(r).ok())
-            .unwrap_or(&doc.path);
+            .and_then(|r| path.strip_prefix(r).ok())
+            .unwrap_or(path);
         cx.write_to_clipboard(ClipboardItem::new_string(path.display().to_string()));
     }
 
     /// Reveal in File Explorer: opens the file's folder with it selected.
     fn reveal_in_os(&mut self, ix: usize) {
-        let Some(doc) = self.docs.get(ix).filter(|d| !d.untitled) else {
-            return;
-        };
-        let select = format!("/select,{}", doc.path.display());
-        std::process::Command::new("explorer.exe")
-            .arg(select)
-            .spawn()
-            .ok();
+        if let Some(doc) = self.docs.get(ix).filter(|d| !d.untitled) {
+            reveal_path(&doc.path);
+        }
     }
 
     /// Closes every editor `gone` picks, keeping the active one if it stays.
@@ -1788,6 +1788,7 @@ impl Workbench {
         let open = is_dir && self.expanded.contains(path);
         let active = self.docs.get(self.active).is_some_and(|d| &d.path == path);
         let click_path = path.clone();
+        let (wb, menu_path) = (cx.weak_entity(), path.clone());
         h_flex()
             .id(ElementId::Name(path.to_string_lossy().to_string().into()))
             .h(px(22.))
@@ -1821,6 +1822,7 @@ impl Workbench {
                     this.open_path(click_path.clone(), window, cx);
                 }
             }))
+            .context_menu(move |menu, _, _| explorer_menu(menu, &wb, &menu_path, is_dir))
             .into_any_element()
     }
 
@@ -2590,6 +2592,68 @@ fn activity_hover(text: &'static str) -> impl IntoElement {
             .w(px(7.))
             .h(px(12.)),
         )
+}
+
+fn reveal_path(path: &Path) {
+    let select = format!("/select,{}", path.display());
+    std::process::Command::new("explorer.exe")
+        .arg(select)
+        .spawn()
+        .ok();
+}
+
+/// An explorer row's right-click menu, as VS Code's for a file or folder.
+// ponytail: no Open to the Side, Find in Folder, Cut/Copy/Paste, Rename or
+// Delete yet (no split editors, file operations or inline rename).
+fn explorer_menu(
+    menu: PopupMenu,
+    wb: &WeakEntity<Workbench>,
+    path: &Path,
+    is_dir: bool,
+) -> PopupMenu {
+    type Act = fn(&mut Workbench, &Path, &mut Window, &mut Context<Workbench>);
+    let item = |label: &'static str, action: Option<Box<dyn Action>>, act: Act| {
+        let (wb, path) = (wb.clone(), path.to_path_buf());
+        PopupMenuItem::element(chord_row(label, action)).on_click(move |_, window, cx| {
+            wb.update(cx, |this, cx| act(this, &path, window, cx)).ok();
+        })
+    };
+    let menu = match is_dir {
+        true => menu,
+        false => menu
+            .item(item("Open", None, |this, path, w, cx| {
+                this.open_path(path.to_path_buf(), w, cx)
+            }))
+            .separator(),
+    };
+    menu.item(item(
+        "Reveal in File Explorer",
+        Some(Box::new(RevealInFileExplorer)),
+        |_, path, _, _| reveal_path(path),
+    ))
+    .item(item(
+        "Open in Integrated Terminal",
+        None,
+        move |this, path, w, cx| {
+            let dir = if path.is_dir() {
+                path
+            } else {
+                path.parent().unwrap_or(path)
+            };
+            this.open_terminal_at(dir.to_path_buf(), w, cx)
+        },
+    ))
+    .separator()
+    .item(item(
+        "Copy Path",
+        Some(Box::new(CopyPath)),
+        |this, path, _, cx| this.copy_file_path(path, false, cx),
+    ))
+    .item(item(
+        "Copy Relative Path",
+        Some(Box::new(CopyRelativePath)),
+        |this, path, _, cx| this.copy_file_path(path, true, cx),
+    ))
 }
 
 impl Render for Workbench {

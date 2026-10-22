@@ -665,6 +665,7 @@ impl Workbench {
     fn spawn_terminal(
         &mut self,
         profile: Profile,
+        cwd: Option<PathBuf>,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Result<Terminal, String> {
@@ -682,8 +683,8 @@ impl Workbench {
         for (k, v) in &profile.env {
             cmd.env(k, v);
         }
-        if let Some(root) = &self.root {
-            cmd.cwd(root);
+        if let Some(dir) = cwd.as_ref().or(self.root.as_ref()) {
+            cmd.cwd(dir);
         }
         let mut child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
         drop(pair.slave);
@@ -1134,6 +1135,7 @@ impl Workbench {
         &mut self,
         split: bool,
         profile: Option<Profile>,
+        cwd: Option<PathBuf>,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> bool {
@@ -1141,7 +1143,7 @@ impl Workbench {
         let profile = profile
             .or_else(|| active.filter(|_| split).map(|t| t.profile.clone()))
             .unwrap_or_else(|| profiles().remove(0));
-        let mut t = match self.spawn_terminal(profile, window, cx) {
+        let mut t = match self.spawn_terminal(profile, cwd, window, cx) {
             Ok(t) => t,
             Err(err) => {
                 self.terminals.error = Some(err);
@@ -1173,7 +1175,7 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.add_terminal(split, None, window, cx);
+        self.add_terminal(split, None, None, window, cx);
         self.focus_terminal(window, cx);
     }
 
@@ -1184,7 +1186,18 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.add_terminal(false, Some(profile), window, cx);
+        self.add_terminal(false, Some(profile), None, window, cx);
+        self.focus_terminal(window, cx);
+    }
+
+    /// The explorer's Open in Integrated Terminal: a new shell in `dir`.
+    pub(super) fn open_terminal_at(
+        &mut self,
+        dir: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.add_terminal(false, None, Some(dir), window, cx);
         self.focus_terminal(window, cx);
     }
 
@@ -1194,7 +1207,7 @@ impl Workbench {
         self.panel = true;
         self.panel_tab = TERMINAL;
         if self.terminals.list.is_empty() {
-            self.add_terminal(false, None, window, cx);
+            self.add_terminal(false, None, None, window, cx);
         }
         if let Some(t) = self.terminals.list.get(self.terminals.active) {
             window.focus(&t.focus, cx);
@@ -1811,7 +1824,7 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if self.terminals.list.is_empty() && self.terminals.error.is_none() {
-            self.add_terminal(false, None, window, cx);
+            self.add_terminal(false, None, None, window, cx);
         }
         if self.terminals.list.is_empty() {
             let err = self.terminals.error.clone().unwrap_or_default();
