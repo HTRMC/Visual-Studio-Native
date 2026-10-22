@@ -1021,6 +1021,7 @@ async function activate(id) {
   e.active = true;
   try {
     const main = require(path.resolve(e.dir, e.manifest.main));
+    e.deactivate = () => Promise.all([main.deactivate?.(), ...context.subscriptions.map((d) => d?.dispose?.())]);
     e.exports = main.activate ? await main.activate(context) : undefined;
     send({ m: 'activated', id });
   } catch (err) {
@@ -1101,4 +1102,9 @@ rl.on('line', (line) => {
     }
   });
 });
-rl.on('close', () => process.exit(0));
+// On shutdown or restart, as VS Code: each extension's deactivate() and
+// subscriptions, given up to 5s together.
+rl.on('close', () => {
+  const all = [...extensions.values()].map((e) => e.deactivate && Promise.resolve().then(e.deactivate).catch(() => {}));
+  Promise.race([Promise.all(all), new Promise((r) => setTimeout(r, 5000))]).then(() => process.exit(0));
+});

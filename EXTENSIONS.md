@@ -234,18 +234,26 @@ the phase 3 test extension (Windows 11, Node 24.14, Bun 1.3.13):
 | Spawn to first output | ~21–25 ms | ~620–650 ms |
 | Idle working set | 53 MB | 132 MB |
 | Phase 3 extension | works | works |
+| vsn launch to first `activate()` (debug build) | ~500 ms | ~520 ms |
+| Idle host with a test extension | 58 MB | 107 MB |
+| Runtime exe added to the installer | 91 MB | 118 MB |
+| `child_process` with stdio pipes | works | works |
+| `net` named pipe and TCP, server and client | works | works |
+| `worker_threads` (`eval` worker) | works | works |
+| `fs.watch` on a file | works | works |
+| `deactivate()` and `context.subscriptions` on close | works | works |
+| `process.on('exit')` when vsn closes | works | **doesn't run** |
 
 So Node is preferred; `VSN_JS_RUNTIME` picks another runtime. Bun quirks
 met on the way: it ignores `Module._load` hooks, and when the main module's
 exports have `fetch` it starts `Bun.serve` on its own, so the `vscode` shim
-can't be a Proxy exported from the main module. Still to run on both:
+can't be a Proxy exported from the main module, and after vsn exits its
+`process.exit` skips `'exit'` listeners (`deactivate()` still runs, so that's
+the cleanup to use). Still to run on both, as they need third-party
+downloads:
 
-- `child_process` spawning with stdio pipes (language servers)
-- `net` sockets and named pipes (some LSP/DAP transports)
-- `worker_threads`, `fs.watch`, `process.on('exit')` cleanup
 - N-API `.node` addons (some extensions ship them)
 - Activating the 20 most-downloaded JS extensions on Open VSX
-- Startup to first activation, idle memory, installer size added
 
 ## Dependencies
 

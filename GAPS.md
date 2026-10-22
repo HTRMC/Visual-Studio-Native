@@ -507,6 +507,8 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [x] `executeCommand` runs ~35 of VS Code's built-in commands (`vscode.open`, saves, views, panels, formatting, ...) as vsn's actions.
 - [x] `executeCommand` runs ~170 of VS Code's built-in commands (every one vsn has an action for: files, editors, views, panels, terminal, debugging, the editor's cursor, clipboard and line commands), `type`, `vscode.openFolder`, and `getCommands` lists them; `registerTextEditorCommand` runs with the active editor.
 - [ ] Built-ins that return results (`vscode.executeHoverProvider` and friends) and ones without a vsn action log "not found"; built-ins ignore their arguments; `type` leaves the cursor before the text it inserts.
+- [x] Extensions' `deactivate()` and `context.subscriptions` run when vsn closes or restarts the host (install, uninstall, enable, disable), up to 5s, under Node and Bun.
+- [ ] Under Bun, `process.on('exit')` listeners don't run when vsn closes.
 - [x] `window.activeTextEditor` with its document, selection, `edit()` and `insertSnippet()`; `workspace.applyEdit`.
 - [ ] The active editor is sent on a tab switch and before a command: selection changes in between aren't (`onDidChangeTextEditorSelection` never fires), closing a tab doesn't send the next one, `setDecorations` draws nothing, and only one editor is visible.
 - [ ] `secrets` is a stub that stores nothing; `setKeysForSync` does nothing (no settings sync).
