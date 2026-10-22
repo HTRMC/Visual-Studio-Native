@@ -122,19 +122,31 @@ impl Terminal {
     }
 
     /// The word under the mouse or, with `line`, its whole wrapped line.
-    fn unit_at(&mut self, position: Point<Pixels>, line: bool) -> Span {
+    fn unit_at(&mut self, position: Point<Pixels>, whole: bool) -> Span {
         let (row, col) = self.cell(position, false);
-        let top = self.top();
+        let line = self.top() + row as usize;
         let screen = self.parser.screen_mut();
-        if line {
-            let (l0, l1) = wrapped_lines(screen, top + row as usize);
-            return ((l0, 0), (l1, screen.size().1.get()));
+        let cols = screen.size().1.get();
+        if whole {
+            let (l0, l1) = wrapped_lines(screen, line);
+            return ((l0, 0), (l1, cols));
         }
-        let (a, b) = word_span(&row_chars(screen, row), col as usize);
-        (
-            (top + row as usize, a as u16),
-            (top + row as usize, b as u16),
-        )
+        let cols = cols as usize;
+        let (l0, chars) = self.wrapped_chars(line);
+        let (a, b) = word_span(&chars, (line - l0) * cols + col as usize);
+        let at = |i: usize| (l0 + i / cols, (i % cols) as u16);
+        (at(a), at(b))
+    }
+
+    /// The first line of the wrapped line through `line`, and all its chars.
+    fn wrapped_chars(&mut self, line: usize) -> (usize, Vec<char>) {
+        let screen = self.parser.screen_mut();
+        let (l0, l1) = wrapped_lines(screen, line);
+        let mut chars = Vec::new();
+        for l in l0..=l1 {
+            chars.extend(at_line(screen, l, row_chars));
+        }
+        (l0, chars)
     }
 
     /// The selection with its end dragged to the mouse.
@@ -168,13 +180,8 @@ impl Terminal {
     fn link(&mut self, position: Point<Pixels>, root: Option<&Path>) -> Option<(Hover, Link)> {
         let (row, col) = self.cell(position, false);
         let at = self.top() + row as usize;
-        let screen = self.parser.screen_mut();
-        let (l0, l1) = wrapped_lines(screen, at);
-        let mut line = Vec::new();
-        for l in l0..=l1 {
-            line.extend(at_line(screen, l, row_chars));
-        }
-        let cols = screen.size().1.get() as usize;
+        let (l0, line) = self.wrapped_chars(at);
+        let cols = self.parser.screen().size().1.get() as usize;
         let (a, b) = word_at(&line, (at - l0) * cols + col as usize)?;
         let root = self.parser.callbacks().cwd.as_deref().or(root);
         let link = link(&line[a..b].iter().collect::<String>(), root)?;

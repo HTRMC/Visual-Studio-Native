@@ -19,7 +19,7 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Links wrapped onto the next row are cut at the row end.
 - [x] A wrapped link or triple-clicked line half scrolled off the top or
       bottom is cut at the screen edge.
-- [ ] Double-clicking a word wrapped onto the next row selects only one
+- [x] Double-clicking a word wrapped onto the next row selects only one
       row's part.
 - [ ] Wheel scrollback is lost when a shell sets application cursor mode
       (needs OpenConsole's conpty.dll).
