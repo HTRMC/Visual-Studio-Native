@@ -58,6 +58,8 @@ actions!(
         ToggleMaximizedPanel,
         ToggleTerminal,
         ShowExplorer,
+        RefreshExplorer,
+        CollapseExplorerFolders,
         ShowSearch,
         ReplaceInFiles,
         ReplaceAll,
@@ -1569,7 +1571,7 @@ impl Workbench {
             View::Explorer => self.render_explorer(cx).into_any_element(),
             View::Search => self.render_search(cx).into_any_element(),
             View::Scm => v_flex()
-                .child(section_header("scm-repos", "Changes", true, None))
+                .child(section_header("scm-repos", "Changes", true))
                 .child(
                     v_flex()
                         .px(px(12.))
@@ -1587,13 +1589,8 @@ impl Workbench {
                         .pb(px(8.))
                         .child(search_box(&self.ext_search)),
                 )
-                .child(section_header("ext-installed", "Installed", false, None))
-                .child(section_header(
-                    "ext-recommended",
-                    "Recommended",
-                    false,
-                    None,
-                ))
+                .child(section_header("ext-installed", "Installed", false))
+                .child(section_header("ext-recommended", "Recommended", false))
                 .into_any_element(),
         };
 
@@ -1615,19 +1612,50 @@ impl Workbench {
             }
             self.tree_rows(&root, 0, &mut rows);
         }
-        let root_actions = [
-            icon::NEW_FILE,
-            icon::NEW_FOLDER,
-            icon::REFRESH,
-            icon::COLLAPSE_ALL,
-        ];
+        let button = |id: &'static str, ch: char, text: &'static str| {
+            (action_button(id, ch).font_weight(FontWeight::NORMAL)).tooltip(tip(text))
+        };
+        // ponytail: New File/Folder are inert until the explorer has inline
+        // rename for the new row.
+        let root_actions = h_flex()
+            .gap(px(2.))
+            .invisible()
+            .group_hover("explorer-root-hdr", |s| s.visible())
+            .child(button("explorer-new-file", icon::NEW_FILE, "New File..."))
+            .child(button(
+                "explorer-new-folder",
+                icon::NEW_FOLDER,
+                "New Folder...",
+            ))
+            .child(
+                button("explorer-refresh", icon::REFRESH, "Refresh Explorer").on_click(
+                    cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.dirs.clear();
+                        cx.notify()
+                    }),
+                ),
+            )
+            .child(
+                button(
+                    "explorer-collapse",
+                    icon::COLLAPSE_ALL,
+                    "Collapse Folders in Explorer",
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.expanded.clear();
+                    cx.notify()
+                })),
+            );
 
         v_flex()
             .size_full()
             .map(|d| match self.root_name() {
                 Some(name) => d
                     .child(
-                        section_header("explorer-root", &name, self.root_open, Some(&root_actions))
+                        section_header("explorer-root", &name, self.root_open)
+                            .child(root_actions)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.root_open = !this.root_open;
                                 cx.notify();
@@ -1647,7 +1675,7 @@ impl Workbench {
                         .min_h_0(),
                     ),
                 None => d
-                    .child(section_header("no-folder", "No Folder Opened", true, None))
+                    .child(section_header("no-folder", "No Folder Opened", true))
                     .child(
                         v_flex()
                             .flex_1()
@@ -1665,13 +1693,13 @@ impl Workbench {
                 div()
                     .border_t_1()
                     .border_color(col::border())
-                    .child(section_header("outline", "Outline", false, None)),
+                    .child(section_header("outline", "Outline", false)),
             )
             .child(
                 div()
                     .border_t_1()
                     .border_color(col::border())
-                    .child(section_header("timeline", "Timeline", false, None)),
+                    .child(section_header("timeline", "Timeline", false)),
             )
     }
 
@@ -2735,6 +2763,14 @@ impl Render for Workbench {
             )
             .on_action(cx.listener(Self::toggle_terminal))
             .on_action(cx.listener(|this, _: &ShowExplorer, _, cx| this.show(View::Explorer, cx)))
+            .on_action(cx.listener(|this, _: &RefreshExplorer, _, cx| {
+                this.dirs.clear();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &CollapseExplorerFolders, _, cx| {
+                this.expanded.clear();
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &ShowSearch, window, cx| {
                 this.sidebar = true;
                 this.view = View::Search;
@@ -2968,16 +3004,10 @@ fn editor_language(id: &str) -> String {
 }
 
 /// 22px collapsible pane header (bold, uppercase, 11px) with optional hover actions.
-fn section_header(
-    id: &'static str,
-    label: &str,
-    open: bool,
-    actions: Option<&[char]>,
-) -> Stateful<Div> {
-    let group = SharedString::from(format!("{id}-hdr"));
+fn section_header(id: &'static str, label: &str, open: bool) -> Stateful<Div> {
     h_flex()
         .id(id)
-        .group(group.clone())
+        .group(SharedString::from(format!("{id}-hdr")))
         .h(px(22.))
         .flex_none()
         .pl(px(2.))
@@ -3006,17 +3036,6 @@ fn section_header(
                         .child(label.to_uppercase()),
                 ),
         )
-        .when_some(actions, |d, actions| {
-            d.child(
-                h_flex()
-                    .gap(px(2.))
-                    .invisible()
-                    .group_hover(group, |s| s.visible())
-                    .children(actions.iter().enumerate().map(|(i, &ch)| {
-                        action_button((id, i), ch).font_weight(FontWeight::NORMAL)
-                    })),
-            )
-        })
 }
 
 fn search_box(state: &Entity<InputState>) -> impl IntoElement + use<> {

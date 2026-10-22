@@ -128,6 +128,11 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] The explorer's files and folders have a right-click menu: Open,
       Reveal in File Explorer, Open in Integrated Terminal (a new shell in
       that folder), Copy Path, Copy Relative Path.
+- [x] The explorer header's Refresh and Collapse Folders buttons were inert
+      and tipless (now also File: Refresh Explorer and View: Collapse
+      Folders in Explorer in the palette).
+- [ ] The explorer header's New File... and New Folder... are still inert
+      (need an inline name box in the tree).
 - [ ] The explorer menu lacks New File/Folder, Open to the Side, Find in
       Folder, Cut/Copy/Paste, Rename and Delete; the right-clicked row gets
       no outline as VS Code's does.

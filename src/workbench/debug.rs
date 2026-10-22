@@ -1229,7 +1229,7 @@ impl Workbench {
             return self.render_run_welcome(cx);
         }
         let mut rows: Vec<AnyElement> =
-            vec![section_header("dbg-vars", "Variables", true, None).into_any_element()];
+            vec![section_header("dbg-vars", "Variables", true).into_any_element()];
         if let Some(stop) = self.debug.stop() {
             self.variable_rows(stop, &stop.scopes, 0, &mut rows, cx);
         }
@@ -1237,7 +1237,7 @@ impl Workbench {
         let header_button =
             |id: &'static str, ch: char| action_button(id, ch).font_weight(FontWeight::NORMAL);
         rows.push(
-            section_header("dbg-watch", "Watch", true, None)
+            section_header("dbg-watch", "Watch", true)
                 .child(
                     h_flex()
                         .gap(px(2.))
@@ -1285,7 +1285,7 @@ impl Workbench {
             None => "Running".into(),
         });
         rows.push(
-            section_header("dbg-stack", "Call Stack", true, None)
+            section_header("dbg-stack", "Call Stack", true)
                 .when_some(state, |d, state| {
                     d.child(
                         div()
@@ -1352,7 +1352,7 @@ impl Workbench {
             );
         }
 
-        rows.push(section_header("dbg-bps", "Breakpoints", true, None).into_any_element());
+        rows.push(section_header("dbg-bps", "Breakpoints", true).into_any_element());
         let root = self.root.clone();
         for (path, bps) in &self.debug.breakpoints {
             let name = path
