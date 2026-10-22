@@ -474,7 +474,8 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [ ] A trapped WASM plugin stays unloaded until the extensions restart, and a stuck call blocks the other plugins' calls until its fuel runs out; a quick pick waits for its answer the same way.
 - [x] The WIT API had no providers or document edits; WIT 0.3 has `lsp` and `apply-edit`.
 - [ ] Only the first WASM plugin for a language answers its requests; VS Code merges every provider's.
-- [ ] The WIT API has no file or network access granted on request.
+- [x] The WIT API had no file or network access; `vsn.permissions` asks the user for it.
+- [ ] A WASM plugin's permission answers last until vsn closes, and there's no list of them to revoke.
 - [ ] Icon themes, brackets and indent rules from extensions.
 - [x] JS extensions run in a Node (or Bun) host: commands in the palette and keys, messages, status bar items, configuration defaults, activation events, restart on crash.
 - [x] Extension keybindings took effect only after a restart; they're rebound on install, uninstall and enable.

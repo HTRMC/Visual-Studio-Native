@@ -3,14 +3,15 @@
   "displayName": "Hello WASM",
   "description": "A sample native plugin for vsn, in Rust compiled to WebAssembly.",
   "publisher": "vsn",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "activationEvents": ["onStartupFinished"],
-  "vsn": { "wasm": "hello_wasm.wasm", "languages": ["plaintext"] },
+  "vsn": { "wasm": "hello_wasm.wasm", "languages": ["plaintext"], "permissions": ["files"] },
   "contributes": {
     "commands": [
       { "command": "helloWasm.sayHello", "title": "Say Hello", "category": "Hello WASM" },
       { "command": "helloWasm.info", "title": "Show Editor Info", "category": "Hello WASM" },
       { "command": "helloWasm.insert", "title": "Insert Hello", "category": "Hello WASM" },
+      { "command": "helloWasm.read", "title": "Read the Active File", "category": "Hello WASM" },
       { "command": "helloWasm.loop", "title": "Loop Forever", "category": "Hello WASM" }
     ],
     "configuration": {

@@ -680,19 +680,16 @@ impl Workbench {
                     let defaults = (installed().iter().find(|e| e.id == id))
                         .map_or_else(Default::default, config_defaults);
                     let world = self.wasm_world(cx);
-                    let languages: Vec<String> = (installed().iter().find(|e| e.id == id))
-                        .and_then(|e| e.manifest["vsn"]["languages"].as_array().cloned())
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|l| Some(l.as_str()?.to_string()))
-                        .collect();
+                    let vsn = (installed().iter().find(|e| e.id == id))
+                        .map_or(Value::Null, |e| e.manifest["vsn"].clone());
+                    let languages = wasmhost::strings(&vsn["languages"]);
                     if let Some(host) = self.ext.wasm.clone() {
                         host.send(wasmhost::Req::Activate {
                             id: id.clone(),
                             wasm,
                             defaults: defaults.into(),
                             world,
-                            languages: languages.clone(),
+                            vsn,
                         });
                         let forward = move |body: &str| {
                             host.send(wasmhost::Req::Lsp(

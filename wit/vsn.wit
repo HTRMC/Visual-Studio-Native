@@ -1,8 +1,9 @@
 /// vsn's native plugin API: what a WebAssembly plugin can call in the
 /// editor, and what the editor calls in the plugin. Each plugin runs in its
-/// own store with a fuel and memory budget and no file, clock or network
-/// access.
-package vsn:plugin@0.3.0;
+/// own store with a fuel and memory budget, and no file or network access
+/// but what its package.json's `vsn.permissions` asks for and the user
+/// allows.
+package vsn:plugin@0.4.0;
 
 interface editor {
     enum severity { info, warning, error }
@@ -39,6 +40,15 @@ interface editor {
     lsp-notify: func(method: string, params: string);
     /// Applies an LSP `WorkspaceEdit`, as JSON.
     apply-edit: func(edit: string);
+
+    /// A file's text. Needs "files" in `vsn.permissions`; the user is asked
+    /// the first time, once per session.
+    read-file: func(path: string) -> result<string, string>;
+    /// Writes a file. Needs "files", as `read-file`.
+    write-file: func(path: string, text: string) -> result<_, string>;
+    /// A GET request's body as text. Needs "network" in `vsn.permissions`,
+    /// and the user's consent as for files.
+    fetch: func(url: string) -> result<string, string>;
 }
 
 world plugin {

@@ -39,6 +39,16 @@ impl Guest for Hello {
                 let picked = editor::show_quick_pick("Pick one", &items);
                 editor::log(&format!("picked {}", picked.map_or(-1, i64::from)));
             }
+            // The active document's file, as package.json's permissions allow.
+            "helloWasm.read" => {
+                let path = editor::active_document()
+                    .map(|d| d.path)
+                    .unwrap_or_default();
+                match editor::read_file(&path) {
+                    Ok(text) => editor::log(&format!("read {} bytes", text.len())),
+                    Err(err) => editor::log(&format!("error: {err}")),
+                }
+            }
             // An edit at the start of the active document.
             "helloWasm.insert" => {
                 if let Some(doc) = editor::active_document() {

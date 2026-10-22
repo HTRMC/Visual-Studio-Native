@@ -38,8 +38,9 @@ pub(super) enum Req {
         /// Its package.json's configuration defaults, by key.
         defaults: Value,
         world: World,
-        /// The languages it serves, from its package.json's `vsn.languages`.
-        languages: Vec<String>,
+        /// Its package.json's `vsn`: the languages it serves and the
+        /// permissions it asks for.
+        vsn: Value,
     },
     Run {
         id: String,
@@ -93,6 +94,9 @@ struct State {
     defaults: Value,
     world: World,
     answers: Arc<Mutex<mpsc::Receiver<(u64, Value)>>>,
+    /// package.json's `vsn.permissions`, and the user's answers so far.
+    permissions: Vec<String>,
+    granted: HashMap<String, bool>,
 }
 
 impl State {
@@ -115,6 +119,35 @@ impl State {
             }
         }
         Value::Null
+    }
+
+    /// Whether the plugin may use `permission`: it asks for it in
+    /// package.json, and the user allows it, asked the first time.
+    // ponytail: the answer lasts until vsn closes; remember it in settings
+    // if asking every session gets old.
+    fn allowed(&mut self, permission: &str, what: &str) -> Result<(), String> {
+        if !self.permissions.iter().any(|p| p == permission) {
+            return Err(format!(
+                "\"{permission}\" isn't in package.json's vsn.permissions"
+            ));
+        }
+        let granted = match self.granted.get(permission) {
+            Some(&granted) => granted,
+            None => {
+                let placeholder = format!("Allow extension '{}' to {what}?", self.id);
+                let rows = [["Allow", ""], ["Deny", ""]];
+                let msg = json!({ "m": "quickPick", "placeholder": placeholder, "rows": rows });
+                let answer = self.ask(msg);
+                // Dismissed asks again next time.
+                if !answer.is_null() {
+                    self.granted.insert(permission.to_string(), answer == 0);
+                }
+                answer == 0
+            }
+        };
+        granted
+            .then_some(())
+            .ok_or_else(|| format!("the user denied \"{permission}\""))
     }
 }
 
@@ -178,6 +211,29 @@ impl editor::Host for State {
         let edit: Value = serde_json::from_str(&edit).unwrap_or_default();
         self.send(json!({ "m": "applyEdit", "edit": edit }));
     }
+
+    // ponytail: file and network calls block the host thread (fuel doesn't
+    // run during them); fetch gives up after 30 seconds.
+    fn read_file(&mut self, path: String) -> Result<String, String> {
+        self.allowed("files", "read and write files")?;
+        std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))
+    }
+
+    fn write_file(&mut self, path: String, text: String) -> Result<(), String> {
+        self.allowed("files", "read and write files")?;
+        std::fs::write(&path, text).map_err(|e| format!("{path}: {e}"))
+    }
+
+    fn fetch(&mut self, url: String) -> Result<String, String> {
+        self.allowed("network", "access the network")?;
+        ureq::get(&url)
+            .config()
+            .timeout_global(Some(std::time::Duration::from_secs(30)))
+            .build()
+            .call()
+            .and_then(|mut r| r.body_mut().read_to_string())
+            .map_err(|e| format!("{url}: {e}"))
+    }
 }
 
 /// Starts the host thread; it ends when the returned host is dropped.
@@ -205,7 +261,7 @@ pub(super) fn start(tx: UnboundedSender<Value>) -> WasmHost {
                     wasm,
                     defaults,
                     world,
-                    languages,
+                    vsn,
                 } => {
                     if plugins.contains_key(&id) {
                         continue;
@@ -215,8 +271,9 @@ pub(super) fn start(tx: UnboundedSender<Value>) -> WasmHost {
                         Ok(mut p) => {
                             let state = p.0.data_mut();
                             (state.defaults, state.world) = (defaults, world);
+                            state.permissions = strings(&vsn["permissions"]);
                             plugins.insert(id.clone(), p);
-                            serves.push((id.clone(), languages));
+                            serves.push((id.clone(), strings(&vsn["languages"])));
                             call(&mut plugins, &id, &tx, |p, s| p.call_activate(s));
                         }
                         Err(err) => error(&tx, format!("Extension '{id}' failed: {err:#}")),
@@ -303,6 +360,13 @@ fn call<T>(
     }
 }
 
+/// A JSON array's strings.
+pub(super) fn strings(list: &Value) -> Vec<String> {
+    (list.as_array().into_iter().flatten())
+        .filter_map(|s| Some(s.as_str()?.to_string()))
+        .collect()
+}
+
 fn error(tx: &UnboundedSender<Value>, text: String) {
     tx.unbounded_send(json!({ "m": "error", "text": text }))
         .ok();
@@ -334,6 +398,8 @@ fn load(
         defaults: Value::Null,
         world: World::default(),
         answers,
+        permissions: Vec::new(),
+        granted: HashMap::new(),
     };
     let mut store = Store::new(engine, state);
     store.limiter(|s| &mut s.limits);
@@ -378,7 +444,7 @@ mod tests {
             wasm,
             defaults: json!({ "hello.greeting": "Hello", "hello.count": 3 }),
             world: World::default(),
-            languages: Vec::new(),
+            vsn: Value::Null,
         });
         host.send(run("helloWasm.sayHello"));
         host.send(run("helloWasm.info"));
@@ -430,7 +496,7 @@ mod tests {
             wasm,
             defaults: Value::Null,
             world: World::default(),
-            languages: vec!["plaintext".into()],
+            vsn: json!({ "languages": ["plaintext"] }),
         });
         let open = |uri: &str, lang: &str| {
             Req::Lsp(
@@ -467,6 +533,70 @@ mod tests {
         assert_eq!(
             msgs[2],
             json!({ "jsonrpc": "2.0", "id": 2, "result": null })
+        );
+    }
+
+    /// examples/hello-wasm, when built, reading the active document's file:
+    /// without the permission, then with it once the user allows it, which
+    /// isn't asked again.
+    #[test]
+    fn hello_wasm_files() {
+        let wasm = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("examples/hello-wasm/target/wasm32-unknown-unknown/release/hello_wasm.wasm");
+        if !wasm.exists() {
+            return eprintln!("skipped: build examples/hello-wasm first");
+        }
+        let file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let len = std::fs::read_to_string(&file).unwrap().len();
+        let (tx, rx) = futures::channel::mpsc::unbounded();
+        let host = start(tx);
+        let activate = |id: &str, vsn| Req::Activate {
+            id: id.into(),
+            wasm: wasm.clone(),
+            defaults: Value::Null,
+            world: World::default(),
+            vsn,
+        };
+        let read = |id: &str| Req::Run {
+            id: id.into(),
+            command: "helloWasm.read".into(),
+            args: json!([]),
+            world: World {
+                settings: Value::Null,
+                editor: json!({ "uri": "", "path": file, "languageId": "toml", "text": "" }),
+            },
+        };
+        host.send(activate("a", Value::Null));
+        host.send(activate("b", json!({ "permissions": ["files"] })));
+        host.send(read("a"));
+        host.send(read("b"));
+        let mut rx = futures::executor::block_on_stream(rx);
+        let mut texts = Vec::new();
+        let mut asked = 0;
+        for msg in rx.by_ref() {
+            if msg["m"] == "quickPick" {
+                asked += 1;
+                assert_eq!(
+                    msg["placeholder"],
+                    "Allow extension 'b' to read and write files?"
+                );
+                host.answer(msg["id"].as_u64().unwrap(), json!(0));
+                host.send(read("b"));
+                drop(host);
+                break;
+            }
+            texts.push(msg["text"].as_str().unwrap().to_string());
+        }
+        texts.extend(rx.map(|m| m["text"].as_str().unwrap().to_string()));
+        assert_eq!(asked, 1);
+        let read = format!("read {len} bytes");
+        assert_eq!(
+            texts[4..],
+            [
+                r#"error: "files" isn't in package.json's vsn.permissions"#.to_string(),
+                read.clone(),
+                read
+            ]
         );
     }
 }

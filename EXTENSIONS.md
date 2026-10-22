@@ -194,16 +194,17 @@ there.
    notifications and workspace edits; `activate`, `run-command` with its
    JSON arguments, and `lsp` exported) and `src/workbench/wasmhost.rs`,
    one thread running every plugin, each in its own store with ~1s of fuel
-   per call and 64 MB of memory, and no WASI, so no file, clock or network
-   access. A core module from `wasm32-unknown-unknown` is turned into a
+   per call and 64 MB of memory, and no WASI. Files (`read-file`,
+   `write-file`) and the network (`fetch`) need `"files"` or `"network"` in
+   package.json's `vsn.permissions`, and the user's Allow, asked once per
+   session. A core module from `wasm32-unknown-unknown` is turned into a
    component at load (`wit-component`), so a plugin needs no extra tools.
    Its messages take the JS host's path into the workbench; a trap unloads
    the plugin. A plugin serves the languages in its package.json's
    `vsn.languages` as a language server: the editor's requests and document
    notifications come to `lsp` as JSON, and the first plugin for the
    language answers. `examples/hello-wasm` is a sample (wit-bindgen), with
-   hovers, completions and a hint for plain text. *Left:* permissions to
-   grant file or network access.
+   hovers, completions and a hint for plain text. Done.
 
 ## Bun or Node
 
