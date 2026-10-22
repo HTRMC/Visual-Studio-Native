@@ -752,16 +752,14 @@ fn parse_int(s: &str) -> Option<i64> {
 /// VS Code's `_nextVisibleColumn`: where the grapheme after one starting with
 /// `c` shows when it shows at `v`. Tabs reach the next tab stop; CJK and emoji
 /// take two columns (VS Code's `isFullWidthCharacter`/`isEmojiImprecise`).
-fn next_visible(v: usize, c: char) -> usize {
+fn next_visible(v: usize, c: char, tab: usize) -> usize {
     let wide = matches!(c as u32,
         0x2E80..=0xD7AF | 0xF900..=0xFAFF | 0xFF01..=0xFF5E | 0xFFE0..=0xFFE6
         | 0x1F1E6..=0x1F1FF | 8986 | 8987 | 9200 | 9203 | 9728..=10175 | 11088 | 11093
         | 127744..=128591 | 128640..=128764 | 128992..=129008 | 129280..=129535
         | 129648..=129782);
     match c {
-        // ponytail: VS Code's default tab stops, not the file's detected
-        // ones; pass the doc's indent through if Col must follow them.
-        '\t' => v / TAB_SIZE * TAB_SIZE + TAB_SIZE,
+        '\t' => v / tab * tab + tab,
         _ if wide => v + 2,
         _ => v + 1,
     }
@@ -774,27 +772,33 @@ fn graphemes(line: &str) -> impl Iterator<Item = (&str, char)> {
 
 /// VS Code's `visibleColumnFromColumn`: how wide the first `chars` characters
 /// of `line` show.
-fn visible_column(line: &str, chars: usize) -> usize {
+fn visible_column(line: &str, chars: usize, tab: usize) -> usize {
     let end = line
         .char_indices()
         .nth(chars)
         .map_or(line.len(), |(i, _)| i);
-    graphemes(&line[..end]).fold(0, |v, (_, c)| next_visible(v, c))
+    graphemes(&line[..end]).fold(0, |v, (_, c)| next_visible(v, c, tab))
 }
 
 /// VS Code's `toStatusbarColumn`: the 1-based "Col" for the cursor after
 /// `chars` characters, where only tabs widen.
-pub(super) fn status_column(line: &str, chars: usize) -> usize {
-    let tab = |v: usize, c| if c == '\t' { next_visible(v, c) } else { v + 1 };
-    line.chars().take(chars).fold(0, tab) + 1
+pub(super) fn status_column(line: &str, chars: usize, tab: usize) -> usize {
+    let step = |v: usize, c| {
+        if c == '\t' {
+            next_visible(v, c, tab)
+        } else {
+            v + 1
+        }
+    };
+    line.chars().take(chars).fold(0, step) + 1
 }
 
 /// VS Code's `columnFromVisibleColumn`: the character index showing at
 /// `visible`, the nearer side when it falls inside a tab or wide character.
-fn column_from_visible(line: &str, visible: usize) -> usize {
+fn column_from_visible(line: &str, visible: usize, tab: usize) -> usize {
     let (mut before, mut col) = (0, 0);
     for (g, c) in graphemes(line) {
-        let after = next_visible(before, c);
+        let after = next_visible(before, c, tab);
         let after_col = col + g.chars().count();
         if after >= visible {
             return if after - visible < visible - before {
@@ -812,7 +816,7 @@ fn column_from_visible(line: &str, visible: usize) -> usize {
 /// from the end, clamped to the text; `::offset` goes to a character. Columns
 /// are visible ones (tabs expanded). Ok is the 0-based line and character and
 /// the row label; Err is the hint to show instead.
-fn goto_line(query: &str, text: &str) -> Result<(u32, u32, String), String> {
+fn goto_line(query: &str, text: &str, tab: usize) -> Result<(u32, u32, String), String> {
     let query = query.trim();
     if let Some(offset) = query.strip_prefix(':') {
         let max = text.chars().count() as i64;
@@ -833,7 +837,7 @@ fn goto_line(query: &str, text: &str) -> Result<(u32, u32, String), String> {
         let label = format!(
             "Press 'Enter' to go to line {} at column {}.",
             line + 1,
-            visible_column(prefix, usize::MAX) + 1
+            visible_column(prefix, usize::MAX, tab) + 1
         );
         return Ok((line, col, label));
     }
@@ -846,7 +850,7 @@ fn goto_line(query: &str, text: &str) -> Result<(u32, u32, String), String> {
     };
     let line = if line < 0 { n + 1 + line } else { line }.clamp(1, n);
     let content = lines[line as usize - 1].trim_end_matches('\r');
-    let max_col = visible_column(content, usize::MAX) as i64 + 1;
+    let max_col = visible_column(content, usize::MAX, tab) as i64 + 1;
     let (col, label) = match parts.next().map(parse_int) {
         Some(Some(col)) => {
             // Unlike lines, -1 is the last character, not past it.
@@ -867,7 +871,7 @@ fn goto_line(query: &str, text: &str) -> Result<(u32, u32, String), String> {
             format!("Press 'Enter' to go to line {line} or enter colon : to add a column number."),
         ),
     };
-    let col = column_from_visible(content, col as usize - 1);
+    let col = column_from_visible(content, col as usize - 1, tab);
     Ok((line as u32 - 1, col as u32, label))
 }
 
@@ -1943,7 +1947,7 @@ impl Workbench {
                 p.show(Vec::new(), Vec::new(), 0);
                 return;
             };
-            match goto_line(q, &doc.editor.read(cx).value()) {
+            match goto_line(q, &doc.editor.read(cx).value(), doc.indent.tab_size) {
                 Ok((line, col, label)) => p.show(vec![Pick::Line(line, col, label)], Vec::new(), 0),
                 Err(hint) => {
                     p.empty = hint.into();
@@ -2430,53 +2434,54 @@ mod tests {
         assert_eq!(split_line("a:b"), ("a:b", None));
         assert_eq!(split_line("C:\\src\\main.rs"), ("C:\\src\\main.rs", None));
         let text = "one\ntwo\nthree";
-        assert_eq!(goto_line("2", text).unwrap().0, 1);
+        assert_eq!(goto_line("2", text, 4).unwrap().0, 1);
         assert_eq!(
-            goto_line("-1:9", text).unwrap(),
+            goto_line("-1:9", text, 4).unwrap(),
             (2, 5, "Press 'Enter' to go to line 3 at column 6.".into())
         );
-        assert_eq!(goto_line(" 3:-1", text).unwrap().1, 4);
-        assert_eq!(goto_line("2abc", text).unwrap().0, 1);
+        assert_eq!(goto_line(" 3:-1", text, 4).unwrap().1, 4);
+        assert_eq!(goto_line("2abc", text, 4).unwrap().0, 1);
         assert_eq!(
-            goto_line("9,", text).unwrap().2,
+            goto_line("9,", text, 4).unwrap().2,
             "Press 'Enter' to go to line 3 or enter a column number (from 1 to 6)."
         );
         assert_eq!(
-            goto_line("", text).unwrap_err(),
+            goto_line("", text, 4).unwrap_err(),
             "Type a line number to go to (from 1 to 3)."
         );
         // `::offset`, 1-based; negative counts from the end.
         assert_eq!(
-            goto_line(":5", text).unwrap(),
+            goto_line(":5", text, 4).unwrap(),
             (1, 0, "Press 'Enter' to go to line 2 at column 1.".into())
         );
-        assert_eq!(goto_line(":-1", text).unwrap().0, 2);
-        assert_eq!(goto_line(":-1", text).unwrap().1, 5);
+        assert_eq!(goto_line(":-1", text, 4).unwrap().0, 2);
+        assert_eq!(goto_line(":-1", text, 4).unwrap().1, 5);
         assert_eq!(
-            goto_line(":", text).unwrap_err(),
+            goto_line(":", text, 4).unwrap_err(),
             "Type a character position to go to (from 1 to 13)."
         );
         // Columns are visible ones, a tab reaching the next multiple of 4.
         let tabbed = "\tab";
-        assert_eq!(goto_line("1:5", tabbed).unwrap().1, 1);
-        assert_eq!(goto_line("1:3", tabbed).unwrap().1, 0);
+        assert_eq!(goto_line("1:5", tabbed, 4).unwrap().1, 1);
+        assert_eq!(goto_line("1:3", tabbed, 4).unwrap().1, 0);
         assert_eq!(
-            goto_line("1,", tabbed).unwrap().2,
+            goto_line("1,", tabbed, 4).unwrap().2,
             "Press 'Enter' to go to line 1 or enter a column number (from 1 to 7)."
         );
         assert_eq!(
-            goto_line(":2", tabbed).unwrap(),
+            goto_line(":2", tabbed, 4).unwrap(),
             (0, 1, "Press 'Enter' to go to line 1 at column 5.".into())
         );
         // CJK and emoji graphemes take two columns; the status bar widens tabs only.
-        assert_eq!(goto_line("1:3", "日本x").unwrap().1, 1);
+        assert_eq!(goto_line("1:3", "日本x", 4).unwrap().1, 1);
         assert_eq!(
-            goto_line("1,", "日本x").unwrap().2,
+            goto_line("1,", "日本x", 4).unwrap().2,
             "Press 'Enter' to go to line 1 or enter a column number (from 1 to 6)."
         );
-        assert_eq!(goto_line("1:3", "👍🏽x").unwrap().1, 2);
-        assert_eq!(status_column(tabbed, 1), 5);
-        assert_eq!(status_column("日x", 1), 2);
+        assert_eq!(goto_line("1:3", "👍🏽x", 4).unwrap().1, 2);
+        assert_eq!(status_column(tabbed, 1, 4), 5);
+        assert_eq!(status_column(tabbed, 1, 2), 3);
+        assert_eq!(status_column("日x", 1, 4), 2);
     }
 
     #[test]

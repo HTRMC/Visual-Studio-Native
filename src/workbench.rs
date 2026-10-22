@@ -1961,7 +1961,7 @@ impl Workbench {
             let editor = doc.editor.read(cx);
             let pos = editor.cursor_position();
             let line = editor.text().slice_line(pos.line as usize).to_string();
-            let col = palette::status_column(&line, pos.character as usize);
+            let col = palette::status_column(&line, pos.character as usize, doc.indent.tab_size);
             let lang = language_label(doc.lang);
             right.extend([
                 item("sb-pos", "Go to Line/Column")
