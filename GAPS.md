@@ -218,6 +218,10 @@ Differences from VS Code still to close, smallest first within each area.
       doesn't re-highlight a shown one), so undo history is lost.
 - [ ] Change Language Mode lacks VS Code's "Auto Detect" and "Configure
       File Association" rows.
+- [x] `files.associations` (glob → language id) picks an opened file's language.
+- [ ] `files.associations` path globs match relative to the workspace root
+      (VS Code: absolute path), and file icons still follow the file name.
+- [ ] Changing `files.associations` doesn't re-language already open editors.
 - [x] Undoing back to the saved text leaves the tab dirty (VS Code clears
       the dot).
 - [ ] A file changed on disk while open isn't noticed (VS Code reloads a

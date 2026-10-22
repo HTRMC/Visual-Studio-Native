@@ -18,7 +18,7 @@ use ignore::overrides::{Override, OverrideBuilder};
 use regex::{NoExpand, Regex, RegexBuilder};
 
 use super::Workbench;
-use crate::theme::{action_button, c, ca, codicon, col, file_icon, icon, tip};
+use crate::theme::{LANGUAGES, action_button, c, ca, codicon, col, file_icon, icon, tip};
 
 /// VS Code's `search.maxResults`: collecting stops here.
 const MAX_MATCHES: usize = 20_000;
@@ -125,6 +125,28 @@ fn exclude_set(settings: &serde_json::Value, search: bool) -> Vec<String> {
             &[&FILES_EXCLUDE[..], &SEARCH_EXCLUDE].concat(),
         ),
     }
+}
+
+/// The language `files.associations` gives a file: the first glob (in key
+/// order) matching its name or, with a `/`, its path. Unknown ids are skipped.
+// ponytail: path globs are relative to the workspace root (VS Code matches
+// them on the absolute path), and the file's icon still follows its name.
+pub(super) fn associated_language(
+    settings: &serde_json::Value,
+    root: &Path,
+    path: &Path,
+) -> Option<&'static str> {
+    let map = settings["files.associations"].as_object()?;
+    map.iter().find_map(|(glob, id)| {
+        let id = *LANGUAGES.iter().find(|l| id.as_str() == Some(**l))?;
+        let mut b = OverrideBuilder::new(root);
+        b.add(glob).ok()?;
+        b.build()
+            .ok()?
+            .matched(path, false)
+            .is_whitelist()
+            .then_some(id)
+    })
 }
 
 /// `exclude_set` from the user's settings.json.
@@ -1109,8 +1131,26 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        build_regex, exclude_set, overrides, replace_text, search_text, summary, walks_to,
+        associated_language, build_regex, exclude_set, overrides, replace_text, search_text,
+        summary, walks_to,
     };
+
+    #[test]
+    fn associations_match_name_or_path() {
+        let settings = serde_json::json!({"files.associations": {
+            "*.txt": "rust", "docs/*.log": "markdown", "*.x": "nope",
+        }});
+        let root = Path::new("/w");
+        let lang = |p: &str| associated_language(&settings, root, Path::new(p));
+        assert_eq!(lang("/w/a/b.txt"), Some("rust"));
+        assert_eq!(lang("/w/docs/c.log"), Some("markdown"));
+        assert_eq!(lang("/w/other/c.log"), None);
+        assert_eq!(lang("/w/a.x"), None);
+        assert_eq!(
+            associated_language(&serde_json::json!({}), root, Path::new("/w/a.txt")),
+            None
+        );
+    }
 
     #[test]
     fn exclude_settings_overlay_defaults() {

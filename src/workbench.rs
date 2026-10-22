@@ -628,10 +628,11 @@ impl Workbench {
             text.contains("\r\n")
         };
         let indent = detect_indent(&text);
-        let editor = self.new_editor(&path, language_id(&path), text, indent, window, cx);
+        let lang = self.file_language(&path);
+        let editor = self.new_editor(&path, lang, text, indent, window, cx);
         self.docs.push(Doc {
             indent,
-            lang: language_id(&path),
+            lang,
             path,
             saved: text_hash(&editor, cx),
             editor,
@@ -1159,10 +1160,11 @@ impl Workbench {
                     return;
                 }
                 let indent = this.docs[ix].indent;
-                let editor = this.new_editor(&path, language_id(&path), text, indent, window, cx);
+                let lang = this.file_language(&path);
+                let editor = this.new_editor(&path, lang, text, indent, window, cx);
                 let doc = &mut this.docs[ix];
                 doc.saved = text_hash(&editor, cx);
-                doc.lang = language_id(&path);
+                doc.lang = lang;
                 doc.editor = editor;
                 doc.path = path;
                 doc.untitled = false;
@@ -3145,6 +3147,13 @@ impl Workbench {
 }
 
 impl Workbench {
+    /// A file's language: its `files.associations` setting, else its name's.
+    fn file_language(&self, path: &Path) -> &'static str {
+        let root = self.root.as_deref().or(path.parent()).unwrap_or(path);
+        search::associated_language(&terminal::settings(), root, path)
+            .unwrap_or_else(|| language_id(path))
+    }
+
     /// A warning notification: listed in the bell's center, and shown as a
     /// toast (unless the center is open) until VS Code's 18 seconds pass, or
     /// later while the mouse is over it. A repeat replaces the old one.
