@@ -716,7 +716,20 @@ fn set_property(text: &str, key: &str, value: &serde_json::Value) -> Option<Stri
         .collect::<Vec<_>>()
         .join("\n");
     let mut text = text.to_string();
-    match members.iter().rev().find(|m| m.0 == key) {
+    let found = members.iter().rposition(|m| m.0 == key);
+    // null removes the key, as VS Code's `update(key, undefined)` does.
+    if value.is_null() {
+        if let Some(i) = found {
+            let (_, at, _, end) = members[i];
+            match (members.get(i + 1), i.checked_sub(1).map(|p| &members[p])) {
+                (Some(next), _) => text.replace_range(at..next.1, ""),
+                (None, Some(prev)) => text.replace_range(prev.3..end, ""),
+                (None, None) => text.replace_range(at..end, ""),
+            }
+        }
+        return Some(text);
+    }
+    match found.map(|i| &members[i]) {
         Some(&(_, _, start, end)) => text.replace_range(start..end, &json),
         None => {
             let entry = format!("{indent}{}: {json}", serde_json::to_string(key).ok()?);
@@ -3147,6 +3160,11 @@ mod tests {
         assert_eq!(set("{}", "a", true.into()), "{\n    \"a\": true\n}");
         assert_eq!(set("{ \"a\": [1, {}], }", "a", 3.into()), "{ \"a\": 3, }");
         assert!(set_property("[1]", "a", &1.into()).is_none());
+        let null = serde_json::Value::Null;
+        assert_eq!(set("{\"a\": 1, \"b\": 2}", "a", null.clone()), "{\"b\": 2}");
+        assert_eq!(set("{\"a\": 1, \"b\": 2}", "b", null.clone()), "{\"a\": 1}");
+        assert_eq!(set("{ \"a\": 1 }", "a", null.clone()), "{  }");
+        assert_eq!(set("{\"a\": 1}", "c", null), "{\"a\": 1}");
     }
 
     #[test]

@@ -91,6 +91,15 @@ class Range {
   }
   get isEmpty() { return this.start.isEqual(this.end); }
   get isSingleLine() { return this.start.line === this.end.line; }
+  isEqual(o) { return this.start.isEqual(o.start) && this.end.isEqual(o.end); }
+  contains(x) {
+    if (x instanceof Range) return this.contains(x.start) && this.contains(x.end);
+    return !x.isBefore(this.start) && !this.end.isBefore(x);
+  }
+  with(start = this.start, end = this.end) {
+    if (!(start instanceof Position)) ({ start = this.start, end = this.end } = start);
+    return new Range(start, end);
+  }
 }
 
 class Selection extends Range {
@@ -117,13 +126,105 @@ class CancellationTokenSource {
   dispose() { this._e.dispose(); }
 }
 
+class Location {
+  constructor(uri, r) { this.uri = uri; this.range = r instanceof Position ? new Range(r, r) : r; }
+}
+class Diagnostic {
+  constructor(range, message, severity = 0) { Object.assign(this, { range, message, severity }); }
+}
+class DiagnosticRelatedInformation { constructor(location, message) { Object.assign(this, { location, message }); } }
+class MarkdownString {
+  constructor(value = '', supportThemeIcons) { this.value = value; this.supportThemeIcons = supportThemeIcons; }
+  appendText(s) { this.value += s.replace(/[\\`*_{}[\]()#+\-.!]/g, '\\$&'); return this; }
+  appendMarkdown(s) { this.value += s; return this; }
+  appendCodeblock(code, lang = '') { this.value += '\n```' + lang + '\n' + code + '\n```\n'; return this; }
+}
+class Hover { constructor(contents, range) { this.contents = Array.isArray(contents) ? contents : [contents]; this.range = range; } }
+class CodeActionKind {
+  constructor(value) { this.value = value; }
+  append(part) { return new CodeActionKind(this.value ? `${this.value}.${part}` : part); }
+  contains(o) { return !this.value || this.value === o.value || o.value.startsWith(this.value + '.'); }
+  intersects(o) { return this.contains(o) || o.contains(this); }
+}
+for (const [k, v] of Object.entries({
+  Empty: '', QuickFix: 'quickfix', Refactor: 'refactor', RefactorExtract: 'refactor.extract', RefactorInline: 'refactor.inline',
+  RefactorMove: 'refactor.move', RefactorRewrite: 'refactor.rewrite', Source: 'source',
+  SourceOrganizeImports: 'source.organizeImports', SourceFixAll: 'source.fixAll', Notebook: 'notebook',
+})) CodeActionKind[k] = new CodeActionKind(v);
+class SnippetString { constructor(value = '') { this.value = value; } }
+class CompletionItem { constructor(label, kind) { this.label = label; this.kind = kind; } }
+class CompletionList { constructor(items = [], isIncomplete = false) { this.items = items; this.isIncomplete = isIncomplete; } }
+class TextEdit {
+  constructor(range, newText) { this.range = range; this.newText = newText; }
+  static replace(r, t) { return new TextEdit(r, t); }
+  static insert(p, t) { return new TextEdit(new Range(p, p), t); }
+  static delete(r) { return new TextEdit(r, ''); }
+}
+
+// A document vsn has open, as vscode.TextDocument.
+class TextDocument {
+  constructor(uri, languageId, version, text) {
+    Object.assign(this, { uri: Uri.parse(uri), languageId, version, isClosed: false, isDirty: false, isUntitled: false, eol: 1 });
+    this.setText(text);
+  }
+  setText(text) {
+    this._text = text;
+    this._lines = text.split(/\r?\n/);
+    this._starts = [0];
+    for (let i = 0; i < text.length; i++) if (text[i] === '\n') this._starts.push(i + 1);
+  }
+  get fileName() { return this.uri.fsPath; }
+  get lineCount() { return this._lines.length; }
+  async save() { return false; }
+  getText(r) { return r ? this._text.slice(this.offsetAt(r.start), this.offsetAt(r.end)) : this._text; }
+  lineAt(l) {
+    if (typeof l !== 'number') l = l.line;
+    const text = this._lines[l];
+    const first = text.search(/\S/);
+    return {
+      lineNumber: l, text, range: new Range(l, 0, l, text.length),
+      rangeIncludingLineBreak: new Range(l, 0, l + 1, 0),
+      firstNonWhitespaceCharacterIndex: first < 0 ? text.length : first, isEmptyOrWhitespace: first < 0,
+    };
+  }
+  offsetAt(p) {
+    const l = Math.max(0, Math.min(p.line, this._lines.length - 1));
+    return this._starts[l] + Math.max(0, Math.min(p.character, this._lines[l].length));
+  }
+  positionAt(o) {
+    o = Math.max(0, Math.min(o, this._text.length));
+    let l = this._starts.length - 1;
+    while (this._starts[l] > o) l--;
+    return new Position(l, Math.min(o - this._starts[l], this._lines[l].length));
+  }
+  validatePosition(p) { return this.positionAt(this.offsetAt(p)); }
+  validateRange(r) { return new Range(this.validatePosition(r.start), this.validatePosition(r.end)); }
+  getWordRangeAtPosition(p, re = /[\w$]+/g) {
+    const text = this.lineAt(p.line).text;
+    for (const m of text.matchAll(new RegExp(re.source, 'g'))) {
+      if (m.index <= p.character && p.character <= m.index + m[0].length) return new Range(p.line, m.index, p.line, m.index + m[0].length);
+    }
+    return undefined;
+  }
+}
+
 // ---- state from vsn ----------------------------------------------------------
 
 let settings = {};
 let defaults = {};
 let root = null;
+// One array, as vscode-languageclient diffs folders by identity.
+let folders;
 const extensions = new Map(); // id -> { id, dir, manifest, exports, active }
 const commands = new Map();
+// The documents of the languages extensions serve, by the uri vsn sent.
+const documents = new Map();
+const opened = new EventEmitter();
+const changed = new EventEmitter();
+const closed = new EventEmitter();
+const saved = new EventEmitter();
+// Each language feature's providers: { selector, provider }.
+const providers = { hover: [], completion: [], definition: [], formatting: [], rangeFormatting: [] };
 
 // ---- the vscode API ----------------------------------------------------------
 
@@ -247,18 +348,33 @@ function configuration(section) {
       const k = full(key);
       if (value === undefined) delete settings[k]; else settings[k] = value;
       send({ m: 'setting', key: k, value: value === undefined ? null : value });
+      // Resolves a turn later, as VS Code's round trip to its main process
+      // does; the Zig extension's setup needs that time for libsodium to load.
+      await new Promise((r) => setImmediate(r));
     },
   };
 }
 
 const vscodeWorkspace = {
   getConfiguration: configuration,
-  get workspaceFolders() { return root ? [{ uri: Uri.file(root), name: path.basename(root), index: 0 }] : undefined; },
+  get workspaceFolders() { return folders; },
   get rootPath() { return root || undefined; },
   get name() { return root ? path.basename(root) : undefined; },
   getWorkspaceFolder(uri) { return this.workspaceFolders && uri.fsPath.toLowerCase().startsWith(root.toLowerCase()) ? this.workspaceFolders[0] : undefined; },
   asRelativePath(p) { const f = typeof p === 'string' ? p : p.fsPath; return root ? path.relative(root, f).replace(/\\/g, '/') : f; },
-  textDocuments: [],
+  get textDocuments() { return [...documents.values()]; },
+  onDidOpenTextDocument: opened.event,
+  onDidChangeTextDocument: changed.event,
+  onDidCloseTextDocument: closed.event,
+  onDidSaveTextDocument: saved.event,
+  async openTextDocument(u) {
+    // ponytail: files vsn hasn't opened are read from disk and never kept in sync.
+    const uri = typeof u === 'string' ? Uri.file(u) : u;
+    const doc = [...documents.values()].find((d) => d.uri.fsPath === uri.fsPath);
+    return doc || new TextDocument(uri.toString(), path.extname(uri.fsPath).slice(1), 1, await fs.promises.readFile(uri.fsPath, 'utf8'));
+  },
+  // ponytail: no file events reach the host yet.
+  createFileSystemWatcher: () => ({ onDidCreate: never, onDidChange: never, onDidDelete: never, dispose() {} }),
   isTrusted: true,
   onDidChangeConfiguration: never,
   fs: {
@@ -291,25 +407,204 @@ const env = {
   asExternalUri: async (u) => u,
 };
 
+// ---- languages ---------------------------------------------------------------
+
+// The language ids a document selector names.
+const selectorLanguages = (s) => (Array.isArray(s) ? s.flatMap(selectorLanguages) : [typeof s === 'string' ? s : s && s.language].filter(Boolean));
+
+function match(selector, doc) {
+  if (Array.isArray(selector)) return Math.max(0, ...selector.map((s) => match(s, doc)));
+  if (typeof selector === 'string') return selector === '*' || selector === doc.languageId ? 10 : 0;
+  // ponytail: `pattern` and `notebookType` filters aren't checked.
+  if (selector.language && selector.language !== '*' && selector.language !== doc.languageId) return 0;
+  if (selector.scheme && selector.scheme !== '*' && selector.scheme !== doc.uri.scheme) return 0;
+  return 10;
+}
+
+function register(feature) {
+  return (selector, provider) => {
+    const entry = { selector, provider };
+    providers[feature].push(entry);
+    // vsn sends this language's documents here from now on.
+    send({ m: 'languages', ids: selectorLanguages(selector) });
+    return new Disposable(() => providers[feature].splice(providers[feature].indexOf(entry), 1));
+  };
+}
+
+// vscode's objects as LSP's, for vsn.
+const lspRange = (r) => r && { start: { line: r.start.line, character: r.start.character }, end: { line: r.end.line, character: r.end.character } };
+const markdown = (c) => (typeof c === 'string' ? c : c.language ? '```' + c.language + '\n' + c.value + '\n```' : c.value);
+const lspLocation = (l) => (l.targetUri
+  ? { targetUri: l.targetUri.toString(), targetRange: lspRange(l.targetRange), targetSelectionRange: lspRange(l.targetSelectionRange || l.targetRange), originSelectionRange: lspRange(l.originSelectionRange) }
+  : { targetUri: l.uri.toString(), targetRange: lspRange(l.range), targetSelectionRange: lspRange(l.range) });
+
+function lspCompletion(c) {
+  const label = typeof c.label === 'string' ? c.label : c.label.label;
+  let text = c.insertText === undefined ? label : typeof c.insertText === 'string' ? c.insertText : c.insertText.value;
+  // ponytail: vsn's editor takes no snippets, so tab stops become plain text.
+  if (c.insertText instanceof SnippetString) text = text.replace(/\$\{\d+:([^}]*)\}/g, '$1').replace(/\$\{?\d+\}?/g, '');
+  const r = c.range && (c.range.replacing || c.range);
+  const doc = c.documentation;
+  return {
+    label, kind: c.kind === undefined ? undefined : c.kind + 1, detail: c.detail,
+    documentation: doc && (typeof doc === 'string' ? doc : { kind: 'markdown', value: doc.value }),
+    sortText: c.sortText, filterText: c.filterText,
+    ...(r ? { textEdit: { range: lspRange(r), newText: text } } : { insertText: text }),
+  };
+}
+
+const lspDiagnostic = (d) => ({
+  range: lspRange(d.range), message: d.message, severity: (d.severity || 0) + 1, source: d.source,
+  code: d.code && typeof d.code === 'object' ? d.code.value : d.code,
+});
+
+function createDiagnosticCollection(name) {
+  const map = new Map();
+  const publish = (key) => send({ m: 'lsp', msg: { method: 'textDocument/publishDiagnostics', params: { uri: key, diagnostics: (map.get(key) || []).map(lspDiagnostic) } } });
+  // ponytail: two collections reporting one file overwrite each other in vsn.
+  const c = {
+    name,
+    set(uri, ds) {
+      if (Array.isArray(uri)) return uri.forEach(([u, d]) => c.set(u, d));
+      map.set(uri.toString(), ds || []);
+      publish(uri.toString());
+    },
+    delete(uri) { map.delete(uri.toString()); publish(uri.toString()); },
+    clear() { for (const k of [...map.keys()]) { map.delete(k); publish(k); } },
+    get: (uri) => map.get(uri.toString()),
+    has: (uri) => map.has(uri.toString()),
+    forEach(fn) { for (const [k, v] of map) fn(Uri.parse(k), v, c); },
+    dispose() { c.clear(); },
+    [Symbol.iterator]: function* () { for (const [k, v] of map) yield [Uri.parse(k), v]; },
+  };
+  return c;
+}
+
+const vscodeLanguages = {
+  match,
+  createDiagnosticCollection,
+  getDiagnostics: () => [],
+  async getLanguages() { return [...new Set([...extensions.values()].flatMap((e) => ((e.manifest.contributes || {}).languages || []).map((l) => l.id)))]; },
+  registerHoverProvider: register('hover'),
+  registerCompletionItemProvider: register('completion'),
+  registerDefinitionProvider: register('definition'),
+  registerDocumentFormattingEditProvider: register('formatting'),
+  registerDocumentRangeFormattingEditProvider: register('rangeFormatting'),
+  onDidChangeDiagnostics: never,
+};
+
+// vsn's requests for a document, answered by the extensions' providers.
+async function provide(method, params) {
+  const doc = documents.get(params.textDocument.uri);
+  let feature = { 'textDocument/hover': 'hover', 'textDocument/completion': 'completion', 'textDocument/definition': 'definition', 'textDocument/formatting': 'formatting' }[method];
+  const find = (f) => doc && f && providers[f].find((p) => match(p.selector, doc));
+  let entry = find(feature);
+  // Format Document falls back on formatting the whole range.
+  if (!entry && feature === 'formatting') [entry, feature] = [find('rangeFormatting'), 'rangeFormatting'];
+  if (!entry) return null;
+  const p = entry.provider;
+  const token = new CancellationTokenSource().token;
+  const pos = params.position && new Position(params.position.line, params.position.character);
+  switch (feature) {
+    case 'hover': {
+      const h = await p.provideHover(doc, pos, token);
+      return h && { contents: { kind: 'markdown', value: [].concat(h.contents).map(markdown).join('\n\n---\n\n') }, range: lspRange(h.range) };
+    }
+    case 'completion': {
+      const r = await p.provideCompletionItems(doc, pos, token, { triggerKind: 0 });
+      return r && { isIncomplete: !!r.isIncomplete, items: (Array.isArray(r) ? r : r.items).map(lspCompletion) };
+    }
+    case 'definition': {
+      const r = await p.provideDefinition(doc, pos, token);
+      return r && (Array.isArray(r) ? r : [r]).map(lspLocation);
+    }
+    case 'formatting': {
+      const r = await p.provideDocumentFormattingEdits(doc, params.options, token);
+      return r && r.map((e) => ({ range: lspRange(e.range), newText: e.newText }));
+    }
+    case 'rangeFormatting': {
+      const all = new Range(new Position(0, 0), doc.positionAt(doc._text.length));
+      const r = await p.provideDocumentRangeFormattingEdits(doc, all, params.options, token);
+      return r && r.map((e) => ({ range: lspRange(e.range), newText: e.newText }));
+    }
+  }
+  return null;
+}
+
+// vsn talks to the host as to a language server for the languages it serves.
+function onLsp(msg) {
+  const p = msg.params || {};
+  const td = p.textDocument || {};
+  switch (msg.method) {
+    case 'textDocument/didOpen': {
+      const doc = new TextDocument(td.uri, td.languageId, td.version, td.text);
+      documents.set(td.uri, doc);
+      return opened.fire(doc);
+    }
+    case 'textDocument/didChange': {
+      const doc = documents.get(td.uri);
+      if (!doc) return;
+      const old = doc._text;
+      const range = new Range(new Position(0, 0), doc.positionAt(old.length));
+      doc.setText(p.contentChanges[0].text);
+      doc.version = td.version;
+      return changed.fire({ document: doc, contentChanges: [{ range, rangeOffset: 0, rangeLength: old.length, text: doc._text }], reason: undefined });
+    }
+    case 'textDocument/didSave':
+      return documents.has(td.uri) && saved.fire(documents.get(td.uri));
+    case 'textDocument/didClose': {
+      const doc = documents.get(td.uri);
+      if (!doc) return;
+      documents.delete(td.uri);
+      doc.isClosed = true;
+      return closed.fire(doc);
+    }
+  }
+  if (msg.id === undefined) return;
+  provide(msg.method, p).then(
+    (result) => send({ m: 'lsp', msg: { jsonrpc: '2.0', id: msg.id, result: result === undefined ? null : result } }),
+    (err) => { log(errorText(err)); send({ m: 'lsp', msg: { jsonrpc: '2.0', id: msg.id, result: null } }); },
+  );
+}
+
 // The API members vsn has; any other namespace answers with no-op stubs so
 // an extension that touches it still activates, and any other class name
-// with an empty class it can extend.
-const stubs = (ns) => new Proxy({}, {
+// with an empty class it can extend. A stub's result is a stub too, so
+// `createTestController().createRunProfile()` goes through.
+const unimplemented = new Set();
+const stubs = (name, set = new Map()) => new Proxy(() => {}, {
+  set(_, k, v) { set.set(k, v); return true; },
   get(_, k) {
-    if (typeof k !== 'string') return undefined;
+    if (set.has(k)) return set.get(k);
+    // Iterates as empty, so `for (const g of window.tabGroups.all)` runs.
+    if (k === Symbol.iterator) return function* () {};
+    if (typeof k !== 'string' || k === 'then') return undefined;
     if (k.startsWith('onDid') || k.startsWith('onWill')) return never;
-    return (..._args) => {
-      log(`vscode.${ns}.${k} is not implemented`);
-      return new Disposable(() => {});
-    };
+    if (k === 'dispose') return () => {};
+    return stubs(`${name}.${k}`);
   },
+  apply() {
+    if (!unimplemented.has(name)) log(`vscode.${name} is not implemented`);
+    unimplemented.add(name);
+    return stubs(`${name}()`);
+  },
+});
+// A namespace whose missing members are stubs.
+const withStubs = (ns, obj) => new Proxy(obj, {
+  get(t, k, r) { return k in t || typeof k !== 'string' || k === 'then' ? Reflect.get(t, k, r) : stubs(ns)[k]; },
 });
 const known = {
   version: '1.95.0',
   // TypeScript's `import * as vscode` then uses the module as is.
   __esModule: true,
-  commands: vscodeCommands, window: vscodeWindow, workspace: vscodeWorkspace, extensions: vscodeExtensions, env,
+  commands: vscodeCommands, extensions: vscodeExtensions, env,
+  window: withStubs('window', vscodeWindow), workspace: withStubs('workspace', vscodeWorkspace), languages: withStubs('languages', vscodeLanguages),
   Disposable, EventEmitter, Uri, Position, Range, Selection, ThemeColor, ThemeIcon, CancellationTokenSource,
+  Location, Diagnostic, DiagnosticRelatedInformation, MarkdownString, Hover, SnippetString, CompletionItem, CompletionList, TextEdit, CodeActionKind,
+  DiagnosticTag: { Unnecessary: 1, Deprecated: 2 },
+  CompletionItemKind: Object.fromEntries('Text Method Function Constructor Field Variable Class Interface Module Property Unit Value Enum Keyword Snippet Color File Reference Folder EnumMember Constant Struct Event Operator TypeParameter User Issue'.split(' ').map((k, i) => [k, i])),
+  CompletionTriggerKind: { Invoke: 0, TriggerCharacter: 1, TriggerForIncompleteCompletions: 2 },
+  TextDocumentSaveReason: { Manual: 1, AfterDelay: 2, FocusOut: 3 },
   StatusBarAlignment: { Left: 1, Right: 2 },
   ConfigurationTarget: { Global: 1, Workspace: 2, WorkspaceFolder: 3 },
   ViewColumn: { Active: -1, Beside: -2, One: 1, Two: 2, Three: 3 },
@@ -327,6 +622,8 @@ const vscode = new Proxy(known, {
     return (t[k] = stubs(k));
   },
 });
+// esbuild's `__toESM` takes an `__esModule` module's namespace from `default`.
+known.default = vscode;
 
 // `require('vscode')` from any extension gets the shim, through a file next
 // to this one (Bun ignores `Module._load` hooks; both honor `_resolveFilename`).
@@ -396,6 +693,7 @@ rl.on('line', (line) => {
         settings = msg.settings || {};
         defaults = msg.defaults || {};
         root = msg.root || null;
+        folders = root ? [{ uri: Uri.file(root), name: path.basename(root), index: 0 }] : undefined;
         for (const e of msg.extensions || []) extensions.set(e.id, { ...e, active: false });
         return;
       case 'settings':
@@ -405,6 +703,8 @@ rl.on('line', (line) => {
         return activate(msg.id);
       case 'run':
         return run(msg.command, msg.args);
+      case 'lsp':
+        return onLsp(msg.msg);
     }
   });
 });

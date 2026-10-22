@@ -314,6 +314,7 @@ impl Workbench {
         });
         self.ext.generation += 1;
         let generation = self.ext.generation;
+        self.lsp_host_gone(cx);
         cx.spawn(async move |this, cx| {
             while let Some(msg) = rx.next().await {
                 let current = |this: &mut Self| this.ext.generation == generation;
@@ -373,6 +374,15 @@ impl Workbench {
                 self.error(text.lines().next().unwrap_or_default().to_string(), cx);
             }
             "log" => self.log(&text("channel"), &text("text"), cx),
+            "languages" => {
+                let ids = (msg["ids"].as_array().into_iter().flatten())
+                    .filter_map(|id| Some(id.as_str()?.to_string()))
+                    .collect();
+                if let Some(out) = self.ext.out.clone() {
+                    self.lsp_languages(ids, out, cx);
+                }
+            }
+            "lsp" => self.lsp_from_host(msg["msg"].clone(), cx),
             "status" => {
                 let id = text("id");
                 self.ext.status.retain(|i| i.id != id);
@@ -417,6 +427,7 @@ impl Workbench {
                 cx,
             );
             self.ext.status.clear();
+            self.lsp_host_gone(cx);
             return cx.notify();
         }
         self.ext.crashes += 1;

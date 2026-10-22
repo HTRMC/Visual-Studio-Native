@@ -454,7 +454,7 @@ Differences from VS Code still to close, smallest first within each area.
 
 ## Extensions
 
-See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, hover, completion and Go to Definition.
+See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, hover, completion, Go to Definition and formatting, from built-in servers or language extensions.
 
 - [x] Install from VSIX... (the view's ... menu, and the palette).
 - [x] Installed list with search, Disable and Uninstall on the gear.
@@ -476,7 +476,8 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [ ] Output: `append` always starts a new line, `show()`/`clear()`/`replace()`
       do nothing, no filter, no word-wrap toggle, channels aren't sorted.
 - [ ] VS Code's own commands (`vscode.open`, `workbench.action.*`) called by extensions do nothing.
-- [ ] `globalState`/`workspaceState` are in memory only; `activeTextEditor` and documents don't reach the host.
+- [ ] `globalState`/`workspaceState` are in memory only; `activeTextEditor` doesn't reach the host.
+- [x] Documents reach the host (open, change, save, close).
 - [ ] `workspaceContains:` matches plain paths only, not globs.
 - [x] Language servers on PATH (rust-analyzer, clangd, gopls, zls, basedpyright, typescript-language-server) give squiggles, the Problems panel and the status bar counts.
 - [x] Hover, completion (as you type and Ctrl+Space) and Go to Definition (F12, Ctrl+Click, into other files) from language servers.
@@ -486,3 +487,10 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [ ] Problems panel: collapsing a file, filter, related information, and the Explorer's red file decorations.
 - [x] A crashed language server restarts and reopens its files, up to 5 times.
 - [ ] A language server given up on leaves its squiggles behind.
+- [x] Language extensions (`vscode-languageclient`, e.g. Zig's) run their own server in the host; hover, completion, definition, formatting and diagnostics reach the editor, and the built-in server for that language steps aside.
+- [x] An extension's `update(key, undefined)` removes the setting instead of writing `null`.
+- [ ] Host providers: document selectors' `pattern`/`scheme` aren't checked, completion snippets are flattened to plain text, and several diagnostic collections for one file overwrite each other.
+- [ ] `createFileSystemWatcher` never fires; `openTextDocument` reads the disk, not the open editor.
+- [ ] Only hover, completion, definition and (range) formatting providers; the rest log "not implemented".
+- [ ] A language extension claiming a TypeScript-family language stops the shared built-in server for the others until their next file.
+- [ ] Completion list isn't filtered by the typed prefix while it's open.

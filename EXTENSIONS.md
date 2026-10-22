@@ -144,9 +144,13 @@ there.
    instead of throwing. Install, uninstall, enable and disable restart the
    host; a crash restarts it up to 3 times. `require('vscode')` works by
    hooking `Module._resolveFilename` (Bun ignores `Module._load`) to a
-   `vscode.js` written next to the host. Output channels and the host's console show in the Output panel. *Left:*
+   `vscode.js` written next to the host. Output channels and the host's console show in the Output panel.
+   Text documents (`workspace.textDocuments` and their events), diagnostic
+   collections, `TextDocument`, `CodeActionKind` and the other provider
+   types. Stubs chain, iterate and accept assignments, so unsupported API
+   doesn't break activation. *Left:*
    quick pick, input box and message buttons, VS Code's built-in
-   commands, persistent mementos, `activeTextEditor` and documents, a
+   commands, persistent mementos, `activeTextEditor`, a
    bundled runtime in the installer (today: `runtime\` next to vsn.exe, then
    PATH).
 4. **LSP client** into the provider registries; `vscode-languageclient`-based
@@ -158,10 +162,12 @@ there.
    (click to jump) and the status bar counts, `window/showMessage` as
    toasts; logs in the Output panel; a crashed server restarts, up to 5 times; Format Document; hover, completion and Go to Definition through gpui-component's
    editor providers (`lsp-types` and `anyhow` became direct dependencies for
-   their types). *Left:* range formatting, rename, references, signature help
-   and code actions; servers from language extensions, either by running
-   `vscode-languageclient` in the JS host against this client or by reading
-   the server path from the extension.
+   their types). Servers from language extensions: `vscode-languageclient`
+   runs in the JS host, which registers its providers for a language and
+   then stands in as that language's server (the built-in one steps aside),
+   so the Zig extension's own zls serves hover, completion, definition,
+   formatting and diagnostics. *Left:* range formatting, rename, references,
+   signature help and code actions, on both paths.
 5. **WASM host.** wasmtime, a WIT world generated from the core API, and a
    sample plugin in Rust.
 

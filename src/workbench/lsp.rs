@@ -2,10 +2,12 @@
 //! language, started from PATH when a file of that language opens, kept in
 //! sync with full-text changes. Its diagnostics show as squiggles, in the
 //! Problems panel and in the status bar's counts; hover, completion and Go to
-//! Definition reach it through the editor's providers.
+//! Definition reach it through the editor's providers. The JS extension host
+//! stands in as one more server, for the languages its extensions provide
+//! (vscode-languageclient-based ones run their server from there).
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     hash::{DefaultHasher, Hash as _, Hasher as _},
     io::{BufRead as _, BufReader, Read, Write as _},
     process::{Command, Stdio},
@@ -27,9 +29,7 @@ use serde_json::{Value, json};
 
 use super::*;
 
-/// The server each language id starts.
-// ponytail: a fixed table of servers on PATH; language extensions bring
-// their own servers once the JS host's vscode-languageclient reaches here.
+/// The server each language id starts, unless an extension provides it.
 const SERVERS: &[(&[&str], &[&str])] = &[
     (&["rust"], &["rust-analyzer"]),
     (&["c", "cpp"], &["clangd"]),
@@ -46,6 +46,9 @@ const SERVERS: &[(&[&str], &[&str])] = &[
         &["typescript-language-server", "--stdio"],
     ),
 ];
+
+/// The extension host's key among the servers.
+const HOSTED: &[&str] = &["Extension Host"];
 
 /// One diagnostic as a server published it, 0-based.
 pub(super) struct Problem {
@@ -67,6 +70,8 @@ pub(super) struct Lsp {
     problems: BTreeMap<PathBuf, Vec<Problem>>,
     /// How often each server has died on its own.
     crashes: HashMap<&'static str, u32>,
+    /// The languages the extension host's providers serve.
+    hosted: HashSet<String>,
 }
 
 struct Server {
@@ -311,8 +316,12 @@ impl Workbench {
         let Some(doc) = self.docs.get(ix).filter(|d| !d.untitled && !d.binary) else {
             return;
         };
-        let Some(&(_, cmd)) = SERVERS.iter().find(|(langs, _)| langs.contains(&doc.lang)) else {
-            return;
+        let cmd = match self.lsp.hosted.contains(doc.lang) {
+            true => HOSTED,
+            false => match SERVERS.iter().find(|(langs, _)| langs.contains(&doc.lang)) {
+                Some(&(_, cmd)) => cmd,
+                None => return,
+            },
         };
         let (path, lang, editor) = (doc.path.clone(), doc.lang, doc.editor.clone());
         if !self.lsp.servers.contains_key(cmd[0]) {
@@ -445,6 +454,77 @@ impl Workbench {
                 .ok();
         })
         .detach();
+    }
+
+    /// The extension host now serves `ids`: their built-in servers make way
+    /// and their files go to the host. `out` is the host's stdin.
+    pub(super) fn lsp_languages(
+        &mut self,
+        ids: Vec<String>,
+        out: mpsc::Sender<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.lsp.servers.entry(HOSTED[0]).or_insert_with(|| {
+            // Frames go out as the host's NDJSON `lsp` messages.
+            let (tx, rx) = mpsc::channel::<String>();
+            std::thread::spawn(move || {
+                for frame in rx {
+                    let body = frame.split_once("\r\n\r\n").map_or("", |(_, b)| b);
+                    if out
+                        .send(format!("{{\"m\":\"lsp\",\"msg\":{body}}}\n"))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+            Some(Arc::new(Server {
+                out: tx,
+                next_id: AtomicI64::new(1),
+                pending: Mutex::default(),
+                open: Mutex::default(),
+            }))
+        });
+        let new: Vec<String> = (ids.into_iter())
+            .filter(|id| self.lsp.hosted.insert(id.clone()))
+            .collect();
+        // ponytail: a built-in server shared with other languages (TypeScript's)
+        // stops for them too, and starts again with their next file.
+        for (langs, cmd) in SERVERS {
+            if langs.iter().any(|l| new.iter().any(|n| n == l)) {
+                self.lsp.servers.remove(cmd[0]);
+            }
+        }
+        for ix in 0..self.docs.len() {
+            if new.iter().any(|n| n == self.docs[ix].lang) {
+                self.lsp_open(ix, cx);
+            }
+        }
+    }
+
+    /// A message from the extension host's providers: a response, or
+    /// diagnostics.
+    pub(super) fn lsp_from_host(&mut self, msg: Value, cx: &mut Context<Self>) {
+        let Some(id) = msg["id"].as_i64() else {
+            return self.on_server(msg, cx);
+        };
+        if let Some(Some(server)) = self.lsp.servers.get(HOSTED[0])
+            && let Some(tx) = server.pending.lock().unwrap().remove(&id)
+        {
+            tx.send(msg["result"].clone()).ok();
+        }
+    }
+
+    /// The extension host is gone: its languages' files go back to the
+    /// built-in servers until a new host serves them again.
+    pub(super) fn lsp_host_gone(&mut self, cx: &mut Context<Self>) {
+        self.lsp.servers.remove(HOSTED[0]);
+        let langs = std::mem::take(&mut self.lsp.hosted);
+        for ix in 0..self.docs.len() {
+            if langs.contains(self.docs[ix].lang) {
+                self.lsp_open(ix, cx);
+            }
+        }
     }
 
     /// A new workspace: servers start over in it.
