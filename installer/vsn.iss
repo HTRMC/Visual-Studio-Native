@@ -43,6 +43,7 @@ Name: "addtopath"; Description: "Add to PATH (requires shell restart)"; GroupDes
 [Files]
 Source: "..\target\release\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "vsn.cmd"; DestDir: "{app}\bin"; Flags: ignoreversion
+Source: "..\target\release\runtime\node.exe"; DestDir: "{app}\runtime"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\assets\THIRD_PARTY.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]

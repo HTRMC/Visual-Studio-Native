@@ -4,6 +4,17 @@ $ErrorActionPreference = "Stop"
 Set-Location (Split-Path $PSScriptRoot)
 cargo build --release
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
+# The extension host's runtime, found next to vsn.exe before PATH.
+# ponytail: ships this machine's node (or $env:VSN_NODE), download a pinned
+# release from nodejs.org instead if builds need to be reproducible.
+$node = $env:VSN_NODE
+if (-not $node) { $node = (Get-Command node.exe -ErrorAction SilentlyContinue).Source }
+if ($node) {
+    New-Item -ItemType Directory -Force target\release\runtime | Out-Null
+    Copy-Item $node target\release\runtime\node.exe
+} else {
+    Write-Warning "node.exe not found: the installer won't bundle a JS runtime"
+}
 $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
 $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source
 if (-not $iscc) {

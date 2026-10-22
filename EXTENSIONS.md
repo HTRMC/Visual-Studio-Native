@@ -155,9 +155,9 @@ there.
    run vsn's actions; `workbench.action.reloadWindow` restarts the
    extensions. `window.activeTextEditor` (its document, selection,
    `edit` and `insertSnippet`), `onDidChangeActiveTextEditor` and
-   `workspace.applyEdit`. *Left:* the rest of the built-in commands, a
-   bundled runtime in the installer (today: `runtime\` next to vsn.exe, then
-   PATH).
+   `workspace.applyEdit`. The installer ships `runtime\node.exe` (the build
+   machine's node; vsn looks there before PATH). *Left:* the rest of the
+   built-in commands.
 4. **LSP client** into the provider registries; `vscode-languageclient`-based
    extensions then work through the JS host.
    *Done:* `src/workbench/lsp.rs`, a client over stdio with no new
