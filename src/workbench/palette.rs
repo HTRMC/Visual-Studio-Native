@@ -66,6 +66,10 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("Terminal: Rename...", Box::new(RenameTerminal)),
         ("Terminal: Change Color...", Box::new(ChangeTerminalColor)),
         ("Terminal: Change Icon...", Box::new(ChangeTerminalIcon)),
+        (
+            "Terminal: Kill the Active Terminal Instance",
+            Box::new(KillTerminal),
+        ),
         ("Terminal: Focus Find", Box::new(FindInTerminal)),
         (
             "Terminal: Select Default Profile",

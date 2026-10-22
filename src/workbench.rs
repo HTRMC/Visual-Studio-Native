@@ -67,6 +67,7 @@ actions!(
         RenameTerminal,
         ChangeTerminalColor,
         ChangeTerminalIcon,
+        KillTerminal,
         FindInTerminal,
         SelectDefaultProfile,
         NewTextFile,
@@ -1732,6 +1733,9 @@ impl Render for Workbench {
             }))
             .on_action(cx.listener(|this, _: &ChangeTerminalIcon, window, cx| {
                 this.change_terminal_icon(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &KillTerminal, window, cx| {
+                this.kill_active_terminal(window, cx)
             }))
             .on_action(
                 cx.listener(|this, _: &FindInTerminal, window, cx| {
