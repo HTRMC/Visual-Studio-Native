@@ -17,7 +17,10 @@ use std::{
 
 use unicode_segmentation::UnicodeSegmentation as _;
 
-use gpui_kit::base::{actions::Cancel, input::Rope};
+use gpui_kit::base::{
+    actions::{Cancel, Confirm},
+    input::Rope,
+};
 use gpui_kit::component::{
     IndexPath, Theme,
     command::{Command, CommandItem, CommandState},
@@ -60,6 +63,7 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("View: Toggle Terminal", Box::new(ToggleTerminal)),
         ("Terminal: Create New Terminal", Box::new(NewTerminal)),
         ("Terminal: Split Terminal", Box::new(SplitTerminal)),
+        ("Terminal: Rename...", Box::new(RenameTerminal)),
         (
             "Terminal: Select Default Profile",
             Box::new(SelectDefaultProfile),
@@ -135,6 +139,8 @@ pub(super) struct Palette {
     defs: Option<Vec<Def>>,
     /// Set while the palette is Select Default Profile's pick list.
     profiles: Option<Vec<Profile>>,
+    /// Set while the palette is Terminal: Rename's input, to the terminal's id.
+    renaming: Option<u64>,
     /// 0-based line and column from a `file:line:col` query.
     goto: Option<(u32, u32)>,
     shown: Vec<Pick>,
@@ -177,6 +183,7 @@ impl Palette {
             recent: serde_json::from_value(state["commands"].clone()).unwrap_or_default(),
             defs: None,
             profiles: None,
+            renaming: None,
             goto: None,
             shown: Vec::new(),
             groups: Vec::new(),
@@ -1392,6 +1399,7 @@ impl Workbench {
         }
         p.defs = None;
         p.profiles = None;
+        p.renaming = None;
         p.parse = None;
         p.state
             .update(cx, |s, cx| s.set_query(query.to_string(), window, cx));
@@ -1407,6 +1415,18 @@ impl Workbench {
         self.open_palette("", window, cx);
         self.palette.profiles = Some(profiles());
         self.palette_query(String::new(), cx);
+    }
+
+    /// VS Code's Terminal: Rename: the palette becomes an input holding the
+    /// active terminal's name.
+    pub(super) fn rename_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((id, name)) = self.terminal_name() else {
+            return;
+        };
+        self.open_palette("", window, cx);
+        self.palette.renaming = Some(id);
+        (self.palette.state).update(cx, |s, cx| s.set_query(name.clone(), window, cx));
+        self.palette_query(name, cx);
     }
 
     /// Re-lists the workspace's files when the watcher saw them change. The
@@ -1491,6 +1511,7 @@ impl Workbench {
         p.rank = None;
         p.parse = None;
         p.profiles = None;
+        p.renaming = None;
         // A command may have moved focus (Show Search); only restore it when it is still ours.
         if p.focus.contains_focused(window, cx) {
             match p.restore.take() {
@@ -1531,6 +1552,11 @@ impl Workbench {
                 })
                 .collect();
             p.show(shown, Vec::new(), 0);
+            return;
+        }
+        if p.renaming.is_some() {
+            p.empty = "Press 'Enter' to confirm your input or 'Escape' to cancel".into();
+            p.show(Vec::new(), Vec::new(), 0);
             return;
         }
 
@@ -1763,6 +1789,8 @@ impl Workbench {
         let (this2, this3) = (this.clone(), this.clone());
         let placeholder = if p.profiles.is_some() {
             "Select your default terminal profile"
+        } else if p.renaming.is_some() {
+            "Enter terminal name"
         } else if p.query.starts_with('>') {
             ""
         } else {
@@ -1857,6 +1885,15 @@ impl Workbench {
                 .capture_action(cx.listener(|this, _: &Cancel, window, cx| {
                     cx.stop_propagation();
                     this.close_palette(window, cx);
+                }))
+                // Rename's input has no rows for the list to confirm.
+                .capture_action(cx.listener(|this, _: &Confirm, window, cx| {
+                    if let Some(id) = this.palette.renaming {
+                        cx.stop_propagation();
+                        let name = this.palette.query.clone();
+                        this.close_palette(window, cx);
+                        this.set_terminal_name(id, &name, cx);
+                    }
                 }))
                 .on_mouse_down_out(
                     cx.listener(|this, _, window, cx| this.close_palette(window, cx)),

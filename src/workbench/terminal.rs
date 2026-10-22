@@ -653,10 +653,7 @@ impl Workbench {
         Ok(Terminal {
             id,
             group: id,
-            name: profile
-                .program
-                .file_stem()
-                .map_or("shell".into(), |s| s.to_string_lossy().into()),
+            name: shell_name(&profile),
             profile,
             parser: vt100::Parser::new_with_callbacks(
                 24.try_into().unwrap(),
@@ -685,6 +682,23 @@ impl Workbench {
 
     fn terminal(&mut self, id: u64) -> Option<&mut Terminal> {
         self.terminals.list.iter_mut().find(|t| t.id == id)
+    }
+
+    /// The active terminal's id and name.
+    pub(super) fn terminal_name(&self) -> Option<(u64, String)> {
+        let t = self.terminals.list.get(self.terminals.active)?;
+        Some((t.id, t.name.clone()))
+    }
+
+    /// An empty name goes back to the shell's, as in VS Code.
+    pub(super) fn set_terminal_name(&mut self, id: u64, name: &str, cx: &mut Context<Self>) {
+        if let Some(t) = self.terminal(id) {
+            t.name = match name.trim() {
+                "" => shell_name(&t.profile),
+                name => name.to_string(),
+            };
+            cx.notify();
+        }
     }
 
     /// Output from a shell; true once it exited.
@@ -1144,8 +1158,10 @@ impl Workbench {
     /// VS Code's list of terminals, with split groups drawn as a tree.
     fn render_terminal_tabs(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let list = &self.terminals.list;
+        let wb = cx.weak_entity();
         let rows = list.iter().enumerate().map(|(ix, t)| {
             let id = t.id;
+            let wb = wb.clone();
             let same = |j: Option<usize>| {
                 j.and_then(|j| list.get(j))
                     .is_some_and(|u| u.group == t.group)
@@ -1183,6 +1199,28 @@ impl Workbench {
                 .on_click(
                     cx.listener(move |this, _, window, cx| this.activate_terminal(id, window, cx)),
                 )
+                .context_menu(move |menu: PopupMenu, _, _| {
+                    type Act = fn(&mut Workbench, u64, &mut Window, &mut Context<Workbench>);
+                    // Each acts on the right-clicked tab, made active first as in VS Code.
+                    let item = |label: &'static str, act: Act| {
+                        let wb = wb.clone();
+                        PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                            wb.update(cx, |this, cx| {
+                                this.activate_terminal(id, window, cx);
+                                act(this, id, window, cx)
+                            })
+                            .ok();
+                        })
+                    };
+                    menu.item(item("Split Terminal", |this, _, w, cx| {
+                        this.new_terminal(true, w, cx)
+                    }))
+                    .item(item("Rename...", |this, _, w, cx| {
+                        this.rename_terminal(w, cx)
+                    }))
+                    .separator()
+                    .item(item("Kill Terminal", Workbench::kill_terminal))
+                })
         });
         v_flex()
             .w(px(TABS_W))
@@ -1472,6 +1510,11 @@ impl Workbench {
             })
             .into_any_element()
     }
+}
+
+/// A terminal's name until it is renamed: its program's, like `pwsh`.
+fn shell_name(profile: &Profile) -> String {
+    (profile.program.file_stem()).map_or("shell".into(), |s| s.to_string_lossy().into())
 }
 
 /// The text between two selection ends, a screenful of scrollback at a time.
