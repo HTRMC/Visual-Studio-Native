@@ -1030,13 +1030,15 @@ impl Workbench {
 
     /// An empty name goes back to the shell's, as in VS Code.
     pub(super) fn set_terminal_name(&mut self, id: u64, name: &str, cx: &mut Context<Self>) {
-        if let Some(t) = self.terminal(id) {
-            t.name = match name.trim() {
-                "" => shell_name(&t.profile),
-                name => name.to_string(),
-            };
-            cx.notify();
+        for id in self.targets(id) {
+            if let Some(t) = self.terminal(id) {
+                t.name = match name.trim() {
+                    "" => shell_name(&t.profile),
+                    name => name.to_string(),
+                };
+            }
         }
+        cx.notify();
     }
 
     /// A tab's menu acts on every selected tab when it's one of them.
