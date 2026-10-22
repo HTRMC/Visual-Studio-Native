@@ -1821,6 +1821,37 @@ impl Workbench {
         let scroll_x = t.scroll_x;
         let v_bar = (screen.scrollback_len() > 0 && !screen.alternate_screen())
             .then(|| v_thumb(screen, f32::from(size.height)));
+        // Find's matches down the right edge, VS Code's overview ruler: the
+        // current one gray, the rest orange, one mark per pixel row.
+        let ruler = {
+            let h = f32::from(size.height);
+            let total = (screen.scrollback_len() + rows.get() as usize) as f32;
+            let len = (h / total).max(2.);
+            let mut marks: Vec<(f32, bool)> = Vec::new();
+            for (i, m) in t.matches.iter().enumerate() {
+                let y = (m.0.0 as f32 / total * h).min(h - len).round();
+                let now = t.current == Some(i);
+                match marks.last_mut() {
+                    Some(last) if last.0 == y => last.1 |= now,
+                    _ => marks.push((y, now)),
+                }
+            }
+            div()
+                .absolute()
+                .top_0()
+                .right_0()
+                .w(px(PAD_R))
+                .h_full()
+                .children(marks.into_iter().map(move |(y, now)| {
+                    div()
+                        .absolute()
+                        .top(px(y))
+                        .left(px(PAD_R / 3.))
+                        .w(px(PAD_R / 3.))
+                        .h(px(len))
+                        .bg(ca(if now { 0xA0A0A0CC } else { 0xD186167E }))
+                }))
+        };
         let (selection, block) = (t.selection, t.block);
         let top = t.top();
         let bottom = top + rows.get() as usize;
@@ -2093,6 +2124,7 @@ impl Workbench {
                     .child(v_flex().pl(px(PAD_L)).children(lines))
                     .children(cursor),
             )
+            .child(ruler)
             .when(scrolled, |d| {
                 let w = f32::from(size.width);
                 let thumb = (scroll_x / grid_w * w, w / grid_w * w);

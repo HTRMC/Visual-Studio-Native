@@ -69,8 +69,8 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Keyboard scrolling: Terminal: Scroll Up/Down (Line) Ctrl+Alt+PageUp/
       PageDown, (Page) Shift+PageUp/PageDown, Scroll to Top/Bottom
       Ctrl+Home/End, outside full-screen programs.
-- [ ] Find's matches aren't marked on the vertical scrollbar (VS Code's
-      overview ruler).
+- [x] Find's matches are marked down the right edge (VS Code's overview
+      ruler), the current one gray.
 - [ ] Dragging a tab onto the editor area moves the terminal into an editor.
 - [ ] Shell integration: command decorations, run recent command, go to
       recent directory.
