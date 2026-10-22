@@ -294,14 +294,16 @@ impl Workbench {
                 }
             }
         });
-        // ponytail: extensions' console and output channels go to vsn's log
-        // until the Output panel lists channels.
+        let (tx, mut rx) = futures::channel::mpsc::unbounded::<Value>();
+        let log = tx.clone();
         std::thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                eprintln!("[extension host] {line}");
+                log.unbounded_send(
+                    json!({ "m": "log", "channel": "Extension Host", "text": line }),
+                )
+                .ok();
             }
         });
-        let (tx, mut rx) = futures::channel::mpsc::unbounded::<Value>();
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 if let Ok(msg) = serde_json::from_str(&line) {
@@ -365,11 +367,12 @@ impl Workbench {
                 self.note(text("text").into(), severity, cx);
             }
             "error" => {
-                // The stack goes to the log; the toast gets its first line.
+                // The stack goes to Output; the toast gets its first line.
                 let text = text("text");
-                eprintln!("[extension host] {text}");
+                self.log("Extension Host", &text, cx);
                 self.error(text.lines().next().unwrap_or_default().to_string(), cx);
             }
+            "log" => self.log(&text("channel"), &text("text"), cx),
             "status" => {
                 let id = text("id");
                 self.ext.status.retain(|i| i.id != id);

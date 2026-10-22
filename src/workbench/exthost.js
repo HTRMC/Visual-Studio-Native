@@ -1,7 +1,7 @@
 // vsn's extension host: runs JS extensions against a `vscode` module shim and
 // talks to vsn in newline-delimited JSON on stdin/stdout. Plain Node APIs
 // only, so Bun and Node both run it. Extensions' console output goes to
-// stderr, which vsn logs.
+// stderr, which vsn shows as the Extension Host output channel.
 'use strict';
 const Module = require('module');
 const fs = require('fs');
@@ -181,14 +181,16 @@ function createStatusBarItem(a, b, c) {
 }
 
 function createOutputChannel(name) {
-  // ponytail: to vsn's log; the Output panel when it lists channels.
+  const write = (text) => send({ m: 'log', channel: name, text: String(text) });
+  const level = (l) => (s, ...a) => write(`[${l}] ${util.format(s, ...a)}`);
+  // ponytail: append starts a new line, and show() doesn't reveal the panel.
   return {
     name,
-    append: (s) => log(`[${name}] ${s}`),
-    appendLine: (s) => log(`[${name}] ${s}`),
+    append: write,
+    appendLine: write,
     replace: () => {}, clear: () => {}, show: () => {}, hide: () => {}, dispose: () => {},
-    trace: (s) => log(`[${name}] ${s}`), debug: (s) => log(`[${name}] ${s}`), info: (s) => log(`[${name}] ${s}`),
-    warn: (s) => log(`[${name}] ${s}`), error: (s) => log(`[${name}] ${s}`),
+    trace: level('trace'), debug: level('debug'), info: level('info'),
+    warn: level('warning'), error: level('error'),
     logLevel: 3, onDidChangeLogLevel: never,
   };
 }

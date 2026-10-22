@@ -471,7 +471,10 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [ ] Extension keybindings take effect only after a restart; ones with a `when` clause are skipped.
 - [ ] `when` clauses and `menus` (editor title, context menus) for extension commands.
 - [ ] Quick pick, input box and message buttons for extensions (they read as cancelled).
-- [ ] Output channels go to vsn's log, not the Output panel.
+- [x] Output channels, the extension host's console and language server logs
+      show in the Output panel, picked from its channel dropdown.
+- [ ] Output: `append` always starts a new line, `show()`/`clear()`/`replace()`
+      do nothing, no filter, no word-wrap toggle, channels aren't sorted.
 - [ ] VS Code's own commands (`vscode.open`, `workbench.action.*`) called by extensions do nothing.
 - [ ] `globalState`/`workspaceState` are in memory only; `activeTextEditor` and documents don't reach the host.
 - [ ] `workspaceContains:` matches plain paths only, not globs.
@@ -482,4 +485,4 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [ ] Completion ignores the server's trigger characters and snippets (`snippetSupport` is off).
 - [ ] Problems panel: collapsing a file, filter, related information, and the Explorer's red file decorations.
 - [x] A crashed language server restarts and reopens its files, up to 5 times.
-- [ ] Language server logs go nowhere (no Output channel); a server given up on leaves its squiggles behind.
+- [ ] A language server given up on leaves its squiggles behind.

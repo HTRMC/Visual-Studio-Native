@@ -35,6 +35,7 @@ mod debug;
 pub(crate) mod extensions;
 mod exthost;
 mod lsp;
+mod output;
 mod palette;
 mod search;
 mod terminal;
@@ -954,6 +955,7 @@ pub struct Workbench {
     terminals: terminal::Terminals,
     ext: exthost::Host,
     lsp: lsp::Lsp,
+    output: output::Output,
     commit: Entity<InputState>,
     ext_search: Entity<InputState>,
     pub focus: FocusHandle,
@@ -1015,6 +1017,7 @@ impl Workbench {
             terminals: Default::default(),
             ext: Default::default(),
             lsp: Default::default(),
+            output: output::Output::new(),
         };
         this.init_search(window, cx);
         this.init_debug(window, cx);
@@ -3799,6 +3802,7 @@ impl Workbench {
                 .child(primary_button("forward-port", "Forward a Port", None))
                 .into_any_element(),
             debug::DEBUG_CONSOLE => self.render_debug_console(cx),
+            output::OUTPUT => self.render_output(cx),
             _ => div().into_any_element(),
         };
 
@@ -3825,9 +3829,15 @@ impl Workbench {
                                     .then(|| self.single_terminal_tab(cx))
                                     .flatten(),
                             )
+                            .children(
+                                (self.panel_tab == output::OUTPUT)
+                                    .then(|| self.output_menu(cx))
+                                    .flatten(),
+                            )
                             .children(actions.iter().enumerate().map(|(i, &ch)| {
                                 let text = match (ch, self.panel_tab) {
                                     (icon::CLEAR_ALL, debug::DEBUG_CONSOLE) => "Clear Console",
+                                    (icon::CLEAR_ALL, output::OUTPUT) => "Clear Output",
                                     _ => action_tip(ch),
                                 };
                                 let button = action_button(("panel-act", i), ch).tooltip(tip(text));
@@ -3840,6 +3850,9 @@ impl Workbench {
                                             this.clear_debug_console(cx)
                                         }))
                                     }
+                                    (icon::CLEAR_ALL, output::OUTPUT) => button.on_click(
+                                        cx.listener(|this, _, _, cx| this.clear_output(cx)),
+                                    ),
                                     (icon::ADD, TERMINAL) => {
                                         button.on_click(cx.listener(|this, _, window, cx| {
                                             this.new_terminal(false, window, cx)

@@ -144,8 +144,8 @@ there.
    instead of throwing. Install, uninstall, enable and disable restart the
    host; a crash restarts it up to 3 times. `require('vscode')` works by
    hooking `Module._resolveFilename` (Bun ignores `Module._load`) to a
-   `vscode.js` written next to the host. *Left:* quick pick, input box and
-   message buttons, output channels in the Output panel, VS Code's built-in
+   `vscode.js` written next to the host. Output channels and the host's console show in the Output panel. *Left:*
+   quick pick, input box and message buttons, VS Code's built-in
    commands, persistent mementos, `activeTextEditor` and documents, a
    bundled runtime in the installer (today: `runtime\` next to vsn.exe, then
    PATH).
@@ -156,12 +156,12 @@ there.
    (rust-analyzer, clangd, gopls, zls, basedpyright, typescript-language-server),
    full-text sync, `publishDiagnostics` as squiggles, the Problems panel
    (click to jump) and the status bar counts, `window/showMessage` as
-   toasts; a crashed server restarts, up to 5 times; Format Document; hover, completion and Go to Definition through gpui-component's
+   toasts; logs in the Output panel; a crashed server restarts, up to 5 times; Format Document; hover, completion and Go to Definition through gpui-component's
    editor providers (`lsp-types` and `anyhow` became direct dependencies for
    their types). *Left:* range formatting, rename, references, signature help
    and code actions; servers from language extensions, either by running
    `vscode-languageclient` in the JS host against this client or by reading
-   the server path from the extension; didClose; server logs in Output.
+   the server path from the extension; didClose.
 5. **WASM host.** wasmtime, a WIT world generated from the core API, and a
    sample plugin in Rust.
 

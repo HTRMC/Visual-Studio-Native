@@ -450,9 +450,7 @@ impl Workbench {
             .args(&cmd[1..])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            // ponytail: server logs are dropped; the Output panel shows them
-            // once it lists channels.
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
         if let Some(root) = &self.root {
             command.current_dir(root);
         }
@@ -460,7 +458,11 @@ impl Workbench {
         std::os::windows::process::CommandExt::creation_flags(&mut command, 0x0800_0000); // CREATE_NO_WINDOW
         // Not installed: the language just goes without.
         let mut child = command.spawn().ok()?;
-        let (mut stdin, stdout) = (child.stdin.take()?, child.stdout.take()?);
+        let (mut stdin, stdout, stderr) = (
+            child.stdin.take()?,
+            child.stdout.take()?,
+            child.stderr.take()?,
+        );
         let (out, out_rx) = mpsc::channel::<String>();
         let (ready, ready_rx) = mpsc::channel::<()>();
         // Nothing but `initialize` goes out until the server answers it.
@@ -484,10 +486,21 @@ impl Workbench {
             open: Mutex::default(),
         });
         let (tx, mut rx) = futures::channel::mpsc::unbounded::<Value>();
+        let log = |text: &str| json!({ "method": "vsn/log", "params": [cmd[0], text] });
+        let errors = tx.clone();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                errors.unbounded_send(log(&line)).ok();
+            }
+        });
         // Weak, so dropping the server closes stdin and ends both threads.
         let weak = Arc::downgrade(&server);
         std::thread::spawn(move || {
             read_frames(stdout, |msg| match (&msg["id"], msg["method"].as_str()) {
+                (Value::Null, Some("window/logMessage")) => {
+                    let text = msg["params"]["message"].as_str().unwrap_or_default();
+                    tx.unbounded_send(log(text)).ok();
+                }
                 (Value::Null, Some(_)) => _ = tx.unbounded_send(msg),
                 (id, None) if id == 0 => _ = ready.send(()),
                 (id, None) => {
@@ -592,6 +605,10 @@ impl Workbench {
                 }
                 self.show_diagnostics(&path, cx);
                 cx.notify();
+            }
+            Some("vsn/log") => {
+                let [channel, text] = [0, 1].map(|i| msg["params"][i].as_str().unwrap_or_default());
+                self.log(channel, text, cx);
             }
             Some("vsn/exited") => {
                 let Some(&(_, cmd)) = SERVERS.iter().find(|(_, c)| msg["params"] == c[0]) else {
