@@ -250,8 +250,10 @@ Differences from VS Code still to close, smallest first within each area.
       "No results found in open editors" wording.
 - [ ] The search's empty-result message lacks VS Code's trailing "Open
       Settings" and "Learn More" links.
-- [ ] The "files to exclude" box lacks VS Code's "Use Exclude Settings and
+- [x] The "files to exclude" box lacks VS Code's "Use Exclude Settings and
       Ignore Files" toggle (the search always honours .gitignore).
+- [ ] Search and the explorer ignore the `files.exclude` and `search.exclude`
+      settings (VS Code hides `.git` etc. and skips `node_modules` by default).
 - [x] A right-click in the explorer's empty area doesn't move the focus
       outline off the last row the way VS Code clears it.
 - [ ] The explorer handles one item at a time: no Ctrl/Shift+click

@@ -143,6 +143,7 @@ pub mod icon {
     pub const WHOLE_WORD: char = '\u{EB7E}';
     pub const REGEX: char = '\u{EB38}';
     pub const BOOK: char = '\u{EAA4}';
+    pub const EXCLUDE: char = '\u{EAE5}';
     pub const REPLACE: char = '\u{EB3D}';
     pub const REPLACE_ALL: char = '\u{EB3C}';
     pub const CIRCLE_OUTLINE: char = '\u{EABC}';

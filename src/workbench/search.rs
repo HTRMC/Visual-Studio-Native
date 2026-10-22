@@ -49,6 +49,8 @@ pub struct Find {
     details_open: bool,
     /// Search only in open editors (the book toggle in "files to include").
     open_only: bool,
+    /// Honour .gitignore and .ignore files (the toggle in "files to exclude").
+    use_ignore: bool,
     replace: Entity<InputState>,
     include: Entity<InputState>,
     exclude: Entity<InputState>,
@@ -72,6 +74,7 @@ impl Find {
             replace_open: false,
             details_open: true,
             open_only: false,
+            use_ignore: true,
             replace: input("Replace", window, cx),
             include: input("e.g. *.ts, src/**/include", window, cx),
             exclude: input("e.g. *.ts, src/**/exclude", window, cx),
@@ -161,6 +164,7 @@ pub(super) fn find_toggle(id: &'static str, ch: char, on: bool) -> Stateful<Div>
                 icon::WHOLE_WORD => Some("Match Whole Word (Alt+W)"),
                 icon::REGEX => Some("Use Regular Expression (Alt+R)"),
                 icon::BOOK => Some("Search only in Open Editors"),
+                icon::EXCLUDE => Some("Use Exclude Settings and Ignore Files"),
                 _ => None,
             },
             |d, text| d.tooltip(tip(text)),
@@ -196,13 +200,14 @@ fn search(
     overrides: Override,
     buffers: &HashMap<PathBuf, String>,
     only: Option<HashSet<PathBuf>>,
+    use_ignore: bool,
 ) -> (Vec<FileHit>, bool) {
     let mut hits = Vec::new();
     let mut total = 0;
     let keep = move |e: &ignore::DirEntry| {
         (only.as_ref()).is_none_or(|o| o.iter().any(|p| p.starts_with(e.path())))
     };
-    for entry in walk(root, overrides, keep).flatten() {
+    for entry in walk(root, overrides, use_ignore, keep).flatten() {
         if !entry.file_type().is_some_and(|t| t.is_file()) {
             continue;
         }
@@ -236,14 +241,16 @@ fn search(
     (hits, false)
 }
 
-/// The search's walk: honours .gitignore and the include/exclude `overrides`, skips `.git`,
-/// and descends only into entries `filter` keeps.
+/// The search's walk: honours .gitignore (with `use_ignore`) and the include/exclude
+/// `overrides`, skips `.git`, and descends only into entries `filter` keeps.
 fn walk(
     root: &Path,
     overrides: Override,
+    use_ignore: bool,
     filter: impl Fn(&ignore::DirEntry) -> bool + Send + Sync + 'static,
 ) -> ignore::Walk {
     ignore::WalkBuilder::new(root)
+        .standard_filters(use_ignore)
         .hidden(false)
         .overrides(overrides)
         .filter_entry(move |e| e.file_name() != ".git" && filter(e))
@@ -251,11 +258,13 @@ fn walk(
 }
 
 /// Whether `walk` reaches `path`, reading only the folders on the way to it.
-fn walks_to(root: &Path, overrides: Override, path: &Path) -> bool {
+fn walks_to(root: &Path, overrides: Override, use_ignore: bool, path: &Path) -> bool {
     let target = path.to_path_buf();
-    walk(root, overrides, move |e| target.starts_with(e.path()))
-        .flatten()
-        .any(|e| e.path() == path)
+    walk(root, overrides, use_ignore, move |e| {
+        target.starts_with(e.path())
+    })
+    .flatten()
+    .any(|e| e.path() == path)
 }
 
 fn search_text(text: &str, re: &Regex) -> Vec<LineHit> {
@@ -498,7 +507,8 @@ impl Workbench {
             self.find.include.read(cx).value(),
             self.find.exclude.read(cx).value(),
         );
-        overrides(root, &include, &exclude).is_ok_and(|o| walks_to(root, o, path))
+        let use_ignore = self.find.use_ignore;
+        overrides(root, &include, &exclude).is_ok_and(|o| walks_to(root, o, use_ignore, path))
     }
 
     /// The explorer's Find in Folder: Search, limited to files under `dir`.
@@ -574,11 +584,12 @@ impl Workbench {
                 .collect::<HashSet<_>>()
         });
         let f = &mut self.find;
+        let use_ignore = f.use_ignore;
         f.task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(debounce).await;
             let re2 = re.clone();
             let (results, capped) = cx
-                .background_spawn(async move { search(&root, &re2, overrides, &buffers, only) })
+                .background_spawn(async move { search(&root, &re2, overrides, &buffers, only, use_ignore) })
                 .await;
             this.update(cx, |this, cx| {
                 this.find.re = Some(re);
@@ -938,7 +949,13 @@ impl Workbench {
                                 cx,
                             ))))
                             .child(label("files to exclude"))
-                            .child(boxed(Input::new(&f.exclude)))
+                            .child(boxed(Input::new(&f.exclude).suffix(toggle(
+                                "use-ignore",
+                                icon::EXCLUDE,
+                                f.use_ignore,
+                                |f| &mut f.use_ignore,
+                                cx,
+                            ))))
                     }),
             )
             .when_some(f.message.clone(), |d, msg| {
@@ -1005,9 +1022,16 @@ mod tests {
             walks_to(
                 &root,
                 overrides(&root, "", exclude).unwrap(),
+                true,
                 &root.join(rel),
             )
         };
+        assert!(walks_to(
+            &root,
+            overrides(&root, "", "").unwrap(),
+            false,
+            &root.join("out/a.rs")
+        ));
         assert!(reaches("src/a.rs", ""));
         assert!(!reaches("out/a.rs", ""));
         assert!(!reaches("src/a.rs", "src"));
