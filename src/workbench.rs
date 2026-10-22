@@ -16,7 +16,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_resizable,
     input::{self, Editor, EditorState, Input, InputEvent, InputState, RopeExt as _, TabSize},
-    menu::{DropdownMenu as _, PopupMenu},
+    menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem},
     resizable_panel,
     tooltip::Tooltip,
     v_resizable,
@@ -47,6 +47,11 @@ actions!(
         CloseEditor,
         CloseAllEditors,
         CloseSavedEditors,
+        CloseOtherEditors,
+        CloseEditorsToTheRight,
+        CopyPath,
+        CopyRelativePath,
+        RevealInFileExplorer,
         Quit,
         ToggleSidebar,
         TogglePanel,
@@ -136,6 +141,9 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-k ctrl-w", CloseAllEditors, None),
         KeyBinding::new("ctrl-k w", CloseAllEditors, None),
         KeyBinding::new("ctrl-k u", CloseSavedEditors, None),
+        KeyBinding::new("shift-alt-c", CopyPath, None),
+        KeyBinding::new("ctrl-k ctrl-shift-alt-c", CopyRelativePath, None),
+        KeyBinding::new("shift-alt-r", RevealInFileExplorer, None),
         KeyBinding::new("alt-f4", Quit, None),
         KeyBinding::new("ctrl-b", ToggleSidebar, None),
         KeyBinding::new("ctrl-j", TogglePanel, None),
@@ -895,14 +903,25 @@ impl Workbench {
         .detach();
     }
 
-    /// Close All (Ctrl+K W): one prompt for every dirty editor, as VS Code asks.
-    fn close_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let names: Vec<_> = (self.docs.iter().filter(|d| d.dirty))
+    /// Closes the editors `pick` chooses (Close All, Close Others, Close to
+    /// the Right), with one prompt for the dirty ones, as VS Code asks.
+    fn close_editors(
+        &mut self,
+        pick: impl Fn(usize, &Doc) -> bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let targets: Vec<_> = (self.docs.iter().enumerate())
+            .filter(|(ix, d)| pick(*ix, d))
+            .map(|(_, d)| d.editor.clone())
+            .collect();
+        let names: Vec<_> = (self.docs.iter())
+            .filter(|d| d.dirty && targets.contains(&d.editor))
             .map(|d| d.path.file_name().unwrap_or_default().to_string_lossy())
             .collect();
         let lost = "Your changes will be lost if you don't save them.";
         let (message, detail, save) = match names.as_slice() {
-            [] => return self.remove_where(|_| true, window, cx),
+            [] => return self.remove_where(|d| targets.contains(&d.editor), window, cx),
             [name] => (
                 format!("Do you want to save the changes you made to {name}?"),
                 lost.to_string(),
@@ -929,19 +948,41 @@ impl Workbench {
             this.update_in(cx, |this, window, cx| match choice {
                 0 => {
                     for ix in 0..this.docs.len() {
-                        if this.docs[ix].dirty {
+                        if this.docs[ix].dirty && targets.contains(&this.docs[ix].editor) {
                             this.write(ix, window, cx);
                         }
                     }
                     // An untitled one still waits on its Save As dialog.
-                    this.remove_where(|d| !d.dirty, window, cx);
+                    this.remove_where(|d| !d.dirty && targets.contains(&d.editor), window, cx);
                 }
-                1 => this.remove_where(|_| true, window, cx),
+                1 => this.remove_where(|d| targets.contains(&d.editor), window, cx),
                 _ => {}
             })
             .ok();
         })
         .detach();
+    }
+
+    /// Copy Path / Copy Relative Path (to the folder, else the full path).
+    fn copy_path(&mut self, ix: usize, relative: bool, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.get(ix) else { return };
+        let path = (self.root.as_ref())
+            .filter(|_| relative)
+            .and_then(|r| doc.path.strip_prefix(r).ok())
+            .unwrap_or(&doc.path);
+        cx.write_to_clipboard(ClipboardItem::new_string(path.display().to_string()));
+    }
+
+    /// Reveal in File Explorer: opens the file's folder with it selected.
+    fn reveal_in_os(&mut self, ix: usize) {
+        let Some(doc) = self.docs.get(ix).filter(|d| !d.untitled) else {
+            return;
+        };
+        let select = format!("/select,{}", doc.path.display());
+        std::process::Command::new("explorer.exe")
+            .arg(select)
+            .spawn()
+            .ok();
     }
 
     /// Closes every editor `gone` picks, keeping the active one if it stays.
@@ -1789,6 +1830,7 @@ impl Workbench {
         if self.docs.is_empty() {
             return watermark().into_any_element();
         }
+        let wb = cx.weak_entity();
         let tabs = self.docs.iter().enumerate().map(|(ix, doc)| {
             let active = ix == self.active;
             let name = doc
@@ -1850,6 +1892,11 @@ impl Workbench {
                         })),
                 )
                 .on_click(cx.listener(move |this, _, window, cx| this.activate(ix, window, cx)))
+                .context_menu({
+                    let (wb, editor) = (wb.clone(), doc.editor.clone());
+                    let last = ix + 1 == self.docs.len();
+                    move |menu, _, _| editor_tab_menu(menu, &wb, &editor, last)
+                })
         });
 
         let doc = &self.docs[self.active];
@@ -2596,7 +2643,26 @@ impl Render for Workbench {
             .on_action(cx.listener(Self::quit))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::toggle_panel))
-            .on_action(cx.listener(|this, _: &CloseAllEditors, w, cx| this.close_all(w, cx)))
+            .on_action(cx.listener(|this, _: &CloseAllEditors, w, cx| {
+                this.close_editors(|_, _| true, w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &CloseOtherEditors, w, cx| {
+                let active = this.active;
+                this.close_editors(|ix, _| ix != active, w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &CloseEditorsToTheRight, w, cx| {
+                let active = this.active;
+                this.close_editors(|ix, _| ix > active, w, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &CopyPath, _, cx| this.copy_path(this.active, false, cx)),
+            )
+            .on_action(cx.listener(|this, _: &CopyRelativePath, _, cx| {
+                this.copy_path(this.active, true, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &RevealInFileExplorer, _, _| this.reveal_in_os(this.active)),
+            )
             .on_action(cx.listener(|this, _: &CloseSavedEditors, w, cx| {
                 this.remove_where(|d| !d.dirty, w, cx)
             }))
@@ -3147,14 +3213,86 @@ fn action_tip(ch: char) -> &'static str {
 
 /// A menu item bound to a chord, which the menu's own hint cuts to its first key.
 fn chord(menu: PopupMenu, label: &'static str, action: impl Action) -> PopupMenu {
-    let boxed = action.boxed_clone();
-    menu.menu_element(Box::new(action), move |window, _| {
-        let keys = kbds(boxed.as_ref(), window).into_iter().map(|k| {
-            // As the menu styles its own hint.
-            k.p_0().min_w_0().border_0().bg(transparent_white())
-        });
+    let row = chord_row(label, Some(action.boxed_clone()));
+    menu.menu_element(Box::new(action), row)
+}
+
+/// A menu row: the label, and every key of `action`'s binding.
+fn chord_row(
+    label: &'static str,
+    action: Option<Box<dyn Action>>,
+) -> impl Fn(&mut Window, &mut App) -> Div + 'static {
+    move |window, _| {
+        let keys = (action.iter())
+            .flat_map(|a| kbds(a.as_ref(), window))
+            .map(|k| {
+                // As the menu styles its own hint.
+                k.p_0().min_w_0().border_0().bg(transparent_white())
+            });
         (h_flex().w_full().gap_3().items_center().justify_between())
             .child(label)
             .child(h_flex().gap_1().children(keys))
-    })
+    }
+}
+
+/// An editor tab's right-click menu, acting on that tab as VS Code's does.
+fn editor_tab_menu(
+    menu: PopupMenu,
+    wb: &WeakEntity<Workbench>,
+    editor: &Entity<EditorState>,
+    last: bool,
+) -> PopupMenu {
+    type Act = fn(&mut Workbench, usize, &mut Window, &mut Context<Workbench>);
+    let item = |label: &'static str, action: Option<Box<dyn Action>>, act: Act| {
+        let (wb, editor) = (wb.clone(), editor.clone());
+        PopupMenuItem::element(chord_row(label, action)).on_click(move |_, window, cx| {
+            wb.update(cx, |this, cx| {
+                if let Some(ix) = this.docs.iter().position(|d| d.editor == editor) {
+                    act(this, ix, window, cx)
+                }
+            })
+            .ok();
+        })
+    };
+    menu.item(item(
+        "Close",
+        Some(Box::new(CloseEditor)),
+        |this, ix, w, cx| this.close(ix, w, cx),
+    ))
+    .item(item("Close Others", None, |this, ix, w, cx| {
+        this.close_editors(|i, _| i != ix, w, cx)
+    }))
+    .item(
+        item("Close to the Right", None, |this, ix, w, cx| {
+            this.close_editors(|i, _| i > ix, w, cx)
+        })
+        .disabled(last),
+    )
+    .item(item(
+        "Close Saved",
+        Some(Box::new(CloseSavedEditors)),
+        |this, _, w, cx| this.remove_where(|d| !d.dirty, w, cx),
+    ))
+    .item(item(
+        "Close All",
+        Some(Box::new(CloseAllEditors)),
+        |this, _, w, cx| this.close_editors(|_, _| true, w, cx),
+    ))
+    .separator()
+    .item(item(
+        "Copy Path",
+        Some(Box::new(CopyPath)),
+        |this, ix, _, cx| this.copy_path(ix, false, cx),
+    ))
+    .item(item(
+        "Copy Relative Path",
+        Some(Box::new(CopyRelativePath)),
+        |this, ix, _, cx| this.copy_path(ix, true, cx),
+    ))
+    .separator()
+    .item(item(
+        "Reveal in File Explorer",
+        Some(Box::new(RevealInFileExplorer)),
+        |this, ix, _, _| this.reveal_in_os(ix),
+    ))
 }

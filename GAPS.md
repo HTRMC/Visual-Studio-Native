@@ -120,8 +120,11 @@ Differences from VS Code still to close, smallest first within each area.
       Group and Configure Editors (no preview editors or groups yet).
 - [ ] Most title actions are inert (Customize Layout, Split Editor, the side
       bars' Views and More Actions).
-- [ ] Tabs have no right-click menu (Close, Close Others, Close to the
-      Right, Close Saved, Close All, Copy Path, Reveal in Explorer...).
+- [x] Tabs have a right-click menu: Close, Close Others, Close to the
+      Right, Close Saved, Close All, Copy (Relative) Path, Reveal in File
+      Explorer; each is in the palette too.
+- [ ] The tab menu lacks Reveal in Explorer View, Keep Open/Pin, Split and
+      Share; the explorer's files have no right-click menu at all.
 - [ ] A gpui tooltip stays on screen when its button moves away under a
       still mouse (e.g. after Restore Panel Size) until the mouse moves.
 - [x] Activity bar tooltips show under the mouse; VS Code puts them to the

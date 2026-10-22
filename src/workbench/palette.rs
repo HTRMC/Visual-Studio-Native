@@ -63,6 +63,23 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
             Box::new(CloseSavedEditors),
         ),
         (
+            "View: Close Other Editors in Group",
+            Box::new(CloseOtherEditors),
+        ),
+        (
+            "View: Close Editors to the Right in Group",
+            Box::new(CloseEditorsToTheRight),
+        ),
+        ("File: Copy Path of Active File", Box::new(CopyPath)),
+        (
+            "File: Copy Relative Path of Active File",
+            Box::new(CopyRelativePath),
+        ),
+        (
+            "File: Reveal Active File in File Explorer",
+            Box::new(RevealInFileExplorer),
+        ),
+        (
             "View: Toggle Primary Side Bar Visibility",
             Box::new(ToggleSidebar),
         ),

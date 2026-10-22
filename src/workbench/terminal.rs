@@ -11,7 +11,7 @@ use std::{
 use gpui_kit::base::input::{Escape, Search};
 use gpui_kit::component::{
     input::Position,
-    menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem},
+    menu::{PopupMenu, PopupMenuItem},
 };
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
