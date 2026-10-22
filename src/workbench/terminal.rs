@@ -7,6 +7,7 @@ use std::{
     rc::Rc,
 };
 
+use gpui_kit::base::input::Escape;
 use gpui_kit::component::{
     input::Position,
     menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem},
@@ -14,7 +15,7 @@ use gpui_kit::component::{
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 use super::*;
-use crate::theme::c;
+use crate::theme::{c, ca};
 
 const FONT: &str = "Consolas";
 const FONT_SIZE: f32 = 14.;
@@ -42,6 +43,10 @@ pub(super) struct Terminals {
     /// Why the last terminal failed to launch.
     error: Option<String>,
     next_id: u64,
+    /// Find's input, made on first use, and whether it shows over the
+    /// active terminal.
+    find: Option<Entity<InputState>>,
+    finding: bool,
 }
 
 pub(super) struct Terminal {
@@ -79,6 +84,11 @@ pub(super) struct Terminal {
     scroll: f32,
     /// The cell the last mouse report was for, to send motion once per cell.
     mouse_cell: Option<(u16, u16)>,
+    /// Find's matches, oldest first, and the one selected.
+    // ponytail: found when the query changes; output after that isn't
+    // searched until it changes again.
+    matches: Vec<Span>,
+    current: Option<usize>,
     _task: Task<()>,
 }
 
@@ -676,12 +686,176 @@ impl Workbench {
             hover: None,
             scroll: 0.,
             mouse_cell: None,
+            matches: Vec::new(),
+            current: None,
             _task: task,
         })
     }
 
     fn terminal(&mut self, id: u64) -> Option<&mut Terminal> {
         self.terminals.list.iter_mut().find(|t| t.id == id)
+    }
+
+    /// VS Code's terminal find widget: over the active terminal, finding as
+    /// you type.
+    pub(super) fn find_in_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.terminals.list.is_empty() {
+            return;
+        }
+        let input = match &self.terminals.find {
+            Some(input) => input.clone(),
+            None => {
+                let input = cx.new(|cx| InputState::new(window, cx).placeholder("Find"));
+                cx.subscribe(&input, |this, _, ev: &InputEvent, cx| match ev {
+                    InputEvent::Change => this.search_terminal(cx),
+                    // Enter goes up, to older output, as in VS Code.
+                    InputEvent::PressEnter { shift, .. } => this.step_match(!shift, cx),
+                    _ => {}
+                })
+                .detach();
+                self.terminals.find = Some(input.clone());
+                input
+            }
+        };
+        self.terminals.finding = true;
+        input.update(cx, |s, cx| s.focus(window, cx));
+        self.search_terminal(cx);
+    }
+
+    pub(super) fn close_terminal_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.terminals.finding = false;
+        for t in &mut self.terminals.list {
+            (t.matches, t.current) = (Vec::new(), None);
+        }
+        if let Some(t) = self.terminals.list.get(self.terminals.active) {
+            window.focus(&t.focus, cx);
+        }
+        cx.notify();
+    }
+
+    /// Finds the query in the active terminal and selects the newest match.
+    fn search_terminal(&mut self, cx: &mut Context<Self>) {
+        let Some(input) = &self.terminals.find else {
+            return;
+        };
+        let query = input.read(cx).value().to_string();
+        let Some(t) = self.terminals.list.get_mut(self.terminals.active) else {
+            return;
+        };
+        // ponytail: case-insensitive text only; no case, word or regex toggles.
+        let re = regex::RegexBuilder::new(&regex::escape(&query))
+            .case_insensitive(true)
+            .build()
+            .ok()
+            .filter(|_| !query.is_empty());
+        t.matches = re.map_or(Vec::new(), |re| find_all(t.parser.screen_mut(), &re));
+        // The old match's selection goes with it.
+        if t.current.is_some() {
+            t.selection = None;
+        }
+        t.current = t.matches.len().checked_sub(1);
+        self.show_match(cx);
+    }
+
+    /// Selects the match above (`up`) or below the current one, wrapping.
+    fn step_match(&mut self, up: bool, cx: &mut Context<Self>) {
+        let Some(t) = self.terminals.list.get_mut(self.terminals.active) else {
+            return;
+        };
+        let n = t.matches.len();
+        t.current = match t.current {
+            _ if n == 0 => None,
+            None => Some(n - 1),
+            Some(i) if up => Some((i + n - 1) % n),
+            Some(i) => Some((i + 1) % n),
+        };
+        self.show_match(cx);
+    }
+
+    /// Selects the current match, scrolling it to the middle if it's off
+    /// screen.
+    fn show_match(&mut self, cx: &mut Context<Self>) {
+        let Some(t) = self.terminals.list.get_mut(self.terminals.active) else {
+            return;
+        };
+        if let Some(m) = t.current.map(|i| t.matches[i]) {
+            (t.selection, t.block, t.unit) = (Some(m), false, None);
+            let rows = t.parser.screen().size().0.get() as usize;
+            let (top, line) = (t.top(), m.0.0);
+            if line < top || line >= top + rows {
+                let screen = t.parser.screen_mut();
+                let len = screen.scrollback_len();
+                screen.set_scrollback(len.saturating_sub(line.saturating_sub(rows / 2)));
+            }
+        }
+        cx.notify();
+    }
+
+    /// The find widget over the active terminal: input, count, arrows, close.
+    fn render_terminal_find(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let input = self
+            .terminals
+            .find
+            .as_ref()
+            .filter(|_| self.terminals.finding)?;
+        let t = self.terminals.list.get(self.terminals.active)?;
+        let count = match t.current {
+            Some(i) => format!("{} of {}", i + 1, t.matches.len()),
+            None => "No results".into(),
+        };
+        type Act = fn(&mut Workbench, &mut Window, &mut Context<Workbench>);
+        let button = |id: &'static str, ch: char, act: Act| {
+            action_button(id, ch)
+                .size(px(20.))
+                .on_click(cx.listener(move |this, _, w, cx| act(this, w, cx)))
+        };
+        Some(
+            h_flex()
+                .id("terminal-find")
+                .absolute()
+                .top_0()
+                .right(px(PAD_R + 4.))
+                .h(px(33.))
+                .px(px(4.))
+                .gap(px(2.))
+                .bg(c(0x252526))
+                .shadow_md()
+                .text_size(px(13.))
+                // Clicks stay off the terminal under it.
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .capture_action(cx.listener(|this, _: &Escape, window, cx| {
+                    cx.stop_propagation();
+                    this.close_terminal_find(window, cx)
+                }))
+                .child(
+                    div()
+                        .w(px(220.))
+                        .border_1()
+                        .border_color(col::accent())
+                        .bg(col::input())
+                        .child(Input::new(input).appearance(false).text_size(px(13.))),
+                )
+                .child(
+                    div()
+                        .min_w(px(68.))
+                        .px(px(4.))
+                        .text_size(px(12.))
+                        .child(count),
+                )
+                .child(button("terminal-find-up", icon::ARROW_UP, |this, _, cx| {
+                    this.step_match(true, cx)
+                }))
+                .child(button(
+                    "terminal-find-down",
+                    icon::ARROW_DOWN,
+                    |this, _, cx| this.step_match(false, cx),
+                ))
+                .child(button(
+                    "terminal-find-close",
+                    icon::CLOSE,
+                    Self::close_terminal_find,
+                )),
+        )
     }
 
     /// The active terminal's id and name.
@@ -1117,8 +1291,12 @@ impl Workbench {
                     .flex_1()
                     .min_w_0()
                     .h_full()
+                    .relative()
                     .when(i > 0, |d| d.border_l_1().border_color(col::border()))
                     .child(self.render_one(ix, window, cx))
+                    .when(ix == self.terminals.active, |d| {
+                        d.children(self.render_terminal_find(cx))
+                    })
             })
             .collect();
 
@@ -1262,6 +1440,11 @@ impl Workbench {
         let (fg0, bg0) = (c(0xCCCCCC), col::bg());
         let (selection, block) = (t.selection, t.block);
         let top = t.top();
+        let bottom = top + rows.get() as usize;
+        let matches: Vec<Span> = (t.matches.iter())
+            .filter(|m| m.0.0 < bottom && m.1.0 >= top)
+            .copied()
+            .collect();
         let hover = t.hover;
         let lines = (0..rows.get()).map(|row| {
             let mut text = String::new();
@@ -1291,6 +1474,8 @@ impl Workbench {
                 let at = (top + row as usize, col);
                 if selection.is_some_and(|s| selected(s, block, at)) {
                     bg = Some(c(0x264F78));
+                } else if matches.iter().any(|&m| selected(m, false, at)) {
+                    bg = Some(ca(0xEA5C0055));
                 }
                 let link = hover.is_some_and(|(l, a, b)| {
                     at.0 >= l && (a..b).contains(&((at.0 - l) * cols.get() as usize + col as usize))
@@ -1539,6 +1724,28 @@ fn tab_menu(menu: PopupMenu, wb: &WeakEntity<Workbench>, id: u64) -> PopupMenu {
 /// A terminal's name until it is renamed: its program's, like `pwsh`.
 fn shell_name(profile: &Profile) -> String {
     (profile.program.file_stem()).map_or("shell".into(), |s| s.to_string_lossy().into())
+}
+
+/// Every match of `re` along the wrapped lines, as selection spans, oldest
+/// first.
+fn find_all(screen: &mut vt100::Screen, re: &regex::Regex) -> Vec<Span> {
+    let cols = screen.size().1.get() as usize;
+    let last = screen.scrollback_len() + screen.size().0.get() as usize - 1;
+    let mut found = Vec::new();
+    let mut line = 0;
+    while line <= last {
+        let (l0, l1) = wrapped_lines(screen, line);
+        let text: String = (l0..=l1)
+            .flat_map(|l| at_line(screen, l, row_chars))
+            .collect();
+        let at = |byte: usize| {
+            let i = text[..byte].chars().count();
+            (l0 + i / cols, (i % cols) as u16)
+        };
+        found.extend(re.find_iter(&text).map(|m| (at(m.start()), at(m.end()))));
+        line = l1 + 1;
+    }
+    found
 }
 
 /// The text between two selection ends, a screenful of scrollback at a time.
@@ -1835,8 +2042,8 @@ mod tests {
     use gpui_kit::Keystroke;
 
     use super::{
-        Link, at_line, cursor_moves, key_bytes, link, mouse_bytes, reflow, selected, text_between,
-        word_at, word_span, wrapped_lines,
+        Link, at_line, cursor_moves, find_all, key_bytes, link, mouse_bytes, reflow, selected,
+        text_between, word_at, word_span, wrapped_lines,
     };
 
     #[test]
@@ -1895,6 +2102,19 @@ mod tests {
             b"\x1b[M\x61\x21\x21"
         );
         assert_eq!(mouse_bytes(0, true, (0, 0), Default), b"\x1b[M\x23\x21\x21");
+    }
+
+    #[test]
+    fn finds() {
+        let mut p = vt100::Parser::new(3.try_into().unwrap(), 10.try_into().unwrap(), 100);
+        // "xx item tw" wraps onto "o wraps"; the first line goes to scrollback.
+        p.process(b"Item one\r\nxx item two wraps\r\n");
+        let mut find = |q: &str| {
+            let re = regex::RegexBuilder::new(q).case_insensitive(true).build();
+            find_all(p.screen_mut(), &re.unwrap())
+        };
+        assert_eq!(find("item"), [((0, 0), (0, 4)), ((1, 3), (1, 7))]);
+        assert_eq!(find("two"), [((1, 8), (2, 1))]);
     }
 
     #[test]

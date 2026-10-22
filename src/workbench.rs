@@ -65,6 +65,7 @@ actions!(
         NewTerminal,
         SplitTerminal,
         RenameTerminal,
+        FindInTerminal,
         SelectDefaultProfile,
         NewTextFile,
         Noop,
@@ -110,6 +111,7 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("f9", ToggleBreakpoint, None),
         shifted("ctrl-shift-`", Box::new(NewTerminal), None),
         shifted("ctrl-shift-5", Box::new(SplitTerminal), Some("Terminal")),
+        KeyBinding::new("ctrl-f", FindInTerminal, Some("Terminal")),
         KeyBinding::new("ctrl-n", NewTextFile, None),
     ]
 }
@@ -1721,6 +1723,11 @@ impl Render for Workbench {
             .on_action(
                 cx.listener(|this, _: &RenameTerminal, window, cx| {
                     this.rename_terminal(window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &FindInTerminal, window, cx| {
+                    this.find_in_terminal(window, cx)
                 }),
             )
             .on_action(cx.listener(|this, _: &SelectDefaultProfile, window, cx| {

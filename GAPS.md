@@ -25,7 +25,10 @@ Differences from VS Code still to close, smallest first within each area.
       row's part.
 - [ ] Wheel scrollback is lost when a shell sets application cursor mode
       (needs OpenConsole's conpty.dll).
-- [ ] Find in terminal (Ctrl+F).
+- [x] Find in terminal (Ctrl+F).
+- [ ] Ctrl+F with find already open selects the query, so typing replaces it.
+- [ ] Find's case, whole word and regex toggles.
+- [ ] Find re-searches output that arrives while it's open.
 - [x] Rename a terminal (Terminal: Rename..., or Rename... on a tab).
 - [x] Rename's input starts with the old name selected, so typing replaces it.
 - [x] With one terminal, the panel's title bar shows its icon and name.

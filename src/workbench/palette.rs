@@ -64,6 +64,7 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("Terminal: Create New Terminal", Box::new(NewTerminal)),
         ("Terminal: Split Terminal", Box::new(SplitTerminal)),
         ("Terminal: Rename...", Box::new(RenameTerminal)),
+        ("Terminal: Focus Find", Box::new(FindInTerminal)),
         (
             "Terminal: Select Default Profile",
             Box::new(SelectDefaultProfile),

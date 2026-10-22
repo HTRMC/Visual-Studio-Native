@@ -100,6 +100,8 @@ pub mod icon {
     pub const LAYOUT: char = '\u{EBEB}';
     pub const ARROW_LEFT: char = '\u{EA9B}';
     pub const ARROW_RIGHT: char = '\u{EA9C}';
+    pub const ARROW_UP: char = '\u{EAA1}';
+    pub const ARROW_DOWN: char = '\u{EA9A}';
     pub const CHROME_MINIMIZE: char = '\u{EABA}';
     pub const CHROME_MAXIMIZE: char = '\u{EAB9}';
     pub const CHROME_RESTORE: char = '\u{EABB}';
