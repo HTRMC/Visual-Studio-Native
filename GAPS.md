@@ -239,9 +239,12 @@ Differences from VS Code still to close, smallest first within each area.
 - [ ] Files copied in Windows Explorer can't be pasted into the explorer,
       nor explorer items pasted out to Windows (gpui's clipboard is text
       and images only; needs CF_HDROP).
-- [ ] The explorer's empty area has no right-click menu (VS Code's New
-      File/Folder, Paste, Reveal, Open in Integrated Terminal, Find in
-      Folder for the root).
+- [x] The explorer's empty area has no right-click menu (VS Code's Paste,
+      Reveal, Open in Integrated Terminal, Copy Path for the root).
+- [ ] Explorer menus lack New File/Folder and Find in Folder (VS Code puts
+      them on folder rows and the empty area).
+- [ ] A right-click in the explorer's empty area doesn't move the focus
+      outline off the last row the way VS Code clears it.
 - [ ] The explorer handles one item at a time: no Ctrl/Shift+click
       multi-select for drag, cut, copy or paste.
 - [ ] An explorer move or copy can't be undone (Ctrl+Z in the explorer), and

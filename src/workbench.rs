@@ -1935,6 +1935,11 @@ impl Workbench {
             }
             self.tree_rows(&root, 0, &mut rows);
         }
+        let (wb, root, clip) = (
+            cx.weak_entity(),
+            self.root.clone().unwrap_or_default(),
+            self.clip.is_some(),
+        );
         let button = |id: &'static str, ch: char, text: &'static str| {
             (action_button(id, ch).font_weight(FontWeight::NORMAL)).tooltip(tip(text))
         };
@@ -1987,71 +1992,87 @@ impl Workbench {
                             })),
                     )
                     .child(
-                        uniform_list(
-                            "tree",
-                            rows.len(),
-                            cx.processor(move |this, range: Range<usize>, window, cx| {
-                                // Holds while the row's menu has focus too.
-                                let focused = this.tree_focus.contains_focused(window, cx);
-                                range
-                                    .map(|ix| this.render_tree_row(&rows[ix], focused, cx))
-                                    .collect::<Vec<_>>()
+                        // A right-click past the rows gets the workspace folder's menu.
+                        div()
+                            .id("explorer-empty")
+                            .key_context("Explorer")
+                            .flex()
+                            .flex_1()
+                            .min_h_0()
+                            .child(
+                                uniform_list(
+                                    "tree",
+                                    rows.len(),
+                                    cx.processor(move |this, range: Range<usize>, window, cx| {
+                                        // Holds while the row's menu has focus too.
+                                        let focused = this.tree_focus.contains_focused(window, cx);
+                                        range
+                                            .map(|ix| this.render_tree_row(&rows[ix], focused, cx))
+                                            .collect::<Vec<_>>()
+                                    }),
+                                )
+                                .track_scroll(&self.tree_scroll)
+                                .track_focus(&self.tree_focus)
+                                .on_key_down(cx.listener(Self::tree_key))
+                                .on_action(
+                                    cx.listener(|this, _: &CutFile, _, cx| {
+                                        this.clip_file(true, cx)
+                                    }),
+                                )
+                                .on_action(cx.listener(|this, _: &CopyFile, _, cx| {
+                                    this.clip_file(false, cx)
+                                }))
+                                .on_action(cx.listener(|this, _: &PasteFile, window, cx| {
+                                    this.paste_file(this.tree_cursor.clone(), window, cx)
+                                }))
+                                // Left alone, a drag over the tree drops into the
+                                // root; the row under the mouse moves it after this.
+                                .on_drag_move(cx.listener(
+                                    |this, e: &DragMoveEvent<DraggedFile>, _, cx| {
+                                        let from = e.drag(cx).0.clone();
+                                        let inside = e.bounds.contains(&e.event.position);
+                                        let copy = e.event.modifiers.control;
+                                        this.drag_target(
+                                            this.root.clone().filter(|_| inside),
+                                            Some(&from),
+                                            copy,
+                                            cx,
+                                        );
+                                    },
+                                ))
+                                .on_drag_move(cx.listener(
+                                    |this, e: &DragMoveEvent<ExternalPaths>, _, cx| {
+                                        let inside = e.bounds.contains(&e.event.position);
+                                        this.drag_target(
+                                            this.root.clone().filter(|_| inside),
+                                            None,
+                                            true,
+                                            cx,
+                                        );
+                                    },
+                                ))
+                                .when(
+                                    self.drop_dir.is_some()
+                                        && self.drop_dir == self.root
+                                        && cx.has_active_drag(),
+                                    |d| d.bg(col::drop()),
+                                )
+                                .on_drop(cx.listener(|this, file: &DraggedFile, window, cx| {
+                                    if let Some(root) = this.root.clone() {
+                                        this.drop_file(file.0.clone(), root, window, cx)
+                                    }
+                                }))
+                                .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                                    if let Some(root) = this.root.clone() {
+                                        this.import_paths(paths.paths(), root, window, cx)
+                                    }
+                                }))
+                                .group("explorer-tree")
+                                .size_full(),
+                            )
+                            .context_menu(move |menu, _, _| {
+                                explorer_menu(menu, &wb, &root, true, true, clip)
                             }),
-                        )
-                        .track_scroll(&self.tree_scroll)
-                        .track_focus(&self.tree_focus)
-                        .key_context("Explorer")
-                        .on_key_down(cx.listener(Self::tree_key))
-                        .on_action(cx.listener(|this, _: &CutFile, _, cx| this.clip_file(true, cx)))
-                        .on_action(
-                            cx.listener(|this, _: &CopyFile, _, cx| this.clip_file(false, cx)),
-                        )
-                        .on_action(cx.listener(|this, _: &PasteFile, window, cx| {
-                            this.paste_file(this.tree_cursor.clone(), window, cx)
-                        }))
-                        // Left alone, a drag over the tree drops into the
-                        // root; the row under the mouse moves it after this.
-                        .on_drag_move(cx.listener(|this, e: &DragMoveEvent<DraggedFile>, _, cx| {
-                            let from = e.drag(cx).0.clone();
-                            let inside = e.bounds.contains(&e.event.position);
-                            let copy = e.event.modifiers.control;
-                            this.drag_target(
-                                this.root.clone().filter(|_| inside),
-                                Some(&from),
-                                copy,
-                                cx,
-                            );
-                        }))
-                        .on_drag_move(cx.listener(
-                            |this, e: &DragMoveEvent<ExternalPaths>, _, cx| {
-                                let inside = e.bounds.contains(&e.event.position);
-                                this.drag_target(
-                                    this.root.clone().filter(|_| inside),
-                                    None,
-                                    true,
-                                    cx,
-                                );
-                            },
-                        ))
-                        .when(
-                            self.drop_dir.is_some()
-                                && self.drop_dir == self.root
-                                && cx.has_active_drag(),
-                            |d| d.bg(col::drop()),
-                        )
-                        .on_drop(cx.listener(|this, file: &DraggedFile, window, cx| {
-                            if let Some(root) = this.root.clone() {
-                                this.drop_file(file.0.clone(), root, window, cx)
-                            }
-                        }))
-                        .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
-                            if let Some(root) = this.root.clone() {
-                                this.import_paths(paths.paths(), root, window, cx)
-                            }
-                        }))
-                        .group("explorer-tree")
-                        .flex_1()
-                        .min_h_0(),
                     )
                     .child(self.slider("tree", &self.tree_scroll, Axis::Vertical, 10.)),
                 None => d
@@ -2472,7 +2493,9 @@ impl Workbench {
                     cx.notify();
                 }),
             )
-            .context_menu(move |menu, _, _| explorer_menu(menu, &wb, &menu_path, is_dir, clip))
+            .context_menu(move |menu, _, _| {
+                explorer_menu(menu, &wb, &menu_path, is_dir, false, clip)
+            })
             .into_any_element()
     }
 
@@ -3354,14 +3377,16 @@ fn reveal_path(path: &Path) {
         .ok();
 }
 
-/// An explorer row's right-click menu, as VS Code's for a file or folder.
-// ponytail: no Open to the Side, Find in Folder, Rename or Delete yet (no
-// split editors, recycle bin or inline rename).
+/// An explorer row's right-click menu, as VS Code's for a file or folder;
+/// the `root` one is the empty area's.
+// ponytail: no New File/Folder, Open to the Side, Find in Folder, Rename or
+// Delete yet (no inline rename, split editors or recycle bin).
 fn explorer_menu(
     menu: PopupMenu,
     wb: &WeakEntity<Workbench>,
     path: &Path,
     is_dir: bool,
+    root: bool,
     clip: bool,
 ) -> PopupMenu {
     type Act = fn(&mut Workbench, &Path, &mut Window, &mut Context<Workbench>);
@@ -3379,31 +3404,37 @@ fn explorer_menu(
             }))
             .separator(),
     };
-    menu.item(item(
-        "Reveal in File Explorer",
-        Some(Box::new(RevealInFileExplorer)),
-        |_, path, _, _| reveal_path(path),
-    ))
-    .item(item(
-        "Open in Integrated Terminal",
-        None,
-        move |this, path, w, cx| {
-            let dir = if path.is_dir() {
-                path
-            } else {
-                path.parent().unwrap_or(path)
-            };
-            this.open_terminal_at(dir.to_path_buf(), w, cx)
-        },
-    ))
-    .separator()
-    .item(item("Cut", Some(Box::new(CutFile)), |this, _, _, cx| {
-        this.clip_file(true, cx)
-    }))
-    .item(item("Copy", Some(Box::new(CopyFile)), |this, _, _, cx| {
-        this.clip_file(false, cx)
-    }))
-    .item(
+    let menu = menu
+        .item(item(
+            "Reveal in File Explorer",
+            Some(Box::new(RevealInFileExplorer)),
+            |_, path, _, _| reveal_path(path),
+        ))
+        .item(item(
+            "Open in Integrated Terminal",
+            None,
+            move |this, path, w, cx| {
+                let dir = if path.is_dir() {
+                    path
+                } else {
+                    path.parent().unwrap_or(path)
+                };
+                this.open_terminal_at(dir.to_path_buf(), w, cx)
+            },
+        ))
+        .separator();
+    // The workspace folder itself can't be cut or copied.
+    let menu = match root {
+        true => menu,
+        false => menu
+            .item(item("Cut", Some(Box::new(CutFile)), |this, _, _, cx| {
+                this.clip_file(true, cx)
+            }))
+            .item(item("Copy", Some(Box::new(CopyFile)), |this, _, _, cx| {
+                this.clip_file(false, cx)
+            })),
+    };
+    menu.item(
         item("Paste", Some(Box::new(PasteFile)), |this, path, w, cx| {
             this.paste_file(Some(path.to_path_buf()), w, cx)
         })
