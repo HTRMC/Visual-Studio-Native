@@ -276,8 +276,10 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Ctrl+K Ctrl+C / Ctrl+K Ctrl+U (Add / Remove Line Comment) were
       missing; they and the comment commands are in the palette too.
 - [ ] Toggle Line/Block Comment handle the active selection only.
-- [ ] The palette has no Copy/Move Line Up/Down, Add Cursor Above/Below
+- [x] The palette had no Copy/Move Line Up/Down, Add Cursor Above/Below
       or Undo/Redo commands, which VS Code lists.
+- [ ] The palette still lacks Cut/Copy/Paste, Select All, Expand/Shrink
+      Selection and Add Selection To Next Find Match (Ctrl+D) commands.
 - [x] File > Auto Save was inert; it and "File: Toggle Auto Save" flip
       files.autoSave, and "afterDelay" saves dirty files after
       files.autoSaveDelay.
