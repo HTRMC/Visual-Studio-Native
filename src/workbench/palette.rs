@@ -73,6 +73,7 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
             "Terminal: Kill the Active Terminal Instance",
             Box::new(KillTerminal),
         ),
+        ("Terminal: Unsplit Terminal", Box::new(UnsplitTerminal)),
         (
             "Terminal: Focus Next Terminal Group",
             Box::new(FocusNextTerminalGroup),

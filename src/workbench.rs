@@ -68,6 +68,7 @@ actions!(
         ChangeTerminalColor,
         ChangeTerminalIcon,
         KillTerminal,
+        UnsplitTerminal,
         FocusNextTerminalGroup,
         FocusPreviousTerminalGroup,
         FocusNextTerminal,
@@ -1742,6 +1743,9 @@ impl Render for Workbench {
             }))
             .on_action(cx.listener(|this, _: &KillTerminal, window, cx| {
                 this.kill_active_terminal(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &UnsplitTerminal, window, cx| {
+                this.unsplit_terminal(window, cx)
             }))
             .on_action(cx.listener(|this, _: &FocusNextTerminalGroup, window, cx| {
                 this.focus_next_terminal(true, false, window, cx)

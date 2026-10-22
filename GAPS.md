@@ -52,6 +52,11 @@ Differences from VS Code still to close, smallest first within each area.
       our side would desync conhost's cursor).
 - [x] Drag tabs to reorder terminals, or whole split groups.
 - [x] Drag a tab onto a terminal to move it into that split group.
+- [x] Unsplit Terminal (a split terminal's tab menu, and the palette).
+- [ ] Terminal: Join Terminals merges the selected tabs into one split group
+      (needs multi-select in the tab list: Ctrl/Shift+click).
+- [ ] Terminal: Toggle Size to Content Width (Alt+Z) stops wrapping at the
+      panel's width.
 - [ ] Dragging a tab onto the editor area moves the terminal into an editor.
 - [ ] Shell integration: command decorations, run recent command, go to
       recent directory.

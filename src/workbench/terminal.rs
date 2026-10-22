@@ -1217,6 +1217,25 @@ impl Workbench {
         self.activate_terminal(src, window, cx);
     }
 
+    /// VS Code's Unsplit Terminal: the active terminal leaves its split group
+    /// for a group of its own at the end of the list.
+    pub(super) fn unsplit_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ts = &mut self.terminals;
+        let Some(group) = ts.list.get(ts.active).map(|t| t.group) else {
+            return;
+        };
+        if ts.list.iter().filter(|u| u.group == group).count() < 2 {
+            return;
+        }
+        let mut t = ts.list.remove(ts.active);
+        // A fresh id: the group may still carry this terminal's own.
+        t.group = ts.next_id;
+        ts.next_id += 1;
+        let id = t.id;
+        ts.list.push(t);
+        self.activate_terminal(id, window, cx);
+    }
+
     pub(super) fn kill_active_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(t) = self.terminals.list.get(self.terminals.active) {
             self.kill_terminal(t.id, window, cx);
@@ -1638,7 +1657,7 @@ impl Workbench {
                 .on_drop(cx.listener(move |this, tab: &DraggedTab, _, cx| {
                     this.move_terminal(tab.0, id, cx)
                 }))
-                .context_menu(move |menu, _, _| tab_menu(menu, &wb, id))
+                .context_menu(move |menu, _, _| tab_menu(menu, &wb, id, !tree.is_empty()))
         });
         v_flex()
             .w(px(TABS_W))
@@ -1666,7 +1685,7 @@ impl Workbench {
             .child(tab_icon(t))
             .child(t.name.clone())
             .on_click(cx.listener(move |this, _, w, cx| this.activate_terminal(id, w, cx)))
-            .context_menu(move |menu, _, _| tab_menu(menu, &wb, id));
+            .context_menu(move |menu, _, _| tab_menu(menu, &wb, id, false));
         Some(tab)
     }
 
@@ -1959,8 +1978,8 @@ impl Workbench {
 }
 
 /// A terminal tab's right-click menu. Each item acts on that terminal, made
-/// active first as in VS Code.
-fn tab_menu(menu: PopupMenu, wb: &WeakEntity<Workbench>, id: u64) -> PopupMenu {
+/// active first as in VS Code. A `split` one can be unsplit.
+fn tab_menu(menu: PopupMenu, wb: &WeakEntity<Workbench>, id: u64, split: bool) -> PopupMenu {
     type Act = fn(&mut Workbench, u64, &mut Window, &mut Context<Workbench>);
     let item = |label: &'static str, act: Act| {
         let wb = wb.clone();
@@ -1985,6 +2004,12 @@ fn tab_menu(menu: PopupMenu, wb: &WeakEntity<Workbench>, id: u64) -> PopupMenu {
         this.rename_terminal(w, cx)
     }))
     .separator()
+    .when(split, |menu| {
+        menu.item(item("Unsplit Terminal", |this, _, w, cx| {
+            this.unsplit_terminal(w, cx)
+        }))
+        .separator()
+    })
     .item(item("Kill Terminal", Workbench::kill_terminal))
 }
 
