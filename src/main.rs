@@ -1,3 +1,7 @@
+// Release builds are GUI programs: no console window from the Start menu,
+// and `vsn .` hands the terminal back at once, like `code .`.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod theme;
 mod workbench;
 

@@ -245,6 +245,10 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Save As onto a file open in another tab leaves both tabs (VS Code
       replaces that one).
 - [ ] File > New Window is inert (one window per process).
+- [x] No installer; installer\build.ps1 builds an Inno Setup one after VS Code's
+      User Setup (Start menu, PATH via bin\vsn.cmd, Explorer menus, uninstall).
+- [ ] The installer has no auto-update, file associations or signed exe, and
+      a running vsn is only closed by Inno's Restart Manager prompt.
 - [x] File > Close Window was inert; it, Ctrl+Shift+W and Alt+F4 close
       the window, asking to save dirty files first.
 - [x] View > Problems, Output and Debug Console were inert; they and
