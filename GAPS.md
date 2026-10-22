@@ -482,7 +482,8 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [x] Extensions' `editor/title` navigation buttons were ignored; they're in the editor's title bar, with `resource*` keys for their `when`.
 - [x] Extensions' `when` clauses with comparisons, regexes or `in` hid their menu and palette items, and `setContext` was ignored; menus and the palette evaluate VS Code's full grammar.
 - [ ] Extension keybindings' `when` with comparisons, regexes or `setContext` keys are skipped (gpui predicates can't express them).
-- [ ] Extensions' `editor/title` "..." groups, other `menus` and submenus; with extension items, the editor's own menu items are always enabled.
+- [x] Extensions' `editor/title` non-navigation groups and submenus were ignored; they're in "..." and flattened into "Submenu › Item".
+- [ ] Extensions' other `menus` (`view/title`, `scm/title`, tab context); real nested submenus; with extension items, the editor's own menu items are always enabled.
 - [x] Quick pick, input box and message buttons for extensions, in the palette and the notification.
 - [x] `globalState`/`workspaceState` persist (JSON under `~/.vsn/globalStorage` and `workspaceStorage`); `storageUri` is per folder.
 - [x] `executeCommand` runs ~35 of VS Code's built-in commands (`vscode.open`, saves, views, panels, formatting, ...) as vsn's actions.

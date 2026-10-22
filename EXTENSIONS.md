@@ -135,9 +135,10 @@ there.
    predicates over VS Code's focus keys (`editorTextFocus`, `terminalFocus`,
    `filesExplorerFocus`, ...), `editorLangId` and the platform.
    `editor/context` and `explorer/context` items run with the file's Uri, as
-   do `editor/title`'s navigation buttons. Menus and the palette evaluate
+   do `editor/title`'s navigation buttons and its other groups in "...";
+   submenus are flattened into "Submenu › Item". Menus and the palette evaluate
    `when` in full (comparisons, `=~` regexes, `in`, `setContext` keys).
-   *Left:* `editor/title`'s "..." groups and the other `menus`, submenus;
+   *Left:* the other `menus` (`view/title`, `scm/title`, tab context, ...);
    keybindings' `when` with comparisons, regexes or `setContext` keys.
 3. **JS host.** The bundled runtime and the `vscode` shim; a simple Open VSX
    extension that registers commands, shows messages and adds a status bar

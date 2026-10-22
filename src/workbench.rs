@@ -3466,21 +3466,25 @@ impl Workbench {
 
     // ---- editor group ------------------------------------------------------
 
-    /// Extensions' `editor/title` buttons for the active editor, run with
-    /// its Uri.
-    // ponytail: only the "navigation" group's; the others belong in the
-    // "..." menu.
-    fn editor_title_buttons(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    /// Extensions' `editor/title` items for the active editor and its path.
+    fn editor_title_items(&self) -> (Vec<exthost::MenuItem>, Option<PathBuf>) {
         let Some(doc) = self.docs.get(self.active) else {
-            return Vec::new();
+            return (Vec::new(), None);
         };
         let keys = [exthost::editor_keys(&doc.path, doc.lang)];
         let items = exthost::menu_items("editor/title", &keys);
+        (items, Some(doc.path.clone()))
+    }
+
+    /// Extensions' `editor/title` buttons for the active editor, run with
+    /// its Uri: the "navigation" group's (the others are in "...").
+    fn editor_title_buttons(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let (items, path) = self.editor_title_items();
         let items = items.into_iter().filter(|i| i.navigation).enumerate();
         items
             .map(|(ix, item)| {
                 let title = SharedString::from(item.title);
-                let path = Some(doc.path.clone());
+                let path = path.clone();
                 let action = exthost::RunExtensionCommand { id: item.id, path };
                 let button = match item.icon {
                     Some(ch) => action_button(("ext-title", ix), ch),
@@ -3509,6 +3513,9 @@ impl Workbench {
             return watermark().into_any_element();
         }
         let wb = cx.weak_entity();
+        let (mut more, more_path) = self.editor_title_items();
+        more.retain(|i| !i.navigation);
+        let wb_more = wb.clone();
         let tabs_hover = self.hover_slider("tabs", cx);
         let open: Rc<[PathBuf]> = self.docs.iter().map(|d| d.path.clone()).collect();
         let tabs = self.docs.iter().enumerate().map(|(ix, doc)| {
@@ -3742,9 +3749,10 @@ impl Workbench {
                                     .text_color(col::fg())
                                     .child(codicon(icon::ELLIPSIS))
                                     .tooltip("More Actions...")
-                                    .dropdown_menu(|menu, _, _| {
+                                    .dropdown_menu(move |menu, _, _| {
                                         let menu = chord(menu, "Close All", CloseAllEditors);
-                                        chord(menu, "Close Saved", CloseSavedEditors)
+                                        let menu = chord(menu, "Close Saved", CloseSavedEditors);
+                                        ext_menu_items(menu, &wb_more, &more, more_path.as_deref())
                                     }),
                             ),
                     ),
@@ -4648,20 +4656,35 @@ fn explorer_menu(
     }
     exthost::resource_keys(&mut focus, path);
     let items = exthost::menu_items("explorer/context", &[focus]);
+    ext_menu_items(menu, wb, &items, Some(path))
+}
+
+/// Extensions' menu items after a separator, run with `path`'s Uri.
+fn ext_menu_items(
+    menu: PopupMenu,
+    wb: &WeakEntity<Workbench>,
+    items: &[exthost::MenuItem],
+    path: Option<&Path>,
+) -> PopupMenu {
     let menu = if items.is_empty() {
         menu
     } else {
         menu.separator()
     };
-    items.into_iter().fold(menu, |menu, item| {
-        let (wb, path) = (wb.clone(), Some(path.to_path_buf()));
-        let action = exthost::RunExtensionCommand { id: item.id, path };
-        menu.item(PopupMenuItem::new(item.title).on_click(move |_, _, cx| {
-            wb.update(cx, |this, cx| {
-                this.run_extension_command(action.id.clone(), action.args(), cx)
-            })
-            .ok();
-        }))
+    items.iter().fold(menu, |menu, item| {
+        let (wb, path) = (wb.clone(), path.map(Path::to_path_buf));
+        let action = exthost::RunExtensionCommand {
+            id: item.id.clone(),
+            path,
+        };
+        menu.item(
+            PopupMenuItem::new(item.title.clone()).on_click(move |_, _, cx| {
+                wb.update(cx, |this, cx| {
+                    this.run_extension_command(action.id.clone(), action.args(), cx)
+                })
+                .ok();
+            }),
+        )
     })
 }
 

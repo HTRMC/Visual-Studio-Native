@@ -213,36 +213,57 @@ pub(super) struct MenuItem {
 /// Extensions' items in one of VS Code's `menus` (`editor/context`, ...)
 /// whose `when` holds on `focus`, by group.
 // ponytail: groups only order the items (navigation first, then by name),
-// with no separators or `@order`; `submenu`s and `alt` commands are skipped.
+// with no separators or `@order`; `alt` commands are skipped, and submenus
+// are flattened into "Submenu › Item"s (one that contains itself directly
+// is skipped, longer cycles aren't caught).
 pub(super) fn menu_items(menu: &str, focus: &[KeyContext]) -> Vec<MenuItem> {
     let mut list = Vec::new();
     for e in installed().iter().filter(|e| e.enabled) {
         let items = e.manifest["contributes"]["menus"][menu].as_array();
         for m in items.into_iter().flatten() {
+            if !m["when"].as_str().is_none_or(|w| when_holds(w, focus)) {
+                continue;
+            }
+            let group = m["group"].as_str().unwrap_or("");
+            let group = group.split('@').next().unwrap_or("").to_string();
+            let navigation = group == "navigation";
+            if let Some(sub) = m["submenu"].as_str().filter(|sub| *sub != menu) {
+                let label = (e.contributes("submenus").find(|s| s["id"] == sub))
+                    .map_or(sub.to_string(), |s| e.localize(&s["label"]));
+                for item in menu_items(sub, focus) {
+                    let title = format!("{label} › {}", item.title);
+                    list.push((
+                        group.clone(),
+                        MenuItem {
+                            title,
+                            navigation,
+                            ..item
+                        },
+                    ));
+                }
+                continue;
+            }
             let Some(id) = m["command"].as_str() else {
                 continue;
             };
-            let shown = m["when"].as_str().is_none_or(|w| when_holds(w, focus));
             let Some(c) = e.contributes("commands").find(|c| c["command"] == id) else {
                 continue;
             };
-            if shown {
-                let group = m["group"].as_str().unwrap_or("");
-                let group = group.split('@').next().unwrap_or("");
-                let icon = (c["icon"].as_str())
-                    .and_then(|i| i.strip_prefix("$(")?.strip_suffix(')'))
-                    .and_then(|name| codicons().find(|(n, _)| *n == name))
-                    .map(|(_, ch)| ch);
-                list.push((
-                    group.to_string(),
-                    MenuItem {
-                        title: e.localize(&c["title"]),
-                        id: id.to_string(),
-                        icon,
-                        navigation: group == "navigation",
-                    },
-                ));
-            }
+            let icon = (c["icon"].as_str())
+                .and_then(|i| i.strip_prefix("$(")?.strip_suffix(')'))
+                .and_then(|name| codicons().find(|(n, _)| *n == name))
+                .map(|(_, ch)| ch);
+            let title = e.localize(&c["title"]);
+            let id = id.to_string();
+            list.push((
+                group,
+                MenuItem {
+                    title,
+                    id,
+                    icon,
+                    navigation,
+                },
+            ));
         }
     }
     list.sort_by(|a, b| (!a.1.navigation, &a.0).cmp(&(!b.1.navigation, &b.0)));
