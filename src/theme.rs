@@ -142,6 +142,16 @@ pub mod icon {
     pub const GEAR: char = '\u{EAF8}';
 }
 
+/// Every codicon by name, as VS Code's icon picker offers them.
+pub fn codicons() -> impl Iterator<Item = (&'static str, char)> {
+    include_str!("../assets/codicons.txt")
+        .lines()
+        .filter_map(|l| {
+            let (hex, name) = l.split_once(' ')?;
+            Some((name, char::from_u32(u32::from_str_radix(hex, 16).ok()?)?))
+        })
+}
+
 /// A codicon glyph. VS Code renders them at 16px (24px in the activity bar).
 pub fn codicon(ch: char) -> Div {
     div()

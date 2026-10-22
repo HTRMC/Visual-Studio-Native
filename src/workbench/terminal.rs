@@ -58,6 +58,8 @@ pub(super) struct Terminal {
     name: String,
     /// The tab icon's color, an index into `ANSI`, from Change Color.
     color: Option<usize>,
+    /// The tab icon, from Change Icon.
+    icon: char,
     /// What it was started with, for splits of it.
     profile: Profile,
     parser: vt100::Parser<Replies>,
@@ -667,6 +669,7 @@ impl Workbench {
             group: id,
             name: shell_name(&profile),
             color: None,
+            icon: icon::TERMINAL,
             profile,
             parser: vt100::Parser::new_with_callbacks(
                 24.try_into().unwrap(),
@@ -962,6 +965,13 @@ impl Workbench {
                 "" => shell_name(&t.profile),
                 name => name.to_string(),
             };
+            cx.notify();
+        }
+    }
+
+    pub(super) fn set_terminal_icon(&mut self, id: u64, icon: char, cx: &mut Context<Self>) {
+        if let Some(t) = self.terminal(id) {
+            t.icon = icon;
             cx.notify();
         }
     }
@@ -1835,6 +1845,9 @@ fn tab_menu(menu: PopupMenu, wb: &WeakEntity<Workbench>, id: u64) -> PopupMenu {
     menu.item(item("Split Terminal", |this, _, w, cx| {
         this.new_terminal(true, w, cx)
     }))
+    .item(item("Change Icon...", |this, _, w, cx| {
+        this.change_terminal_icon(w, cx)
+    }))
     .item(item("Change Color...", |this, _, w, cx| {
         this.change_terminal_color(w, cx)
     }))
@@ -1847,7 +1860,7 @@ fn tab_menu(menu: PopupMenu, wb: &WeakEntity<Workbench>, id: u64) -> PopupMenu {
 
 /// A terminal tab's icon, in the color Change Color gave it.
 fn tab_icon(t: &Terminal) -> Div {
-    codicon(icon::TERMINAL).when_some(t.color, |d, i| d.text_color(c(ANSI[i])))
+    codicon(t.icon).when_some(t.color, |d, i| d.text_color(c(ANSI[i])))
 }
 
 /// A terminal's name until it is renamed: its program's, like `pwsh`.

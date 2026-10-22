@@ -39,7 +39,8 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Rename... from a tab's menu also starts with the name selected.
 - [x] Clicking the single terminal's title-bar tab focuses the terminal.
 - [x] Change a terminal's color (Terminal: Change Color..., or on a tab).
-- [ ] Change a terminal's icon.
+- [x] Change a terminal's icon (Terminal: Change Icon..., or on a tab).
+- [ ] Change Icon's picker is a grid of icons, not a list of names.
 - [ ] Drag tabs to reorder terminals and move them between splits.
 - [ ] Shell integration: command decorations, run recent command, go to
       recent directory.
