@@ -106,8 +106,8 @@ pub(super) struct Terminal {
     /// how far the grid is scrolled left to show it.
     fixed_cols: Option<u16>,
     scroll_x: f32,
-    /// Where on the sideways scrollbar's thumb a drag grabbed it.
-    thumb: Option<f32>,
+    /// Which scrollbar's thumb a drag holds, and where along it.
+    thumb: Option<(Axis, f32)>,
     /// The cell the last mouse report was for, to send motion once per cell.
     mouse_cell: Option<(u16, u16)>,
     /// Find's matches, oldest first, and the one selected.
@@ -1511,17 +1511,26 @@ impl Workbench {
         true
     }
 
-    /// Scrolls sideways to keep the grabbed point of the thumb at `x`.
-    fn drag_thumb(&mut self, id: u64, x: Pixels, cx: &mut Context<Self>) {
+    /// Scrolls to keep the grabbed point of a scrollbar's thumb at `at`.
+    fn drag_thumb(&mut self, id: u64, at: Point<Pixels>, cx: &mut Context<Self>) {
         let Some(t) = self.terminal(id) else {
             return;
         };
-        let Some(grab) = t.thumb else {
+        let Some((axis, grab)) = t.thumb else {
             return;
         };
         let b = t.bounds.get();
-        let grid_w = PAD_L + t.parser.screen().size().1.get() as f32 * t.cell_w + PAD_R;
-        t.scroll_x = (f32::from(x - b.left()) - grab) * grid_w / f32::from(b.size.width);
+        if axis == Axis::Horizontal {
+            let grid_w = PAD_L + t.parser.screen().size().1.get() as f32 * t.cell_w + PAD_R;
+            t.scroll_x = (f32::from(at.x - b.left()) - grab) * grid_w / f32::from(b.size.width);
+        } else {
+            let screen = t.parser.screen_mut();
+            let h = f32::from(b.size.height);
+            let (_, len) = v_thumb(screen, h);
+            let max = screen.scrollback_len() as f32;
+            let top = (f32::from(at.y - b.top()) - grab) / (h - len).max(1.) * max;
+            screen.set_scrollback((max - top.round().clamp(0., max)) as usize);
+        }
         cx.notify();
     }
 
@@ -1777,6 +1786,8 @@ impl Workbench {
         let scrolled = t.fixed_cols.is_some() && over > 0.;
         t.scroll_x = t.scroll_x.clamp(0., over);
         let scroll_x = t.scroll_x;
+        let v_bar = (screen.scrollback_len() > 0 && !screen.alternate_screen())
+            .then(|| v_thumb(screen, f32::from(size.height)));
         let (selection, block) = (t.selection, t.block);
         let top = t.top();
         let bottom = top + rows.get() as usize;
@@ -1880,7 +1891,8 @@ impl Workbench {
 
         let bounds = t.bounds.clone();
         let (selecting, drag) = (t.selecting, wb.clone());
-        let thumbing = t.thumb.is_some();
+        let thumb_axis = t.thumb.map(|(axis, _)| axis);
+        let thumbing = thumb_axis.is_some();
         div()
             .id(("terminal", id as usize))
             .relative()
@@ -1940,7 +1952,7 @@ impl Workbench {
                     return;
                 };
                 if t.thumb.is_some() {
-                    this.drag_thumb(id, ev.position.x, cx);
+                    this.drag_thumb(id, ev.position, cx);
                 } else if !t.selecting && t.mouse_mode(ev.modifiers) {
                     let held = ev.pressed_button.and_then(button_code);
                     t.report(held.map_or(35, |b| b + 32), false, ev.position);
@@ -1995,7 +2007,7 @@ impl Workbench {
                             window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _, cx| {
                                 if phase == DispatchPhase::Bubble && !b.contains(&ev.position) {
                                     drag.update(cx, |this, cx| match thumbing {
-                                        true => this.drag_thumb(id, ev.position.x, cx),
+                                        true => this.drag_thumb(id, ev.position, cx),
                                         false => this.drag_terminal(id, ev, cx),
                                     })
                                     .ok();
@@ -2025,58 +2037,15 @@ impl Workbench {
                     .child(v_flex().pl(px(PAD_L)).children(lines))
                     .children(cursor),
             )
-            // The sideways scrollbar's thumb, shown while the mouse is over
-            // the terminal.
-            // ponytail: shows and hides at once; VS Code fades it.
             .when(scrolled, |d| {
                 let w = f32::from(size.width);
-                let (left, thumb_w) = (scroll_x / grid_w * w, w / grid_w * w);
-                // A click on the track centers the thumb there and drags it.
-                let track = div()
-                    .id("terminal-track")
-                    .absolute()
-                    .bottom_0()
-                    .left_0()
-                    .right_0()
-                    .h(px(10.))
-                    .cursor_default()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
-                            cx.stop_propagation();
-                            if let Some(t) = this.terminal(id) {
-                                t.thumb = Some(thumb_w / 2.);
-                            }
-                            this.drag_thumb(id, ev.position.x, cx);
-                        }),
-                    );
-                d.child(track).child(
-                    div()
-                        .id("terminal-thumb")
-                        .absolute()
-                        .bottom_0()
-                        .left(px(left))
-                        .w(px(thumb_w))
-                        .h(px(10.))
-                        .cursor_default()
-                        .map(|d| match thumbing {
-                            true => d.bg(ca(0xBFBFBF66)),
-                            false => d
-                                .group_hover("terminal", |s| s.bg(ca(0x79797966)))
-                                .hover(|s| s.bg(ca(0x646464B3))),
-                        })
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
-                                cx.stop_propagation();
-                                if let Some(t) = this.terminal(id) {
-                                    let x = f32::from(ev.position.x - t.bounds.get().left());
-                                    t.thumb = Some(x - left);
-                                    cx.notify();
-                                }
-                            }),
-                        ),
-                )
+                let thumb = (scroll_x / grid_w * w, w / grid_w * w);
+                let active = thumb_axis == Some(Axis::Horizontal);
+                d.child(scrollbar(id, Axis::Horizontal, thumb, active, cx))
+            })
+            .when_some(v_bar, |d, thumb| {
+                let active = thumb_axis == Some(Axis::Vertical);
+                d.child(scrollbar(id, Axis::Vertical, thumb, active, cx))
             })
             .context_menu(move |menu: PopupMenu, _, _| {
                 type Act = fn(&mut Workbench, u64, &mut Window, &mut Context<Workbench>);
@@ -2160,6 +2129,78 @@ impl Render for DraggedTab {
             .text_color(col::fg())
             .child(self.1.clone())
     }
+}
+
+/// The vertical scrollbar's thumb, top and height, for a track `h` tall:
+/// sized to the screen's share of the lines, but at least 20px like VS Code's.
+fn v_thumb(screen: &vt100::Screen, h: f32) -> (f32, f32) {
+    let rows = screen.size().0.get() as f32;
+    let back = screen.scrollback_len() as f32;
+    let len = (rows / (rows + back) * h).max(20.).min(h);
+    let top = (back - screen.scrollback() as f32) / back.max(1.) * (h - len);
+    (top, len)
+}
+
+/// A scrollbar along the bottom or right edge, shown while the mouse is
+/// over the terminal, with its thumb's start and length. Dragging the thumb
+/// scrolls; pressing the track centers the thumb there first, as VS Code's
+/// scrollbars do.
+// ponytail: shows and hides at once; VS Code fades it.
+fn scrollbar(
+    id: u64,
+    axis: Axis,
+    (at, len): (f32, f32),
+    active: bool,
+    cx: &mut Context<Workbench>,
+) -> impl IntoElement {
+    let horizontal = axis == Axis::Horizontal;
+    let thumb = div()
+        .id(("terminal-thumb", horizontal as usize))
+        .absolute()
+        .map(|d| match horizontal {
+            true => d.left(px(at)).w(px(len)).h_full(),
+            false => d.top(px(at)).h(px(len)).w_full(),
+        })
+        .map(|d| match active {
+            true => d.bg(ca(0xBFBFBF66)),
+            false => d
+                .group_hover("terminal", |s| s.bg(ca(0x79797966)))
+                .hover(|s| s.bg(ca(0x646464B3))),
+        })
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                cx.stop_propagation();
+                if let Some(t) = this.terminal(id) {
+                    let b = t.bounds.get();
+                    let from = match horizontal {
+                        true => ev.position.x - b.left(),
+                        false => ev.position.y - b.top(),
+                    };
+                    t.thumb = Some((axis, f32::from(from) - at));
+                    cx.notify();
+                }
+            }),
+        );
+    div()
+        .id(("terminal-track", horizontal as usize))
+        .absolute()
+        .map(|d| match horizontal {
+            true => d.left_0().right_0().bottom_0().h(px(10.)),
+            false => d.top_0().bottom_0().right_0().w(px(PAD_R)),
+        })
+        .cursor_default()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                cx.stop_propagation();
+                if let Some(t) = this.terminal(id) {
+                    t.thumb = Some((axis, len / 2.));
+                }
+                this.drag_thumb(id, ev.position, cx);
+            }),
+        )
+        .child(thumb)
 }
 
 /// A terminal tab's icon, in the color Change Color gave it.

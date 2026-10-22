@@ -61,7 +61,11 @@ Differences from VS Code still to close, smallest first within each area.
       mouse is over the terminal.
 - [x] Clicking the sideways scrollbar's track jumps the thumb there and
       drags it, as VS Code's scrollbars do by default.
-- [ ] The terminal has no vertical scrollbar over its scrollback.
+- [x] A vertical scrollbar over the scrollback (drag, track click, shown
+      while the mouse is over the terminal).
+- [ ] The scrollbars show and hide at once; VS Code fades them.
+- [ ] Find's matches aren't marked on the vertical scrollbar (VS Code's
+      overview ruler).
 - [ ] Dragging a tab onto the editor area moves the terminal into an editor.
 - [ ] Shell integration: command decorations, run recent command, go to
       recent directory.
