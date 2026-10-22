@@ -59,6 +59,9 @@ actions!(
         QuickOpen,
         GoToLine,
         GoToSymbol,
+        GoBack,
+        GoForward,
+        GoToLastEditLocation,
         StartDebugging,
         RunWithoutDebugging,
         StopDebugging,
@@ -134,6 +137,12 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         // VS Code sends these two to the shell rather than skipping it.
         KeyBinding::new("ctrl-g", NoAction, Some("Terminal")),
         KeyBinding::new("ctrl-shift-o", NoAction, Some("Terminal")),
+        KeyBinding::new("alt-left", GoBack, None),
+        KeyBinding::new("alt-right", GoForward, None),
+        KeyBinding::new("ctrl-k ctrl-q", GoToLastEditLocation, None),
+        // Shells read Alt+arrows themselves (VS Code doesn't skip them).
+        KeyBinding::new("alt-left", NoAction, Some("Terminal")),
+        KeyBinding::new("alt-right", NoAction, Some("Terminal")),
         KeyBinding::new("f5", StartDebugging, None),
         KeyBinding::new("ctrl-f5", RunWithoutDebugging, None),
         KeyBinding::new("shift-f5", StopDebugging, None),
@@ -349,6 +358,11 @@ pub struct Workbench {
     center: bool,
     /// The OS window's title, as last set.
     title: String,
+    /// Go Back/Forward's history of editor locations, and the current one.
+    nav: Vec<(PathBuf, input::Position)>,
+    nav_at: usize,
+    /// Where the last edit happened, for Go to Last Edit Location.
+    last_edit: Option<(PathBuf, input::Position)>,
     debug: debug::Debug,
     /// Spawned when the Terminal tab first shows; the error if the shell didn't start.
     terminals: terminal::Terminals,
@@ -388,6 +402,9 @@ impl Workbench {
             unseen: 0,
             center: false,
             title: String::new(),
+            nav: Vec::new(),
+            nav_at: 0,
+            last_edit: None,
             debug: debug::Debug::new(window, cx),
             terminals: Default::default(),
         };
@@ -557,6 +574,7 @@ impl Workbench {
                     }
                 }
                 let path = doc.path.clone();
+                this.last_edit = Some((path.clone(), editor.read(cx).cursor_position()));
                 this.refresh_search_file(&path, cx);
                 this.breakpoints_moved(&path, &editor, cx);
             }
@@ -576,6 +594,60 @@ impl Workbench {
             doc.editor.update(cx, |e, cx| e.focus(window, cx));
         }
         cx.notify();
+    }
+
+    /// VS Code's navigation history: an entry per editor switch or cursor
+    /// jump of more than 10 lines; smaller moves update the current entry.
+    fn record_nav(&mut self, cx: &App) {
+        let Some(doc) = self.docs.get(self.active) else {
+            return;
+        };
+        let pos = doc.editor.read(cx).cursor_position();
+        match self.nav.get_mut(self.nav_at) {
+            Some((path, at)) if *path == doc.path && at.line.abs_diff(pos.line) <= 10 => *at = pos,
+            _ => {
+                self.nav.truncate(self.nav_at + 1);
+                self.nav.push((doc.path.clone(), pos));
+                self.nav_at = self.nav.len() - 1;
+            }
+        }
+    }
+
+    /// Go Back/Forward: reopens the entry's file if it was closed, and drops
+    /// entries that can't be (deleted files, closed untitled editors).
+    fn navigate(&mut self, back: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.record_nav(cx);
+        loop {
+            let at = self.nav_at;
+            let ix = match back {
+                true if at > 0 => at - 1,
+                false if at + 1 < self.nav.len() => at + 1,
+                _ => return,
+            };
+            let (path, pos) = self.nav[ix].clone();
+            if self.go_to(path, pos, window, cx) {
+                self.nav_at = ix;
+                return;
+            }
+            self.nav.remove(ix);
+            self.nav_at = if back { at - 1 } else { at };
+        }
+    }
+
+    /// Opens `path` with the cursor at `pos`; false if it can't be opened.
+    fn go_to(
+        &mut self,
+        path: PathBuf,
+        pos: input::Position,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.open_path(path.clone(), window, cx);
+        let Some(doc) = self.docs.get(self.active).filter(|d| d.path == path) else {
+            return false;
+        };
+        (doc.editor).update(cx, |e, cx| e.set_cursor_position(pos, window, cx));
+        true
     }
 
     fn write(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -966,13 +1038,25 @@ impl Workbench {
                     .gap(px(4.))
                     .child(
                         action_button("back", icon::ARROW_LEFT)
-                            .text_color(col::fg_muted())
-                            .tooltip(tip("Go Back")),
+                            .text_color(match self.nav_at > 0 {
+                                true => col::fg_muted(),
+                                false => col::fg_dim(),
+                            })
+                            .tooltip(tip("Go Back (Alt+LeftArrow)"))
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.navigate(true, window, cx)),
+                            ),
                     )
                     .child(
                         action_button("forward", icon::ARROW_RIGHT)
-                            .text_color(col::fg_dim())
-                            .tooltip(tip("Go Forward")),
+                            .text_color(match self.nav_at + 1 < self.nav.len() {
+                                true => col::fg_muted(),
+                                false => col::fg_dim(),
+                            })
+                            .tooltip(tip("Go Forward (Alt+RightArrow)"))
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.navigate(false, window, cx)),
+                            ),
                     )
                     .child(
                         h_flex()
@@ -2115,6 +2199,7 @@ impl Workbench {
 
 impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.record_nav(cx);
         let title = self.window_title();
         if title != self.title {
             window.set_window_title(&title);
@@ -2133,6 +2218,15 @@ impl Render for Workbench {
             })
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::open_file))
+            .on_action(cx.listener(|this, _: &GoBack, window, cx| this.navigate(true, window, cx)))
+            .on_action(
+                cx.listener(|this, _: &GoForward, window, cx| this.navigate(false, window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &GoToLastEditLocation, window, cx| {
+                if let Some((path, pos)) = this.last_edit.clone() {
+                    this.go_to(path, pos, window, cx);
+                }
+            }))
             .on_action(cx.listener(Self::open_folder))
             .on_action(cx.listener(Self::close_folder))
             .on_action(cx.listener(Self::save))
@@ -2548,9 +2642,9 @@ fn app_menu(
             .separator()
             .menu("Word Wrap", noop()),
         "Go" => menu
-            .menu("Back", noop())
-            .menu("Forward", noop())
-            .menu("Last Edit Location", noop())
+            .menu("Back", Box::new(GoBack))
+            .menu("Forward", Box::new(GoForward))
+            .menu("Last Edit Location", Box::new(GoToLastEditLocation))
             .separator()
             .menu("Go to File...", Box::new(QuickOpen))
             .menu("Go to Symbol in Workspace...", noop())
