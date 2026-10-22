@@ -198,6 +198,7 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("Debug: Step Into", Box::new(StepInto)),
         ("Debug: Step Out", Box::new(StepOut)),
         ("Debug: Toggle Breakpoint", Box::new(ToggleBreakpoint)),
+        ("Preferences: Open User Settings", Box::new(OpenSettings)),
         (
             "Preferences: Open User Settings (JSON)",
             Box::new(OpenSettingsJson),

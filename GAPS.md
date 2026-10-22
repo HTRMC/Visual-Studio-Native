@@ -134,7 +134,7 @@ Differences from VS Code still to close, smallest first within each area.
       picking a default terminal profile then overwrote it.
 - [ ] Settings are read from settings.json as each feature needs them; there's
       no file watcher and no workspace `.vscode/settings.json`.
-- [ ] Setting the default terminal profile rewrites settings.json as plain
+- [x] Setting the default terminal profile rewrites settings.json as plain
       JSON, dropping its comments (VS Code edits the one property in place).
 - [x] Writing the default terminal profile into a settings.json that doesn't
       parse failed silently (VS Code: "Unable to write into user settings...").
@@ -302,8 +302,11 @@ Differences from VS Code still to close, smallest first within each area.
       "No results found in open editors" wording.
 - [x] The search's empty-result message lacks VS Code's trailing "Open
       Settings" and "Learn More" links.
-- [ ] Preferences > Settings (Ctrl+,) is inert, and Open Settings opens
-      settings.json rather than a Settings UI filtered to ".exclude".
+- [x] Preferences > Settings (Ctrl+,) was inert; it and the palette's
+      "Preferences: Open User Settings" now open settings.json.
+- [ ] No Settings UI: Ctrl+, opens settings.json (VS Code's
+      `workbench.settings.editor: "json"`), and Open Settings opens it rather
+      than a Settings UI filtered to ".exclude".
 - [x] The palette lacks "Preferences: Open User Settings (JSON)".
 - [ ] The palette lacks "Preferences: Open Keyboard Shortcuts" and the
       other Preferences commands (no keybindings editor or keybindings.json).

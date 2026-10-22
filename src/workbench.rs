@@ -134,6 +134,7 @@ actions!(
         PasteFile,
         FindInFolder,
         OpenSettingsJson,
+        OpenSettings,
     ]
 );
 
@@ -173,6 +174,7 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-shift-d", ShowRun, None),
         KeyBinding::new("ctrl-shift-x", ShowExtensions, None),
         KeyBinding::new("ctrl-shift-p", CommandPalette, None),
+        KeyBinding::new("ctrl-,", OpenSettings, None),
         KeyBinding::new("f1", CommandPalette, None),
         KeyBinding::new("ctrl-p", QuickOpen, None),
         KeyBinding::new("ctrl-g", GoToLine, None),
@@ -3773,6 +3775,11 @@ impl Render for Workbench {
                     this.open_settings(window, cx)
                 }),
             )
+            // ponytail: no Settings UI, so Ctrl+, opens settings.json, as VS
+            // Code does with `workbench.settings.editor` set to "json".
+            .on_action(
+                cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings(window, cx)),
+            )
             .on_action(cx.listener(|this, _: &ShowSearch, window, cx| {
                 this.sidebar = true;
                 this.view = View::Search;
@@ -4128,7 +4135,7 @@ fn app_menu(
             .separator()
             .menu("Auto Save", noop())
             .submenu("Preferences", window, cx, |m, _, _| {
-                m.menu("Settings", Box::new(Noop))
+                m.menu("Settings", Box::new(OpenSettings))
                     .menu("Keyboard Shortcuts", Box::new(Noop))
                     .menu("Themes", Box::new(Noop))
             })
