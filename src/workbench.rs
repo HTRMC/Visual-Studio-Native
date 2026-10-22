@@ -6,6 +6,7 @@ use std::{
     fs,
     ops::Range,
     path::{Path, PathBuf},
+    rc::Rc,
     slice,
     time::{Duration, Instant},
 };
@@ -2124,7 +2125,14 @@ impl Workbench {
         }
         let wb = cx.weak_entity();
         let tabs_hover = self.hover_slider("tabs", cx);
+        let open: Rc<[PathBuf]> = self.docs.iter().map(|d| d.path.clone()).collect();
         let tabs = self.docs.iter().enumerate().map(|(ix, doc)| {
+            // A tab dragged from the left lands after this one, anything
+            // else before it; the border shows which side.
+            let lands_after = {
+                let open = open.clone();
+                move |path: &Path| open.iter().position(|p| p == path).is_some_and(|f| f < ix)
+            };
             let active = ix == self.active;
             let name = doc
                 .path
@@ -2218,16 +2226,24 @@ impl Workbench {
                 .on_drag(DraggedEditor(ix, name.clone().into()), |tab, _, _, cx| {
                     cx.new(|_| tab.clone())
                 })
-                .drag_over::<DraggedEditor>(|s, _, _, _| s.bg(col::drop()))
+                .drag_over::<DraggedEditor>(move |s, tab, _, _| match tab.0 {
+                    from if from == ix => s,
+                    from => drop_side(s, from < ix),
+                })
                 .on_drop(cx.listener(move |this, tab: &DraggedEditor, window, cx| {
                     this.move_doc(tab.0, ix, window, cx)
                 }))
-                .drag_over::<DraggedFile>(|s, _, _, _| s.bg(col::drop()))
+                .drag_over::<DraggedFile>({
+                    let after = lands_after.clone();
+                    move |s, file, _, _| drop_side(s, after(&file.0))
+                })
                 .on_drop(cx.listener(move |this, file: &DraggedFile, window, cx| {
                     this.drop_paths(slice::from_ref(&file.0), Some(ix), window, cx);
                     cx.stop_propagation();
                 }))
-                .drag_over::<ExternalPaths>(|s, _, _, _| s.bg(col::drop()))
+                .drag_over::<ExternalPaths>(move |s, paths, _, _| {
+                    drop_side(s, paths.paths().first().is_some_and(|p| lands_after(p)))
+                })
                 .on_drop(cx.listener(move |this, paths: &ExternalPaths, window, cx| {
                     this.drop_paths(paths.paths(), Some(ix), window, cx);
                     cx.stop_propagation();
@@ -3770,6 +3786,16 @@ struct DraggedEditor(usize, SharedString);
 impl Render for DraggedEditor {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         drag_label(self.1.clone())
+    }
+}
+
+/// A tab under a drag: tinted, with `tab.dragAndDropBorder` on the side the
+/// drop lands.
+fn drop_side(s: StyleRefinement, after: bool) -> StyleRefinement {
+    let s = s.bg(col::drop()).border_color(col::drag_border());
+    match after {
+        true => s.border_r(px(2.)),
+        false => s.border_l(px(2.)).border_r(px(0.)),
     }
 }
 

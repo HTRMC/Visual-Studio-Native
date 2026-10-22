@@ -52,6 +52,10 @@ pub mod col {
     pub fn drop() -> Hsla {
         ca(0x53595D80)
     }
+    /// tab.dragAndDropBorder
+    pub fn drag_border() -> Hsla {
+        c(0xFFFFFF)
+    }
     pub fn toolbar_hover() -> Hsla {
         ca(0xFFFFFF10)
     }
