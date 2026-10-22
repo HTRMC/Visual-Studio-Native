@@ -152,6 +152,7 @@ actions!(
         TrimTrailingWhitespace,
         FormatDocument,
         FormatSelection,
+        RenameSymbol,
         NewTextFile,
         RevertFile,
         SaveAs,
@@ -234,6 +235,7 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-k ctrl-x", TrimTrailingWhitespace, None),
         KeyBinding::new("shift-alt-f", FormatDocument, None),
         KeyBinding::new("ctrl-k ctrl-f", FormatSelection, None),
+        KeyBinding::new("f2", RenameSymbol, None),
         KeyBinding::new("ctrl-pagedown", NextEditor, None),
         KeyBinding::new("ctrl-pageup", PreviousEditor, None),
         // Shells read Alt+arrows themselves (VS Code doesn't skip them).
@@ -4892,6 +4894,9 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &FormatSelection, window, cx| {
                 this.format_document(true, window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &RenameSymbol, window, cx| this.rename_symbol(window, cx)),
+            )
             .on_action(cx.listener(|this, _: &ChangeLanguageMode, window, cx| {
                 this.change_language(window, cx)
             }))

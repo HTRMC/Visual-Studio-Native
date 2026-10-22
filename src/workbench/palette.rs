@@ -203,6 +203,7 @@ fn builtin_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         (INDENT_ACTIONS[6], Box::new(TrimTrailingWhitespace)),
         ("Format Document", Box::new(FormatDocument)),
         ("Format Selection", Box::new(FormatSelection)),
+        ("Rename Symbol", Box::new(RenameSymbol)),
         ("Toggle Line Comment", Box::new(ToggleLineComment)),
         ("Add Line Comment", Box::new(AddLineComment)),
         ("Remove Line Comment", Box::new(RemoveLineComment)),
@@ -286,6 +287,14 @@ fn builtin_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("File: Exit", Box::new(Quit)),
         ("Close Window", Box::new(CloseWindow)),
     ]
+}
+
+/// What the palette's rename input names.
+pub(super) enum Rename {
+    /// Terminal: Rename, by the terminal's id.
+    Terminal(u64),
+    /// Rename Symbol, at this position of this file.
+    Symbol(PathBuf, Position),
 }
 
 enum Pick {
@@ -439,8 +448,8 @@ pub(super) struct Palette {
     ws_defs: Option<Arc<Vec<(String, Def)>>>,
     /// Set while the palette is Select Default Profile's pick list.
     profiles: Option<Vec<Profile>>,
-    /// Set while the palette is Terminal: Rename's input, to the terminal's id.
-    renaming: Option<u64>,
+    /// Set while the palette is a rename's input.
+    renaming: Option<Rename>,
     /// Set while the palette is Terminal: Change Color's pick list.
     coloring: Option<u64>,
     /// Set while the palette is Terminal: Change Icon's pick list.
@@ -1903,11 +1912,21 @@ impl Workbench {
     /// VS Code's Terminal: Rename: the palette becomes an input holding the
     /// active terminal's name.
     pub(super) fn rename_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((id, name)) = self.terminal_name() else {
-            return;
-        };
+        if let Some((id, name)) = self.terminal_name() {
+            self.rename_input(Rename::Terminal(id), name, window, cx);
+        }
+    }
+
+    /// The palette becomes an input holding `name`, for `what`'s new name.
+    pub(super) fn rename_input(
+        &mut self,
+        what: Rename,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.open_palette("", window, cx);
-        self.palette.renaming = Some(id);
+        self.palette.renaming = Some(what);
         (self.palette.state).update(cx, |s, cx| s.set_query(name.clone(), window, cx));
         self.palette_query(name, cx);
         // Selected, as in VS Code, so typing replaces it. Frame callbacks run
@@ -2949,8 +2968,10 @@ impl Workbench {
             items.placeholder
         } else if p.profiles.is_some() {
             "Select your default terminal profile"
-        } else if p.renaming.is_some() {
+        } else if let Some(Rename::Terminal(_)) = p.renaming {
             "Enter terminal name"
+        } else if p.renaming.is_some() {
+            "Enter the new name"
         } else if p.iconing.is_some() {
             "Search icons"
         } else if p.coloring.is_some() {
@@ -3153,11 +3174,16 @@ impl Workbench {
                 }))
                 // Rename's input has no rows for the list to confirm.
                 .capture_action(cx.listener(|this, _: &Confirm, window, cx| {
-                    if let Some(id) = this.palette.renaming {
+                    if let Some(what) = this.palette.renaming.take() {
                         cx.stop_propagation();
                         let name = this.palette.query.clone();
                         this.close_palette(window, cx);
-                        this.set_terminal_name(id, &name, cx);
+                        match what {
+                            Rename::Terminal(id) => this.set_terminal_name(id, &name, cx),
+                            Rename::Symbol(path, at) => {
+                                this.rename_symbol_to(path, at, name, window, cx)
+                            }
+                        }
                     }
                 }))
                 .on_mouse_down_out(

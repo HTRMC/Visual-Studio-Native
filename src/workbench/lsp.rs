@@ -23,9 +23,11 @@ use futures::channel::oneshot;
 use gpui_kit::base::input::{Diagnostic, DiagnosticSeverity};
 use input::{CodeActionProvider, CompletionProvider, DefinitionProvider, HoverProvider, Rope};
 use lsp_types::{
-    CodeAction, CodeActionOrCommand, CompletionContext, CompletionResponse, GotoDefinitionResponse,
-    Hover, LocationLink,
+    CodeAction, CodeActionOrCommand, CompletionContext, CompletionResponse,
+    DocumentChangeOperation, DocumentChanges, GotoDefinitionResponse, Hover, LocationLink, OneOf,
 };
+
+use super::palette::Rename;
 use serde_json::{Value, json};
 
 use super::*;
@@ -287,22 +289,20 @@ impl CodeActionProvider for Provider {
         })
     }
 
-    // ponytail: edits to other files, `documentChanges` and the server's
-    // `workspace/applyEdit` requests are dropped; this file's edits apply.
+    // ponytail: the server's own `workspace/applyEdit` requests are dropped.
     fn perform_code_action(
         &self,
-        state: Entity<EditorState>,
+        _: Entity<EditorState>,
         action: CodeAction,
         _: bool,
         window: &mut Window,
         cx: &mut App,
     ) -> Task<anyhow::Result<()>> {
-        let edits = (action.edit.and_then(|e| e.changes).into_iter().flatten())
-            .find(|(uri, _)| uri_path(uri.as_str()).as_ref() == Some(&self.path));
         // Called from inside the editor's own update; edit once that ends.
-        if let Some((_, edits)) = edits {
+        if let Some(edit) = action.edit {
+            let workbench = self.workbench.clone();
             window.defer(cx, move |window, cx| {
-                state.update(cx, |e, cx| apply_edits(e, edits, window, cx))
+                (workbench.update(cx, |this, cx| this.apply_workspace_edit(edit, window, cx))).ok();
             });
         }
         if let (Some(command), Some(server)) = (action.command, self.server.upgrade()) {
@@ -573,6 +573,101 @@ impl Workbench {
         .detach();
     }
 
+    /// A server's edits across files: each file opens and takes its edits as
+    /// one undo step, then the editor that asked is back in front.
+    // ponytail: the files open as tabs where VS Code edits them unseen, and
+    // file creates, renames and deletes are dropped.
+    pub(super) fn apply_workspace_edit(
+        &mut self,
+        edit: lsp_types::WorkspaceEdit,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let doc_edits = |e: lsp_types::TextDocumentEdit| {
+            let edits = e.edits.into_iter().map(|e| match e {
+                OneOf::Left(e) => e,
+                OneOf::Right(e) => e.text_edit,
+            });
+            (e.text_document.uri, edits.collect())
+        };
+        let mut files: Vec<(lsp_types::Uri, Vec<lsp_types::TextEdit>)> =
+            edit.changes.into_iter().flatten().collect();
+        match edit.document_changes {
+            Some(DocumentChanges::Edits(edits)) => files.extend(edits.into_iter().map(doc_edits)),
+            Some(DocumentChanges::Operations(ops)) => {
+                files.extend(ops.into_iter().filter_map(|op| match op {
+                    DocumentChangeOperation::Edit(e) => Some(doc_edits(e)),
+                    DocumentChangeOperation::Op(_) => None,
+                }))
+            }
+            None => {}
+        }
+        let back = self.docs.get(self.active).map(|d| d.path.clone());
+        for (uri, edits) in files {
+            let Some(path) = uri_path(uri.as_str()) else {
+                continue;
+            };
+            self.open_path(path.clone(), window, cx);
+            if let Some(doc) = self.docs.iter().find(|d| d.path == path) {
+                (doc.editor.clone()).update(cx, |e, cx| apply_edits(e, edits, window, cx));
+            }
+        }
+        if let Some(path) = back {
+            self.open_path(path, window, cx);
+        }
+    }
+
+    /// F2: the palette asks for a new name for the symbol at the cursor.
+    // ponytail: the palette stands in for VS Code's inline rename box, and
+    // the word at the cursor for `textDocument/prepareRename`'s answer.
+    pub(super) fn rename_symbol(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.get(self.active) else {
+            return;
+        };
+        let e = doc.editor.read(cx);
+        let (text, at) = (e.value(), e.selected_range().start);
+        let word = |c: char| c.is_alphanumeric() || c == '_';
+        let start = text[..at].trim_end_matches(word).len();
+        let end = at + text[at..].find(|c| !word(c)).unwrap_or(text.len() - at);
+        if start == end {
+            self.note("The element can't be renamed.".into(), Severity::Info, cx);
+            return;
+        }
+        let what = Rename::Symbol(doc.path.clone(), e.text().offset_to_position(at));
+        self.rename_input(what, text[start..end].to_string(), window, cx);
+    }
+
+    /// Rename Symbol's new name: the server's edits apply across files.
+    pub(super) fn rename_symbol_to(
+        &mut self,
+        path: PathBuf,
+        at: lsp_types::Position,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let server = (self.lsp.servers.values().flatten())
+            .find(|s| s.open.lock().unwrap().contains_key(&path));
+        let Some(server) = server else {
+            self.note("No result.".into(), Severity::Info, cx);
+            return;
+        };
+        let reply = server.request(
+            "textDocument/rename",
+            json!({ "textDocument": { "uri": path_uri(&path) }, "position": at, "newName": name }),
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            let reply = reply.await.unwrap_or_default();
+            let edit = serde_json::from_value::<Option<lsp_types::WorkspaceEdit>>(reply);
+            this.update_in(cx, |this, window, cx| match edit {
+                Ok(Some(edit)) => this.apply_workspace_edit(edit, window, cx),
+                _ => this.note("No result.".into(), Severity::Info, cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// The extension host now serves `ids`: their built-in servers make way
     /// and their files go to the host. `out` is the host's stdin.
     pub(super) fn lsp_languages(
@@ -775,6 +870,7 @@ impl Workbench {
                         "definition": { "linkSupport": true },
                         "formatting": {},
                         "rangeFormatting": {},
+                        "rename": {},
                         "codeAction": { "codeActionLiteralSupport": { "codeActionKind": {
                             "valueSet": ["", "quickfix", "refactor", "refactor.extract",
                                 "refactor.inline", "refactor.rewrite", "source",

@@ -245,7 +245,7 @@ const changed = new EventEmitter();
 const closed = new EventEmitter();
 const saved = new EventEmitter();
 // Each language feature's providers: { selector, provider }.
-const providers = { hover: [], completion: [], definition: [], formatting: [], rangeFormatting: [], codeAction: [] };
+const providers = { hover: [], completion: [], definition: [], formatting: [], rangeFormatting: [], codeAction: [], rename: [] };
 
 // ---- the vscode API ----------------------------------------------------------
 
@@ -512,6 +512,7 @@ const vscodeLanguages = {
   registerDocumentFormattingEditProvider: register('formatting'),
   registerDocumentRangeFormattingEditProvider: register('rangeFormatting'),
   registerCodeActionsProvider: register('codeAction'),
+  registerRenameProvider: register('rename'),
   onDidChangeDiagnostics: never,
 };
 
@@ -530,11 +531,13 @@ function lspCommand(c) {
   actionCommands.push(c);
   return { title: c.title, command: '_vsn.codeAction', arguments: [actionCommands.length - 1] };
 }
+function lspWorkspaceEdit(edit) {
+  return edit && { changes: Object.fromEntries(edit.entries().map(([uri, edits]) => [uri.toString(), edits.map((e) => ({ range: lspRange(e.range), newText: e.newText }))])) };
+}
 function lspCodeAction(a) {
   // A plain Command rather than a CodeAction.
   if (typeof a.command === 'string') return { title: a.title, command: lspCommand(a) };
-  const changes = a.edit && Object.fromEntries(a.edit.entries().map(([uri, edits]) => [uri.toString(), edits.map((e) => ({ range: lspRange(e.range), newText: e.newText }))]));
-  return { title: a.title, kind: a.kind && a.kind.value, isPreferred: a.isPreferred, edit: changes && { changes }, command: lspCommand(a.command) };
+  return { title: a.title, kind: a.kind && a.kind.value, isPreferred: a.isPreferred, edit: lspWorkspaceEdit(a.edit), command: lspCommand(a.command) };
 }
 
 // vsn's requests for a document, answered by the extensions' providers.
@@ -544,7 +547,7 @@ async function provide(method, params) {
     return c && vscodeCommands.executeCommand(c.command, ...(c.arguments || []));
   }
   const doc = documents.get(params.textDocument.uri);
-  let feature = { 'textDocument/hover': 'hover', 'textDocument/completion': 'completion', 'textDocument/definition': 'definition', 'textDocument/formatting': 'formatting', 'textDocument/rangeFormatting': 'rangeFormatting', 'textDocument/codeAction': 'codeAction' }[method];
+  let feature = { 'textDocument/hover': 'hover', 'textDocument/completion': 'completion', 'textDocument/definition': 'definition', 'textDocument/formatting': 'formatting', 'textDocument/rangeFormatting': 'rangeFormatting', 'textDocument/codeAction': 'codeAction', 'textDocument/rename': 'rename' }[method];
   const find = (f) => doc && f && providers[f].find((p) => match(p.selector, doc));
   let entry = find(feature);
   // Format Document falls back on formatting the whole range.
@@ -583,6 +586,8 @@ async function provide(method, params) {
       actionCommands = [];
       return r && r.filter((a) => !a.disabled).map(lspCodeAction);
     }
+    case 'rename':
+      return lspWorkspaceEdit(await p.provideRenameEdits(doc, pos, params.newName, token));
   }
   return null;
 }

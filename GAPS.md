@@ -483,9 +483,11 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [x] Hover, completion (as you type and Ctrl+Space) and Go to Definition (F12, Ctrl+Click, into other files) from language servers.
 - [x] Format Document (Shift+Alt+F) from language servers, as one undo step.
 - [x] Code actions (Ctrl+.) from language servers and extensions, applied as one undo step.
-- [ ] Code actions: edits to other files, `documentChanges`, file operations, `workspace/applyEdit` and `codeAction/resolve` are dropped; no lightbulb.
+- [ ] Code actions: file operations, `workspace/applyEdit` and `codeAction/resolve` are dropped; no lightbulb.
+- [x] Rename Symbol (F2) from language servers and extensions, edits across files.
+- [ ] Rename asks in the palette, not an inline box; no `prepareRename`, and edited files open as tabs.
 - [x] Format Selection (Ctrl+K Ctrl+F; the cursor's line when nothing is selected) from language servers and extensions.
-- [ ] Format on save/type, rename, references, signature help and document symbols from language servers.
+- [ ] Format on save/type, references, signature help and document symbols from language servers.
 - [ ] Completion ignores the server's trigger characters and snippets (`snippetSupport` is off).
 - [ ] Problems panel: collapsing a file, filter, related information, and the Explorer's red file decorations.
 - [x] A crashed language server restarts and reopens its files, up to 5 times.
@@ -494,6 +496,6 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [x] An extension's `update(key, undefined)` removes the setting instead of writing `null`.
 - [ ] Host providers: document selectors' `pattern`/`scheme` aren't checked, completion snippets are flattened to plain text, and several diagnostic collections for one file overwrite each other.
 - [ ] `createFileSystemWatcher` never fires; `openTextDocument` reads the disk, not the open editor.
-- [ ] Only hover, completion, definition, (range) formatting and code action providers; the rest log "not implemented". Only the first matching provider answers.
+- [ ] Only hover, completion, definition, (range) formatting, code action and rename providers; the rest log "not implemented". Only the first matching provider answers.
 - [ ] A language extension claiming a TypeScript-family language stops the shared built-in server for the others until their next file.
 - [ ] Completion list isn't filtered by the typed prefix while it's open.
