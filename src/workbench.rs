@@ -320,6 +320,8 @@ pub struct Workbench {
     toast: Option<(SharedString, bool, Task<()>)>,
     /// Every notification, newest first, as the bell's center lists them.
     notes: Vec<SharedString>,
+    /// The breadcrumb row, scrolled to show the file name.
+    crumbs: ScrollHandle,
     /// Notifications added since the center was last open: the bell's dot.
     unseen: usize,
     /// Whether the bell's notification center is open.
@@ -359,6 +361,7 @@ impl Workbench {
             palette: palette::Palette::new(window, cx),
             toast: None,
             notes: Vec::new(),
+            crumbs: ScrollHandle::new(),
             unseen: 0,
             center: false,
             debug: debug::Debug::new(window, cx),
@@ -1444,6 +1447,9 @@ impl Workbench {
             }
             crumbs.push(div().px(px(2.)).child(part.clone()).into_any_element());
         }
+        // ponytail: revealed on every render, so the row can't be scrolled
+        // back by hand; reveal only on a new file or resize if that matters.
+        self.crumbs.scroll_to_item(crumbs.len().saturating_sub(1));
 
         v_flex()
             .size_full()
@@ -1481,14 +1487,20 @@ impl Workbench {
                             .child(action_button("editor-more", icon::ELLIPSIS)),
                     ),
             )
+            // Absolute, so a long path scrolls instead of widening the editor.
             .child(
-                h_flex()
-                    .h(px(22.))
-                    .flex_none()
-                    .pl(px(12.))
-                    .text_size(px(13.))
-                    .text_color(col::fg_muted())
-                    .children(crumbs),
+                div().relative().h(px(22.)).flex_none().child(
+                    h_flex()
+                        .id("breadcrumbs")
+                        .absolute()
+                        .size_full()
+                        .pl(px(12.))
+                        .text_size(px(13.))
+                        .text_color(col::fg_muted())
+                        .overflow_x_scroll()
+                        .track_scroll(&self.crumbs)
+                        .children(crumbs),
+                ),
             )
             .child(
                 div().flex_1().min_h_0().map(|d| {

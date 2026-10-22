@@ -121,8 +121,10 @@ Differences from VS Code still to close, smallest first within each area.
       CRLF on Windows.
 - [x] The breadcrumb of a file outside the folder showed a stray `\` after
       `C:`.
-- [ ] A breadcrumb wider than the editor runs off the right edge, hiding
+- [x] A breadcrumb wider than the editor runs off the right edge, hiding
       the file name; VS Code scrolls it to show the end.
+- [ ] The breadcrumb can't be scrolled back by hand (VS Code shows a thin
+      scrollbar on hover), and its items aren't clickable pickers.
 - [ ] Go menu: Back/Forward (Alt+Left/Right), Last Edit Location and
       Go to Symbol in Workspace (Ctrl+T) are still placeholders.
 - [ ] Do Not Disturb (the center's bell-slash button).
