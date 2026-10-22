@@ -109,6 +109,7 @@ actions!(
         FindNextInTerminal,
         FindPreviousInTerminal,
         ToggleSizeToContentWidth,
+        ToggleWordWrap,
         ScrollTerminalUp,
         ScrollTerminalDown,
         ScrollTerminalUpPage,
@@ -222,6 +223,7 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
             Some("Terminal || TerminalFind"),
         ),
         KeyBinding::new("alt-z", ToggleSizeToContentWidth, Some("Terminal")),
+        KeyBinding::new("alt-z", ToggleWordWrap, None),
         KeyBinding::new(
             "ctrl-alt-pageup",
             ScrollTerminalUp,
@@ -342,6 +344,13 @@ enum Encoding {
 
 /// A hash of an editor's text, to tell whether it's back to the saved text.
 /// Whether files.autoSave saves after a delay; other modes count as off.
+/// Whether settings `s` turn on editor.wordWrap (any mode but "off"; VS Code's
+/// default is "off").
+// ponytail: "wordWrapColumn"/"bounded" wrap at the window edge, not the column.
+fn word_wrap(s: &serde_json::Value) -> bool {
+    s["editor.wordWrap"].as_str().is_some_and(|v| v != "off")
+}
+
 fn auto_save() -> bool {
     terminal::settings()["files.autoSave"] == "afterDelay"
 }
@@ -515,6 +524,8 @@ pub struct Workbench {
     last_edit: Option<(PathBuf, input::Position)>,
     /// files.autoSave "afterDelay": the pending save of dirty editors.
     autosave: Option<Task<()>>,
+    /// View > Word Wrap (Alt+Z), for every editor; starts from editor.wordWrap.
+    word_wrap: bool,
     debug: debug::Debug,
     /// Spawned when the Terminal tab first shows; the error if the shell didn't start.
     terminals: terminal::Terminals,
@@ -571,6 +582,7 @@ impl Workbench {
             nav_at: 0,
             last_edit: None,
             autosave: None,
+            word_wrap: word_wrap(&terminal::settings()),
             debug: debug::Debug::new(window, cx),
             terminals: Default::default(),
         };
@@ -757,6 +769,7 @@ impl Workbench {
             EditorState::new(window, cx)
                 .language(lang)
                 .searchable(true)
+                .soft_wrap(self.word_wrap)
                 .tab_size(indent)
         });
         editor.update(cx, |e, cx| e.set_value(text, window, cx));
@@ -1601,6 +1614,15 @@ impl Workbench {
         cx.notify();
     }
 
+    /// Wraps (or stops wrapping) every editor's long lines at its width.
+    fn set_word_wrap(&mut self, wrap: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.word_wrap = wrap;
+        for doc in &self.docs {
+            (doc.editor).update(cx, |e, cx| e.set_soft_wrap(wrap, window, cx));
+        }
+        cx.notify();
+    }
+
     /// View > Problems / Output / Debug Console: shows the panel on tab
     /// `ix`, or hides it when it's already showing that tab.
     fn toggle_panel_tab(&mut self, ix: usize, cx: &mut Context<Self>) {
@@ -1635,6 +1657,7 @@ impl Workbench {
         ]
         .into_iter()
         .map(|name| {
+            let wrap = self.word_wrap;
             Button::new(name)
                 .ghost()
                 .compact()
@@ -1644,7 +1667,7 @@ impl Workbench {
                 .text_size(px(13.))
                 .text_color(col::fg())
                 .dropdown_menu(move |menu, window, cx| {
-                    app_menu(name, menu.min_w(px(240.)), window, cx)
+                    app_menu(name, wrap, menu.min_w(px(240.)), window, cx)
                 })
         });
 
@@ -3267,6 +3290,9 @@ impl Workbench {
     /// keeps an explicitly set language).
     fn relanguage(&mut self, old: &serde_json::Value, window: &mut Window, cx: &mut Context<Self>) {
         let new = terminal::settings();
+        if word_wrap(&new) != word_wrap(old) {
+            self.set_word_wrap(word_wrap(&new), window, cx);
+        }
         for ix in 0..self.docs.len() {
             let doc = &self.docs[ix];
             if doc.untitled || doc.binary || doc.lang != self.language_in(old, &doc.path) {
@@ -3962,6 +3988,9 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &FindPreviousInTerminal, window, cx| {
                 this.find_step(true, window, cx)
             }))
+            .on_action(cx.listener(|this, _: &ToggleWordWrap, window, cx| {
+                this.set_word_wrap(!this.word_wrap, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &ToggleSizeToContentWidth, _, cx| {
                 this.toggle_size_to_content_width(cx)
             }))
@@ -4203,8 +4232,10 @@ fn watermark() -> impl IntoElement {
 }
 
 /// VS Code's application menus, minus anything AI.
+/// Menu bar menu `name`; `wrap` checks View > Word Wrap.
 fn app_menu(
     name: &str,
+    wrap: bool,
     menu: PopupMenu,
     window: &mut Window,
     cx: &mut Context<PopupMenu>,
@@ -4290,7 +4321,7 @@ fn app_menu(
             .menu("Debug Console", Box::new(ToggleDebugConsole))
             .menu("Terminal", Box::new(ToggleTerminal))
             .separator()
-            .menu("Word Wrap", noop()),
+            .menu_with_check("Word Wrap", wrap, Box::new(ToggleWordWrap)),
         "Go" => menu
             .menu("Back", Box::new(GoBack))
             .menu("Forward", Box::new(GoForward))

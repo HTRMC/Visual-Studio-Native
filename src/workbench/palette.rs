@@ -180,6 +180,7 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("View: Toggle Problems", Box::new(ToggleProblems)),
         ("View: Toggle Output", Box::new(ToggleOutput)),
         ("View: Toggle Debug Console", Box::new(ToggleDebugConsole)),
+        ("View: Toggle Word Wrap", Box::new(ToggleWordWrap)),
         ("File: Refresh Explorer", Box::new(RefreshExplorer)),
         (
             "View: Collapse Folders in Explorer",
