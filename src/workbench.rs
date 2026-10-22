@@ -115,6 +115,8 @@ actions!(
         MoveLinesUp,
         MoveLinesDown,
         ToggleLineComment,
+        AddLineComment,
+        RemoveLineComment,
         ToggleBlockComment,
         ScrollTerminalUp,
         ScrollTerminalDown,
@@ -239,6 +241,16 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("alt-up", MoveLinesUp, Some("Input && mode == editor")),
         KeyBinding::new("alt-down", MoveLinesDown, Some("Input && mode == editor")),
         KeyBinding::new("ctrl-/", ToggleLineComment, Some("Input && mode == editor")),
+        KeyBinding::new(
+            "ctrl-k ctrl-c",
+            AddLineComment,
+            Some("Input && mode == editor"),
+        ),
+        KeyBinding::new(
+            "ctrl-k ctrl-u",
+            RemoveLineComment,
+            Some("Input && mode == editor"),
+        ),
         KeyBinding::new(
             "shift-alt-a",
             ToggleBlockComment,
@@ -521,11 +533,14 @@ fn block_toggled(
 /// The edit for Toggle Line Comment with `token` on the lines `sel` touches
 /// in `text`, as for [`lines_moved`]: removes the token (and a space after
 /// it) when every non-blank line starts with it, else adds "token " at their
-/// least indentation. None when every line is blank.
+/// least indentation. `add` Some(true) always adds (Add Line Comment), and
+/// Some(false) always removes (Remove Line Comment). None when nothing
+/// changes.
 fn comment_toggled(
     text: &str,
     sel: Range<usize>,
     token: &str,
+    add: Option<bool>,
 ) -> Option<(Range<usize>, String, Range<usize>)> {
     let lines = selected_lines(text, &sel);
     let indent = |l: &str| l.len() - l.trim_start().len();
@@ -539,19 +554,20 @@ fn comment_toggled(
     });
     let body: Vec<_> = body.filter(|(_, l)| !l.trim().is_empty()).collect();
     let col = body.iter().map(|(_, l)| indent(l)).min()?;
-    let add = format!("{token} ");
-    if body.iter().all(|(_, l)| l.trim_start().starts_with(token)) {
-        for (at, l) in &body {
+    let insert = format!("{token} ");
+    let commented = |l: &str| l.trim_start().starts_with(token);
+    if add.unwrap_or(!body.iter().all(|(_, l)| commented(l))) {
+        for (at, _) in &body {
+            edits.push((at + col, 0, insert.as_str()));
+        }
+    } else {
+        for (at, l) in body.iter().filter(|(_, l)| commented(l)) {
             let i = indent(l);
             let space = l[i + token.len()..].starts_with(' ') as usize;
             edits.push((at + i, token.len() + space, ""));
         }
-    } else {
-        for (at, _) in &body {
-            edits.push((at + col, 0, add.as_str()));
-        }
     }
-    Some(apply_edits(text, lines, &edits, sel))
+    (!edits.is_empty()).then(|| apply_edits(text, lines, &edits, sel))
 }
 
 /// `edits` (position, bytes removed, text inserted), in order, applied to
@@ -1850,6 +1866,33 @@ impl Workbench {
     // ponytail: the active selection only; VS Code moves every cursor's lines.
     fn line_op(&mut self, up: bool, copy: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.edit_lines(|text, sel| lines_moved(text, sel, up, copy), window, cx)
+    }
+
+    /// Toggle (`add` None), Add or Remove Line Comment on the active editor's
+    /// selected lines.
+    fn comment_lines(&mut self, add: Option<bool>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(lang) = self.docs.get(self.active).map(|d| d.lang) else {
+            return;
+        };
+        match (line_comment(lang), block_comment(lang)) {
+            (Some(token), _) => self.edit_lines(
+                |text, sel| comment_toggled(text, sel, token, add),
+                window,
+                cx,
+            ),
+            // Without line comments, VS Code toggles a block comment on the lines.
+            (None, Some(tokens)) => self.edit_lines(
+                |text, sel| {
+                    let lines = selected_lines(text, &sel);
+                    let line = &text[lines.clone()];
+                    let start = lines.start + line.len() - line.trim_start().len();
+                    block_toggled(text, start..lines.end, tokens)
+                },
+                window,
+                cx,
+            ),
+            (None, None) => {}
+        }
     }
 
     /// Applies `edit`'s (range, replacement, selection after) for the active
@@ -4271,26 +4314,13 @@ impl Render for Workbench {
                 this.line_op(false, false, window, cx)
             }))
             .on_action(cx.listener(|this, _: &ToggleLineComment, window, cx| {
-                let Some(lang) = this.docs.get(this.active).map(|d| d.lang) else {
-                    return;
-                };
-                match (line_comment(lang), block_comment(lang)) {
-                    (Some(token), _) => {
-                        this.edit_lines(|text, sel| comment_toggled(text, sel, token), window, cx)
-                    }
-                    // Without line comments, VS Code block-comments the lines.
-                    (None, Some(tokens)) => this.edit_lines(
-                        |text, sel| {
-                            let lines = selected_lines(text, &sel);
-                            let line = &text[lines.clone()];
-                            let start = lines.start + line.len() - line.trim_start().len();
-                            block_toggled(text, start..lines.end, tokens)
-                        },
-                        window,
-                        cx,
-                    ),
-                    (None, None) => {}
-                }
+                this.comment_lines(None, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &AddLineComment, window, cx| {
+                this.comment_lines(Some(true), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &RemoveLineComment, window, cx| {
+                this.comment_lines(Some(false), window, cx)
             }))
             .on_action(cx.listener(|this, _: &ToggleBlockComment, window, cx| {
                 let lang = this.docs.get(this.active).map(|d| d.lang);
@@ -4711,7 +4741,7 @@ mod tests {
     #[test]
     fn toggle_line_comment() {
         let toggle = |text: &str, sel| {
-            let (range, new, sel) = comment_toggled(text, sel, "//")?;
+            let (range, new, sel) = comment_toggled(text, sel, "//", None)?;
             let mut out = text.to_string();
             out.replace_range(range, &new);
             Some((out, sel))
@@ -4726,6 +4756,16 @@ mod tests {
         assert_eq!(toggle("x", 1..1), Some(("// x".into(), 4..4)));
         assert_eq!(toggle("//x", 3..3), Some(("x".into(), 1..1)));
         assert_eq!(toggle("  \n", 0..0), None);
+        // Add always adds; Remove skips uncommented lines.
+        let force = |text: &str, add| {
+            let (range, new, _) = comment_toggled(text, 0..text.len(), "//", Some(add))?;
+            let mut out = text.to_string();
+            out.replace_range(range, &new);
+            Some(out)
+        };
+        assert_eq!(force("// a", true), Some("// // a".into()));
+        assert_eq!(force("// a\nb", false), Some("a\nb".into()));
+        assert_eq!(force("a", false), None);
     }
 
     #[test]
