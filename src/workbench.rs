@@ -464,7 +464,8 @@ pub struct Workbench {
     /// and the timer that hides it.
     toast: Option<(SharedString, bool, Task<()>)>,
     /// Every notification, newest first, as the bell's center lists them.
-    /// Notifications, newest first, each with whether it offers Open Settings.
+    /// Notifications, newest first, each with whether it's a settings.json
+    /// error (error severity, with an Open Settings button) or a warning.
     notes: Vec<(SharedString, bool)>,
     /// The breadcrumb row, scrolled to show the file name.
     crumbs: ScrollHandle,
@@ -3148,25 +3149,25 @@ impl Workbench {
     /// A warning notification: listed in the bell's center, and shown as a
     /// toast (unless the center is open) until VS Code's 18 seconds pass, or
     /// later while the mouse is over it. A repeat replaces the old one.
-    // ponytail: one toast at a time, and warnings only.
+    // ponytail: one toast at a time; the only errors are settings.json's.
     fn warn(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.note(message.into(), false, cx);
     }
 
-    /// A warning with VS Code's "Open Settings" button, for settings.json errors.
-    fn warn_settings(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
+    /// An error writing settings.json, with VS Code's "Open Settings" button.
+    fn settings_error(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.note(message.into(), true, cx);
     }
 
-    fn note(&mut self, message: SharedString, settings: bool, cx: &mut Context<Self>) {
+    fn note(&mut self, message: SharedString, error: bool, cx: &mut Context<Self>) {
         self.clear_note(&message, cx);
-        self.notes.insert(0, (message.clone(), settings));
+        self.notes.insert(0, (message.clone(), error));
         if self.center {
             return;
         }
         self.unseen += 1;
-        // VS Code's Do Not Disturb still toasts errors, but there are none yet.
-        if self.palette.dnd {
+        // VS Code's Do Not Disturb still toasts errors.
+        if self.palette.dnd && !error {
             return cx.notify();
         }
         let hide = cx.spawn(async move |this, cx| {
@@ -3264,12 +3265,12 @@ impl Workbench {
         cx.notify();
     }
 
-    /// One notification's warning icon, message, close button and, below
-    /// them, its Open Settings button.
+    /// One notification's severity icon, message, close button and, below
+    /// them, an error's Open Settings button.
     fn note_row(
         &self,
         id: impl Into<ElementId>,
-        (message, settings): &(SharedString, bool),
+        (message, error): &(SharedString, bool),
         cx: &mut Context<Self>,
     ) -> Div {
         let id = id.into();
@@ -3282,8 +3283,11 @@ impl Workbench {
             .px(px(8.))
             .py(px(8.))
             .gap(px(8.))
-            // notificationsWarningIcon.foreground
-            .child(codicon(icon::WARNING).mt(px(5.)).text_color(c(0xCCA700)))
+            // notificationsErrorIcon.foreground and notificationsWarningIcon.foreground
+            .child(match error {
+                true => codicon(icon::ERROR).mt(px(5.)).text_color(c(0xF14C4C)),
+                false => codicon(icon::WARNING).mt(px(5.)).text_color(c(0xCCA700)),
+            })
             // min width 0 lets a long message wrap instead of pushing out the close button.
             .child(
                 div()
@@ -3299,7 +3303,7 @@ impl Workbench {
                     this.center &= !this.notes.is_empty();
                 },
             )));
-        v_flex().child(row).when(*settings, |d| {
+        v_flex().child(row).when(*error, |d| {
             // An action closes its notification, as in VS Code.
             // button.background, button.hoverBackground and button.foreground; the
             // custom variant dims its colour, so bg sets it too.

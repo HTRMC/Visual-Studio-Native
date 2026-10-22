@@ -140,8 +140,10 @@ Differences from VS Code still to close, smallest first within each area.
       parse failed silently (VS Code: "Unable to write into user settings...").
 - [x] That notification lacked VS Code's "Open Settings" button; it now has
       one, which closes the notification and opens settings.json.
-- [ ] It's still a warning; VS Code shows it as an error (red icon, and it
+- [x] It was a warning; it's now an error, as in VS Code (red icon, and it
       toasts through Do Not Disturb).
+- [ ] Explorer failures (Unable to copy/move/create) are warnings; VS Code
+      reports them as errors.
 - [x] Notification buttons used gpui-component's primary colour; they now
       use button.background (#0078D4) and button.hoverBackground.
 - [ ] Notification buttons aren't in the keyboard focus order (VS Code tabs
