@@ -208,6 +208,9 @@ struct Doc {
     editor: Entity<EditorState>,
     dirty: bool,
     crlf: bool,
+    /// Opened without line breaks, so `crlf` is VS Code's files.eol "auto"
+    /// (CRLF on Windows) and Enter's bare LFs don't overrule it.
+    eol_default: bool,
     encoding: Encoding,
     /// Shows VS Code's binary placeholder instead of the editor (left empty).
     binary: bool,
@@ -415,13 +418,19 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let crlf = text.contains("\r\n");
+        let eol_default = !text.contains('\n');
+        let crlf = if eol_default {
+            cfg!(windows)
+        } else {
+            text.contains("\r\n")
+        };
         let editor = self.new_editor(&path, text, window, cx);
         self.docs.push(Doc {
             path,
             editor,
             dirty: false,
             crlf,
+            eol_default,
             encoding,
             binary,
             untitled,
@@ -490,7 +499,12 @@ impl Workbench {
                     let crs: usize = (text.chunks())
                         .map(|c| c.bytes().filter(|&b| b == b'\r').count())
                         .sum();
-                    doc.crlf = crs * 2 > breaks;
+                    // ponytail: on a doc opened without breaks, undoing Change
+                    // End of Line Sequence back to LF keeps the CRLF label;
+                    // track the change's old ending if that matters.
+                    if crs > 0 || !doc.eol_default {
+                        doc.crlf = crs * 2 > breaks;
+                    }
                 }
                 let path = doc.path.clone();
                 this.refresh_search_file(&path, cx);

@@ -117,8 +117,10 @@ Differences from VS Code still to close, smallest first within each area.
       the dot).
 - [x] Enter in a CRLF file inserts a bare LF; saving now writes the file's
       one ending throughout, and the label goes by most endings.
-- [ ] New untitled files start LF; VS Code's files.eol "auto" makes them
-      CRLF on Windows.
+- [x] New untitled files start LF; VS Code's files.eol "auto" makes them
+      CRLF on Windows (so do files opened without line breaks).
+- [ ] Enter inserts a bare LF even in a CRLF file (gpui-base hardcodes it);
+      saving fixes the bytes, but copying lines out carries mixed endings.
 - [x] The breadcrumb of a file outside the folder showed a stray `\` after
       `C:`.
 - [x] A breadcrumb wider than the editor runs off the right edge, hiding
