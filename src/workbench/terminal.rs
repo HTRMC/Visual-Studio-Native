@@ -30,6 +30,10 @@ const TABS_W: f32 = 160.;
 /// A selection's start and end, as (line, col) cell boundaries.
 type Span = ((usize, u16), (usize, u16));
 
+/// A link under the mouse: its wrapped line's first row, and its start and
+/// end cells counted from there.
+type Hover = (u16, usize, usize);
+
 #[derive(Default)]
 pub(super) struct Terminals {
     /// Split groups are runs of the same `group`, shown side by side.
@@ -70,7 +74,7 @@ pub(super) struct Terminal {
     drag_at: Point<Pixels>,
     autoscrolling: bool,
     /// The link under the mouse: row and column range.
-    hover: Option<(u16, u16, u16)>,
+    hover: Option<Hover>,
     /// Wheel movement not yet a whole line.
     scroll: f32,
     /// The cell the last mouse report was for, to send motion once per cell.
@@ -129,21 +133,28 @@ impl Terminal {
             .collect()
     }
 
+    /// The first and last visible rows of the wrapped line through `row`.
+    fn wrapped_rows(&self, row: u16) -> (u16, u16) {
+        let screen = self.parser.screen();
+        let (mut r0, mut r1) = (row, row);
+        while r0 > 0 && screen.row_wrapped(r0 - 1) {
+            r0 -= 1;
+        }
+        while r1 < screen.size().0.get() - 1 && screen.row_wrapped(r1) {
+            r1 += 1;
+        }
+        (r0, r1)
+    }
+
     /// The word under the mouse or, with `line`, its whole wrapped line.
     fn unit_at(&self, position: Point<Pixels>, line: bool) -> Span {
         let screen = self.parser.screen();
         let (row, col) = self.cell(position, false);
         let top = self.top();
         if line {
-            let (rows, cols) = screen.size();
-            let (mut r0, mut r1) = (row, row);
-            while r0 > 0 && screen.row_wrapped(r0 - 1) {
-                r0 -= 1;
-            }
-            while r1 < rows.get() - 1 && screen.row_wrapped(r1) {
-                r1 += 1;
-            }
-            return ((top + r0 as usize, 0), (top + r1 as usize, cols.get()));
+            let (r0, r1) = self.wrapped_rows(row);
+            let cols = screen.size().1.get();
+            return ((top + r0 as usize, 0), (top + r1 as usize, cols));
         }
         let (a, b) = word_span(&self.row_chars(row), col as usize);
         (
@@ -178,15 +189,18 @@ impl Terminal {
         }
     }
 
-    /// The link under the mouse, if any. Paths resolve against the shell's
-    /// cwd, else `root`.
-    fn link(&self, position: Point<Pixels>, root: Option<&Path>) -> Option<(u16, u16, u16, Link)> {
+    /// The link under the mouse, if any, as its wrapped line's first row and
+    /// its cells counted from there. Paths resolve against the shell's cwd,
+    /// else `root`.
+    fn link(&self, position: Point<Pixels>, root: Option<&Path>) -> Option<(Hover, Link)> {
         let root = self.parser.callbacks().cwd.as_deref().or(root);
         let (row, col) = self.cell(position, false);
-        let line = self.row_chars(row);
-        let (a, b) = word_at(&line, col as usize)?;
+        let (r0, r1) = self.wrapped_rows(row);
+        let line: Vec<char> = (r0..=r1).flat_map(|r| self.row_chars(r)).collect();
+        let cols = self.parser.screen().size().1.get() as usize;
+        let (a, b) = word_at(&line, (row - r0) as usize * cols + col as usize)?;
         let link = link(&line[a..b].iter().collect::<String>(), root)?;
-        Some((row, a as u16, b as u16, link))
+        Some(((r0, a, b), link))
     }
 
     /// Sends a mouse report when the program asked for this kind of event.
@@ -1254,7 +1268,11 @@ impl Workbench {
                 if selection.is_some_and(|s| selected(s, block, at)) {
                     bg = Some(c(0x264F78));
                 }
-                let link = hover.is_some_and(|(r, a, b)| r == row && (a..b).contains(&col));
+                let link = hover.is_some_and(|(r, a, b)| {
+                    row >= r
+                        && (a..b)
+                            .contains(&((row - r) as usize * cols.get() as usize + col as usize))
+                });
                 let run = TextRun {
                     len: s.len(),
                     font: Font {
@@ -1336,7 +1354,7 @@ impl Workbench {
                         return;
                     };
                     if ev.modifiers.control
-                        && let Some((.., link)) = t.link(ev.position, root.as_deref())
+                        && let Some((_, link)) = t.link(ev.position, root.as_deref())
                     {
                         // Keep the opened editor focused.
                         window.prevent_default();
@@ -1379,9 +1397,7 @@ impl Workbench {
                 } else if t.selecting {
                     this.drag_terminal(id, ev, cx);
                 } else if ev.pressed_button.is_none() {
-                    let hover = t
-                        .link(ev.position, root.as_deref())
-                        .map(|(r, a, b, _)| (r, a, b));
+                    let hover = t.link(ev.position, root.as_deref()).map(|(hover, _)| hover);
                     if t.hover != hover {
                         t.hover = hover;
                         cx.notify();
@@ -1548,7 +1564,6 @@ fn sorted<T: Ord>((a, b): (T, T)) -> (T, T) {
 
 /// The run of characters around `col` that could be a link, without the
 /// punctuation that usually ends a sentence.
-// ponytail: one screen row; a link wrapped onto the next row is cut there.
 fn word_at(line: &[char], col: usize) -> Option<(usize, usize)> {
     let sep = |c: char| c.is_whitespace() || "\"'<>()[]{}|`".contains(c);
     if sep(*line.get(col)?) {
