@@ -17,8 +17,10 @@ Differences from VS Code still to close, smallest first within each area.
 - [ ] A drag released outside the window keeps scrolling until the mouse
       comes back (no mouse capture).
 - [x] Links wrapped onto the next row are cut at the row end.
-- [ ] A wrapped link or triple-clicked line half scrolled off the top or
+- [x] A wrapped link or triple-clicked line half scrolled off the top or
       bottom is cut at the screen edge.
+- [ ] Double-clicking a word wrapped onto the next row selects only one
+      row's part.
 - [ ] Wheel scrollback is lost when a shell sets application cursor mode
       (needs OpenConsole's conpty.dll).
 - [ ] Find in terminal (Ctrl+F).

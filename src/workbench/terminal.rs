@@ -30,9 +30,9 @@ const TABS_W: f32 = 160.;
 /// A selection's start and end, as (line, col) cell boundaries.
 type Span = ((usize, u16), (usize, u16));
 
-/// A link under the mouse: its wrapped line's first row, and its start and
+/// A link under the mouse: its wrapped line's first line, and its start and
 /// end cells counted from there.
-type Hover = (u16, usize, usize);
+type Hover = (usize, usize, usize);
 
 #[derive(Default)]
 pub(super) struct Terminals {
@@ -121,42 +121,16 @@ impl Terminal {
         (self.top() + row as usize, col)
     }
 
-    /// A visible row, one char per cell.
-    fn row_chars(&self, row: u16) -> Vec<char> {
-        let screen = self.parser.screen();
-        (0..screen.size().1.get())
-            .map(|col| {
-                let cell = screen.cell(row, col);
-                cell.and_then(|c| c.contents().chars().next())
-                    .unwrap_or(' ')
-            })
-            .collect()
-    }
-
-    /// The first and last visible rows of the wrapped line through `row`.
-    fn wrapped_rows(&self, row: u16) -> (u16, u16) {
-        let screen = self.parser.screen();
-        let (mut r0, mut r1) = (row, row);
-        while r0 > 0 && screen.row_wrapped(r0 - 1) {
-            r0 -= 1;
-        }
-        while r1 < screen.size().0.get() - 1 && screen.row_wrapped(r1) {
-            r1 += 1;
-        }
-        (r0, r1)
-    }
-
     /// The word under the mouse or, with `line`, its whole wrapped line.
-    fn unit_at(&self, position: Point<Pixels>, line: bool) -> Span {
-        let screen = self.parser.screen();
+    fn unit_at(&mut self, position: Point<Pixels>, line: bool) -> Span {
         let (row, col) = self.cell(position, false);
         let top = self.top();
+        let screen = self.parser.screen_mut();
         if line {
-            let (r0, r1) = self.wrapped_rows(row);
-            let cols = screen.size().1.get();
-            return ((top + r0 as usize, 0), (top + r1 as usize, cols));
+            let (l0, l1) = wrapped_lines(screen, top + row as usize);
+            return ((l0, 0), (l1, screen.size().1.get()));
         }
-        let (a, b) = word_span(&self.row_chars(row), col as usize);
+        let (a, b) = word_span(&row_chars(screen, row), col as usize);
         (
             (top + row as usize, a as u16),
             (top + row as usize, b as u16),
@@ -164,7 +138,7 @@ impl Terminal {
     }
 
     /// The selection with its end dragged to the mouse.
-    fn dragged(&self) -> Option<Span> {
+    fn dragged(&mut self) -> Option<Span> {
         let (a, _) = self.selection?;
         let Some((line, (start, end))) = self.unit else {
             return Some((a, self.selection_end(self.drag_at)));
@@ -189,18 +163,22 @@ impl Terminal {
         }
     }
 
-    /// The link under the mouse, if any, as its wrapped line's first row and
-    /// its cells counted from there. Paths resolve against the shell's cwd,
-    /// else `root`.
-    fn link(&self, position: Point<Pixels>, root: Option<&Path>) -> Option<(Hover, Link)> {
-        let root = self.parser.callbacks().cwd.as_deref().or(root);
+    /// The link under the mouse, if any, found along its whole wrapped
+    /// line. Paths resolve against the shell's cwd, else `root`.
+    fn link(&mut self, position: Point<Pixels>, root: Option<&Path>) -> Option<(Hover, Link)> {
         let (row, col) = self.cell(position, false);
-        let (r0, r1) = self.wrapped_rows(row);
-        let line: Vec<char> = (r0..=r1).flat_map(|r| self.row_chars(r)).collect();
-        let cols = self.parser.screen().size().1.get() as usize;
-        let (a, b) = word_at(&line, (row - r0) as usize * cols + col as usize)?;
+        let at = self.top() + row as usize;
+        let screen = self.parser.screen_mut();
+        let (l0, l1) = wrapped_lines(screen, at);
+        let mut line = Vec::new();
+        for l in l0..=l1 {
+            line.extend(at_line(screen, l, row_chars));
+        }
+        let cols = screen.size().1.get() as usize;
+        let (a, b) = word_at(&line, (at - l0) * cols + col as usize)?;
+        let root = self.parser.callbacks().cwd.as_deref().or(root);
         let link = link(&line[a..b].iter().collect::<String>(), root)?;
-        Some(((r0, a, b), link))
+        Some(((l0, a, b), link))
     }
 
     /// Sends a mouse report when the program asked for this kind of event.
@@ -1268,10 +1246,8 @@ impl Workbench {
                 if selection.is_some_and(|s| selected(s, block, at)) {
                     bg = Some(c(0x264F78));
                 }
-                let link = hover.is_some_and(|(r, a, b)| {
-                    row >= r
-                        && (a..b)
-                            .contains(&((row - r) as usize * cols.get() as usize + col as usize))
+                let link = hover.is_some_and(|(l, a, b)| {
+                    at.0 >= l && (a..b).contains(&((at.0 - l) * cols.get() as usize + col as usize))
                 });
                 let run = TextRun {
                     len: s.len(),
@@ -1519,6 +1495,47 @@ fn text_between(
     text
 }
 
+/// Calls `f` with the screen scrolled so `line` shows, and the row it is
+/// on, then scrolls back.
+fn at_line<R>(
+    screen: &mut vt100::Screen,
+    line: usize,
+    f: impl FnOnce(&vt100::Screen, u16) -> R,
+) -> R {
+    let (saved, len) = (screen.scrollback(), screen.scrollback_len());
+    screen.set_scrollback(len.saturating_sub(line));
+    let row = line - (len - screen.scrollback());
+    let r = f(screen, row as u16);
+    screen.set_scrollback(saved);
+    r
+}
+
+/// The first and last lines of the wrapped line through `line`, reaching
+/// into the scrollback.
+fn wrapped_lines(screen: &mut vt100::Screen, line: usize) -> (usize, usize) {
+    let last = screen.scrollback_len() + screen.size().0.get() as usize - 1;
+    let mut wrapped = |l| at_line(screen, l, |s, r| s.row_wrapped(r));
+    let (mut l0, mut l1) = (line, line);
+    while l0 > 0 && wrapped(l0 - 1) {
+        l0 -= 1;
+    }
+    while l1 < last && wrapped(l1) {
+        l1 += 1;
+    }
+    (l0, l1)
+}
+
+/// A visible row, one char per cell.
+fn row_chars(screen: &vt100::Screen, row: u16) -> Vec<char> {
+    (0..screen.size().1.get())
+        .map(|col| {
+            let cell = screen.cell(row, col);
+            cell.and_then(|c| c.contents().chars().next())
+                .unwrap_or(' ')
+        })
+        .collect()
+}
+
 /// The word around `col` for a double click, split on VS Code's default
 /// `terminal.integrated.wordSeparators`; a separator selects only itself.
 fn word_span(line: &[char], col: usize) -> (usize, usize) {
@@ -1739,8 +1756,8 @@ mod tests {
     use gpui_kit::Keystroke;
 
     use super::{
-        Link, cursor_moves, key_bytes, link, mouse_bytes, reflow, selected, text_between, word_at,
-        word_span,
+        Link, at_line, cursor_moves, key_bytes, link, mouse_bytes, reflow, selected, text_between,
+        word_at, word_span, wrapped_lines,
     };
 
     #[test]
@@ -1841,6 +1858,20 @@ mod tests {
         assert!(selected(block, true, (2, 1)) && selected(block, true, (3, 2)));
         assert!(!selected(block, true, (2, 3)) && !selected(block, true, (0, 1)));
         assert!(selected(block, false, (2, 3)));
+    }
+
+    #[test]
+    fn wraps_into_scrollback() {
+        let mut parser = vt100::Parser::new(3.try_into().unwrap(), 10.try_into().unwrap(), 100);
+        parser.process(&[b'x'; 35]);
+        let screen = parser.screen_mut();
+        assert_eq!(screen.scrollback_len(), 1);
+        assert_eq!(wrapped_lines(screen, 3), (0, 3));
+        assert_eq!(
+            at_line(screen, 0, |s, r| s.contents_between(r, 0, r, 10)),
+            "x".repeat(10)
+        );
+        assert_eq!(screen.scrollback(), 0);
     }
 
     #[test]
