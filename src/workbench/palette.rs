@@ -106,6 +106,7 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
             Box::new(GoToSymbolInWorkspace),
         ),
         ("View: Open View", Box::new(OpenView)),
+        ("Help: About", Box::new(About)),
         (
             "Notifications: Show Notifications",
             Box::new(ShowNotifications),

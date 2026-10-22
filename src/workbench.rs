@@ -76,6 +76,7 @@ actions!(
         ShowRun,
         ShowExtensions,
         CommandPalette,
+        About,
         QuickOpen,
         OpenView,
         GoToLine,
@@ -1559,6 +1560,37 @@ impl Workbench {
         };
         reveal(&doc.editor.clone(), pos, window, cx);
         true
+    }
+
+    /// Help > About: VS Code's version box, whose Copy puts the details on
+    /// the clipboard.
+    fn about(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let arch = match std::env::consts::ARCH {
+            "x86_64" => "x64",
+            "aarch64" => "arm64",
+            arch => arch,
+        };
+        // ponytail: no OS version number (VS Code's "10.0.26200"); it needs
+        // RtlGetVersion, as GetVersionEx lies to unmanifested apps.
+        let detail = format!(
+            "Version: {}\nCommit: {}\nDate: {}\nOS: Windows_NT {arch}",
+            env!("CARGO_PKG_VERSION"),
+            env!("VSN_COMMIT"),
+            env!("VSN_COMMIT_DATE"),
+        );
+        let answer = window.prompt(
+            PromptLevel::Info,
+            "Visual Studio Native",
+            Some(&detail),
+            &["Copy", "OK"],
+            cx,
+        );
+        cx.spawn(async move |_, cx| {
+            if answer.await == Ok(0) {
+                cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string(detail)));
+            }
+        })
+        .detach();
     }
 
     fn write(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -4516,6 +4548,7 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &CommandPalette, window, cx| {
                 this.open_palette(">", window, cx)
             }))
+            .on_action(cx.listener(|this, _: &About, window, cx| this.about(window, cx)))
             .on_action(cx.listener(Self::new_text_file))
             .on_action(cx.listener(Self::revert_file))
             .on_action(cx.listener(Self::toggle_auto_save))
@@ -5067,7 +5100,7 @@ fn app_menu(
             .menu("View License", noop())
             .menu("Toggle Developer Tools", noop())
             .separator()
-            .menu("About", noop()),
+            .menu("About", Box::new(About)),
     }
 }
 
