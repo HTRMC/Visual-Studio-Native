@@ -1430,9 +1430,10 @@ impl Workbench {
             .as_ref()
             .and_then(|r| doc.path.strip_prefix(r).ok())
             .unwrap_or(&doc.path);
-        let parts: Vec<_> = rel
-            .iter()
-            .map(|p| p.to_string_lossy().to_string())
+        // "C:" then the folders, without the root's own "\".
+        let parts: Vec<_> = (rel.components())
+            .filter(|c| !matches!(c, std::path::Component::RootDir))
+            .map(|p| p.as_os_str().to_string_lossy().to_string())
             .collect();
         for (i, part) in parts.iter().enumerate() {
             if i > 0 {
