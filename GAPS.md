@@ -157,8 +157,9 @@ Differences from VS Code still to close, smallest first within each area.
 - [ ] The explorer header's New File... and New Folder... are still inert
       (need an inline name box in the tree).
 - [ ] The explorer menu lacks New File/Folder, Open to the Side, Find in
-      Folder, Cut/Copy/Paste, Rename and Delete; the right-clicked row gets
-      no outline as VS Code's does.
+      Folder, Cut/Copy/Paste, Rename and Delete.
+- [x] The right-clicked explorer row gets the focus outline (the selection
+      stays put), and the keys then move on from it, as in VS Code.
 - [ ] A gpui tooltip stays on screen when its button moves away under a
       still mouse (e.g. after Restore Panel Size) until the mouse moves.
 - [x] Activity bar tooltips show under the mouse; VS Code puts them to the

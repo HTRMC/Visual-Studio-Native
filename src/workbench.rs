@@ -422,6 +422,9 @@ pub struct Workbench {
     /// The explorer's selected row: the active editor's file, or a folder
     /// clicked since.
     tree_sel: Option<PathBuf>,
+    /// The row with the focus outline that the keys move from: the
+    /// selection, or a row right-clicked since.
+    tree_cursor: Option<PathBuf>,
     tree_focus: FocusHandle,
     /// Explorer listings (folders first, then name), dropped when the watcher sees them change.
     dirs: HashMap<PathBuf, Vec<(PathBuf, bool)>>,
@@ -483,6 +486,7 @@ impl Workbench {
             expanded: HashSet::new(),
             tree_scroll: UniformListScrollHandle::new(),
             tree_sel: None,
+            tree_cursor: None,
             tree_focus: cx.focus_handle(),
             dirs: HashMap::new(),
             watcher: None,
@@ -1677,7 +1681,8 @@ impl Workbench {
                             "tree",
                             rows.len(),
                             cx.processor(move |this, range: Range<usize>, window, cx| {
-                                let focused = this.tree_focus.is_focused(window);
+                                // Holds while the row's menu has focus too.
+                                let focused = this.tree_focus.contains_focused(window, cx);
                                 range
                                     .map(|ix| this.render_tree_row(&rows[ix], focused, cx))
                                     .collect::<Vec<_>>()
@@ -1789,6 +1794,7 @@ impl Workbench {
     /// follows the active editor as VS Code's `explorer.autoReveal` does.
     fn reveal_in_tree(&mut self, path: &Path, show: bool, cx: &mut Context<Self>) {
         self.tree_sel = Some(path.to_path_buf());
+        self.tree_cursor = self.tree_sel.clone();
         let Some(root) = self.root.clone().filter(|r| path.starts_with(r)) else {
             return;
         };
@@ -1815,6 +1821,7 @@ impl Workbench {
     ) {
         if is_dir {
             self.tree_sel = Some(path.to_path_buf());
+            self.tree_cursor = self.tree_sel.clone();
             if !self.expanded.remove(path) {
                 self.expanded.insert(path.to_path_buf());
             }
@@ -1841,7 +1848,7 @@ impl Workbench {
             return;
         };
         let cur = self
-            .tree_sel
+            .tree_cursor
             .as_ref()
             .and_then(|s| rows.iter().position(|(p, ..)| p == s));
         let row = cur.map(|i| rows[i].clone());
@@ -1881,6 +1888,7 @@ impl Workbench {
         };
         cx.stop_propagation();
         self.tree_sel = Some(rows[to].0.clone());
+        self.tree_cursor = self.tree_sel.clone();
         self.tree_scroll.scroll_to_item(to, ScrollStrategy::Nearest);
         cx.notify();
     }
@@ -1939,7 +1947,7 @@ impl Workbench {
             .tree_sel
             .as_deref()
             .and_then(|sel| self.expanded.contains(sel).then_some(sel).or(sel.parent()));
-        let click_path = path.clone();
+        let (click_path, cursor_path) = (path.clone(), path.clone());
         let (wb, menu_path) = (cx.weak_entity(), path.clone());
         h_flex()
             .id(ElementId::Name(path.to_string_lossy().to_string().into()))
@@ -1954,7 +1962,9 @@ impl Workbench {
             .border_1()
             .border_color(transparent_black())
             .when(active, |d| d.bg(col::selected()))
-            .when(active && focused, |d| d.border_color(col::focus()))
+            .when(focused && self.tree_cursor.as_ref() == Some(path), |d| {
+                d.border_color(col::focus())
+            })
             .when(!active, |d| d.hover(|s| s.bg(col::hover())))
             // Indent guides under each ancestor folder's chevron, shown while
             // the mouse is over the tree (`workbench.tree.renderIndentGuides`).
@@ -1996,6 +2006,15 @@ impl Workbench {
                 // A click opens the file but leaves focus in the explorer.
                 window.focus(&this.tree_focus, cx);
             }))
+            // A right-click outlines the row without selecting it.
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, _, window, cx| {
+                    this.tree_cursor = Some(cursor_path.clone());
+                    window.focus(&this.tree_focus, cx);
+                    cx.notify();
+                }),
+            )
             .context_menu(move |menu, _, _| explorer_menu(menu, &wb, &menu_path, is_dir))
             .into_any_element()
     }
