@@ -4960,9 +4960,12 @@ impl Render for Workbench {
             }))
             .on_action(cx.listener(|this, _: &ShowScm, _, cx| this.show(View::Scm, cx)))
             .on_action(cx.listener(|this, _: &ShowRun, _, cx| this.show(View::Run, cx)))
-            .on_action(
-                cx.listener(|this, _: &ShowExtensions, _, cx| this.show(View::Extensions, cx)),
-            )
+            .on_action(cx.listener(|this, _: &ShowExtensions, window, cx| {
+                this.show(View::Extensions, cx);
+                if this.sidebar {
+                    this.ext_search.update(cx, |s, cx| s.focus(window, cx));
+                }
+            }))
             .on_action(
                 cx.listener(|this, _: &QuickOpen, window, cx| this.open_palette("", window, cx)),
             )

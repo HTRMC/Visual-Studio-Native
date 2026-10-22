@@ -473,7 +473,7 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [x] Extension details page (README, changelog) when clicking a row.
 - [x] Open VSX search and install: typing in the Extensions view searches open-vsx.org; `@installed` filters the Installed list.
 - [ ] Open VSX results have no icons, ratings or download counts, no paging past 30, no update checks, and no `@` filters besides `@installed`.
-- [ ] Ctrl+Shift+X opens the Extensions view without focusing its search box.
+- [x] Ctrl+Shift+X opens the Extensions view without focusing its search box.
 - [x] WASM plugins (`"vsn": { "wasm": ... }`) run in wasmtime with fuel and memory limits; examples/hello-wasm is a sample.
 - [x] WASM plugins got no command arguments, settings, document or questions; WIT 0.2 has them.
 - [ ] A trapped WASM plugin stays unloaded until the extensions restart, and a stuck call blocks the other plugins' calls until its fuel runs out; a quick pick waits for its answer the same way.
