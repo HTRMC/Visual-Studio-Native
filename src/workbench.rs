@@ -62,6 +62,8 @@ actions!(
         GoBack,
         GoForward,
         GoToLastEditLocation,
+        NextEditor,
+        PreviousEditor,
         StartDebugging,
         RunWithoutDebugging,
         StopDebugging,
@@ -140,6 +142,8 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("alt-left", GoBack, None),
         KeyBinding::new("alt-right", GoForward, None),
         KeyBinding::new("ctrl-k ctrl-q", GoToLastEditLocation, None),
+        KeyBinding::new("ctrl-pagedown", NextEditor, None),
+        KeyBinding::new("ctrl-pageup", PreviousEditor, None),
         // Shells read Alt+arrows themselves (VS Code doesn't skip them).
         KeyBinding::new("alt-left", NoAction, Some("Terminal")),
         KeyBinding::new("alt-right", NoAction, Some("Terminal")),
@@ -631,6 +635,13 @@ impl Workbench {
             }
             self.nav.remove(ix);
             self.nav_at = if back { at - 1 } else { at };
+        }
+    }
+
+    /// Next/Previous Editor: the tab `step` to the right, wrapping around.
+    fn cycle(&mut self, step: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.docs.is_empty() {
+            self.activate((self.active + step) % self.docs.len(), window, cx);
         }
     }
 
@@ -2219,6 +2230,10 @@ impl Render for Workbench {
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::open_file))
             .on_action(cx.listener(|this, _: &GoBack, window, cx| this.navigate(true, window, cx)))
+            .on_action(cx.listener(|this, _: &NextEditor, window, cx| this.cycle(1, window, cx)))
+            .on_action(cx.listener(|this, _: &PreviousEditor, window, cx| {
+                this.cycle(this.docs.len().saturating_sub(1), window, cx)
+            }))
             // The mouse's side buttons.
             .on_mouse_down(
                 MouseButton::Navigate(NavigationDirection::Back),
@@ -2654,6 +2669,11 @@ fn app_menu(
             .menu("Back", Box::new(GoBack))
             .menu("Forward", Box::new(GoForward))
             .menu("Last Edit Location", Box::new(GoToLastEditLocation))
+            .separator()
+            .submenu("Switch Editor", window, cx, |m, _, _| {
+                m.menu("Next Editor", Box::new(NextEditor))
+                    .menu("Previous Editor", Box::new(PreviousEditor))
+            })
             .separator()
             .menu("Go to File...", Box::new(QuickOpen))
             .menu("Go to Symbol in Workspace...", noop())

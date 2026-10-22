@@ -148,7 +148,11 @@ Differences from VS Code still to close, smallest first within each area.
       Last Edit Location (Ctrl+K Ctrl+Q) were placeholders.
 - [ ] Go to Symbol in Workspace (Ctrl+T) is still a placeholder.
 - [x] The mouse's back/forward side buttons didn't navigate.
-- [ ] Go menu's other navigation entries (Next/Previous Editor, Switch
-      Group, Next/Previous Problem, Next/Previous Change) are missing.
+- [x] Go menu: Switch Editor's Next/Previous Editor (Ctrl+PageDown/Up).
+- [ ] Go menu's other navigation entries (Next/Previous Used Editor's
+      Ctrl+Tab picker, Switch Group, Next/Previous Problem, Next/Previous
+      Change) are missing.
+- [ ] Menus show only a chord's first key ("Ctrl+K" for Last Edit
+      Location's Ctrl+K Ctrl+Q, Save All's Ctrl+K S).
 - [ ] Do Not Disturb (the center's bell-slash button).
 - [ ] Notifications: several toasts stacked (only one warning exists so far).
