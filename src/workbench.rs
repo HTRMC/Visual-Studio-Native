@@ -1824,9 +1824,10 @@ impl Workbench {
         }
     }
 
-    /// The explorer's keys: Up/Down/Home/End move the selection, Right
-    /// opens a folder or steps into it, Left shuts it or steps out, Enter
-    /// opens into the editor and Space opens keeping focus here.
+    /// The explorer's keys: Up/Down/PageUp/PageDown/Home/End move the
+    /// selection, Right opens a folder or steps into it, Left shuts it or
+    /// steps out, Enter opens into the editor and Space opens keeping focus
+    /// here.
     fn tree_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let Some(root) = self.root.clone() else {
             return;
@@ -1845,9 +1846,15 @@ impl Workbench {
             .and_then(|s| rows.iter().position(|(p, ..)| p == s));
         let row = cur.map(|i| rows[i].clone());
         let open = |p: &PathBuf| self.expanded.contains(p);
+        // ponytail: PageUp/Down move a page's worth of rows; VS Code first
+        // stops at the first/last row in view.
+        let height = self.tree_scroll.0.borrow().base_handle.bounds().size.height;
+        let page = ((height / px(22.)) as usize).saturating_sub(1).max(1);
         let to = match (ev.keystroke.key.as_str(), cur, &row) {
-            ("down", None, _) | ("up", None, _) | ("home", ..) => 0,
+            ("down" | "up" | "pagedown" | "pageup", None, _) | ("home", ..) => 0,
             ("end", ..) => last,
+            ("pagedown", Some(i), _) => (i + page).min(last),
+            ("pageup", Some(i), _) => i.saturating_sub(page),
             ("down", Some(i), _) => (i + 1).min(last),
             ("up", Some(i), _) => i.saturating_sub(1),
             ("right", Some(i), Some((p, _, true))) if open(p) => (i + 1).min(last),

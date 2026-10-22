@@ -141,8 +141,11 @@ Differences from VS Code still to close, smallest first within each area.
       the selection, Left/Right shut/open folders or step out/in, Enter
       opens into the editor, Space opens keeping focus; the selection's
       outline shows only while the explorer has focus.
-- [ ] The explorer lacks PageUp/PageDown, type-to-find, F2/Delete on the
-      selection, and Ctrl/Shift multi-select.
+- [x] PageUp/PageDown move the explorer's selection a page of rows.
+- [ ] PageUp/PageDown don't first stop at the first/last row in view, as
+      VS Code's do.
+- [ ] The explorer lacks type-to-find, F2/Delete on the selection, and
+      Ctrl/Shift multi-select.
 - [x] Ctrl+Shift+E (View: Show Explorer, View > Explorer) opens the
       explorer and puts focus in it, instead of toggling the side bar.
 - [x] The explorer's files and folders have a right-click menu: Open,
