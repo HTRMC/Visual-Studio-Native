@@ -1160,9 +1160,8 @@ impl Workbench {
 
     /// File: Save As: asks where to save editor `ix` (an untitled one in the
     /// folder, a file beside itself), then reopens it as that file (its
-    /// language follows the new name; undo history starts over).
-    // ponytail: saving onto a file open in another tab leaves both tabs; VS
-    // Code replaces that one.
+    /// language follows the new name; undo history starts over). Another tab
+    /// on that file closes, as VS Code replaces it.
     fn save_as(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let doc = &self.docs[ix];
         let editor = doc.editor.clone();
@@ -1193,12 +1192,19 @@ impl Workbench {
                 let doc = &mut this.docs[ix];
                 doc.saved = text_hash(&editor, cx);
                 doc.lang = lang;
-                doc.editor = editor;
-                doc.path = path;
+                doc.editor = editor.clone();
+                doc.path = path.clone();
                 doc.untitled = false;
                 doc.dirty = false;
                 if ix == this.active {
                     this.activate(ix, window, cx);
+                }
+                if this
+                    .docs
+                    .iter()
+                    .any(|d| d.path == path && d.editor != editor)
+                {
+                    this.remove_where(|d| d.path == path && d.editor != editor, window, cx);
                 }
                 cx.notify();
             })

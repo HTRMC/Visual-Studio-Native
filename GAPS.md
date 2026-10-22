@@ -242,7 +242,7 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Revert File leaves an Untitled editor as is (VS Code empties it).
 - [x] File > Save As... was inert; it, Ctrl+Shift+S and the palette's
       "File: Save As..." save the active editor under a new name.
-- [ ] Save As onto a file open in another tab leaves both tabs (VS Code
+- [x] Save As onto a file open in another tab leaves both tabs (VS Code
       replaces that one).
 - [ ] File > New Window, Close Window and Auto Save are inert.
 - [x] Writing a setting (default profile, file associations) rewrote
