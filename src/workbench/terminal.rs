@@ -1226,6 +1226,7 @@ impl Workbench {
             .hover(|s| s.bg(col::hover()))
             .child(codicon(icon::TERMINAL))
             .child(t.name.clone())
+            .on_click(cx.listener(move |this, _, w, cx| this.activate_terminal(id, w, cx)))
             .context_menu(move |menu, _, _| tab_menu(menu, &wb, id));
         Some(tab)
     }
