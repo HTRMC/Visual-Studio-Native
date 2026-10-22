@@ -118,11 +118,10 @@ there.
 1. **Manager and contributions.** Install from a .vsix or Open VSX,
    uninstall and disable; a real Extensions view (search, details, Installed);
    color themes, snippets and language configurations applied.
-   *Done:* Install from VSIX..., Installed with search, Disable and
-   Uninstall; Preferences: Color Theme (Ctrl+K Ctrl+T) applies and saves
+   *Done:* Install from VSIX..., Installed with search (`@installed`),
+   Disable and Uninstall; search and install from Open VSX; Preferences: Color Theme (Ctrl+K Ctrl+T) applies and saves
    `workbench.colorTheme`; Snippets: Insert Snippet; languages' ids, file
-   extensions and comments. *Left:* Open VSX (needs an HTTP client), the
-   details page, icon themes, snippet tab stops after the first and
+   extensions and comments. *Left:* the details page, icon themes, snippet tab stops after the first and
    completion by prefix, brackets and indent rules.
 2. **Core API and command registry.** Extension commands in the palette,
    menus and keybindings; activation events (`onCommand`, `onLanguage`,
@@ -203,6 +202,6 @@ can't be a Proxy exported from the main module. Still to run on both:
 | Need | Plan | New? |
 |---|---|---|
 | Unzip .vsix | Windows' own `tar.exe` (bsdtar reads zip) | No |
-| HTTP (Open VSX) | gpui has the `http_client` interface but no implementation built in | Yes: a client (`ureq` is the small option) |
+| HTTP (Open VSX) | `ureq` | Added |
 | WASM | `wasmtime` | Yes, large; phase 5 |
 | JS runtime | Bun or Node exe in the installer | Bundled, not a crate |

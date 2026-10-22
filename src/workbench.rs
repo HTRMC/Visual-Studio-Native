@@ -966,6 +966,7 @@ pub struct Workbench {
     output: output::Output,
     commit: Entity<InputState>,
     ext_search: Entity<InputState>,
+    market: extensions::Market,
     pub focus: FocusHandle,
 }
 
@@ -998,6 +999,7 @@ impl Workbench {
             search: input("Search", window, cx),
             commit: input("Message (Ctrl+Enter to commit)", window, cx),
             ext_search: input("Search Extensions in Marketplace", window, cx),
+            market: Default::default(),
             focus: cx.focus_handle(),
             find: search::Find::new(window, cx),
             palette: palette::Palette::new(window, cx),
@@ -1029,9 +1031,9 @@ impl Workbench {
         };
         this.init_search(window, cx);
         this.init_debug(window, cx);
-        cx.subscribe(&this.ext_search, |_, _, ev: &InputEvent, cx| {
+        cx.subscribe(&this.ext_search, |this, _, ev: &InputEvent, cx| {
             if matches!(ev, InputEvent::Change) {
-                cx.notify();
+                this.search_market(cx);
             }
         })
         .detach();
@@ -2809,14 +2811,23 @@ impl Workbench {
                 .into_any_element(),
             View::Run => self.render_run(cx),
             View::Extensions => v_flex()
+                .size_full()
                 .child(
                     div()
                         .px(px(12.))
                         .pb(px(8.))
                         .child(search_box(&self.ext_search)),
                 )
-                .child(section_header("ext-installed", "Installed", true))
-                .child(self.render_installed(cx))
+                // A query searches Open VSX; the Installed list shows without one or for `@installed`.
+                .map(|d| {
+                    let list = div().id("ext-list").flex_1().min_h_0().overflow_y_scroll();
+                    match !extensions::searches_market(&self.ext_search.read(cx).value()) {
+                        true => d
+                            .child(section_header("ext-installed", "Installed", true))
+                            .child(list.child(self.render_installed(cx))),
+                        false => d.child(list.child(self.render_market(cx))),
+                    }
+                })
                 .into_any_element(),
         };
 

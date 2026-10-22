@@ -10,7 +10,10 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     rc::Rc,
-    sync::{LazyLock, RwLock, RwLockReadGuard},
+    sync::{
+        LazyLock, Mutex, RwLock, RwLockReadGuard,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use serde_json::{Map, Value, json};
@@ -158,6 +161,9 @@ pub(crate) fn reload() {
 /// Installs the .vsix at `vsix` (replacing another version of it) and
 /// returns its name.
 pub(crate) fn install_vsix(vsix: &Path) -> Result<String, String> {
+    // One at a time: they share the unpack folder.
+    static ONE: Mutex<()> = Mutex::new(());
+    let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
     let root = root().ok_or("No home folder")?;
     let tmp = root.join(format!(".install-{}", std::process::id()));
     fs::remove_dir_all(&tmp).ok();
@@ -201,6 +207,79 @@ pub(crate) fn install_vsix(vsix: &Path) -> Result<String, String> {
     });
     fs::remove_dir_all(&tmp).ok();
     reload();
+    done
+}
+
+/// The registry the Extensions view searches and installs from.
+const OPEN_VSX: &str = "https://open-vsx.org/api";
+
+/// Whether the Extensions view's query goes to Open VSX rather than the Installed list.
+pub(super) fn searches_market(query: &str) -> bool {
+    let query = query.trim();
+    !query.is_empty() && !query.starts_with("@installed")
+}
+
+/// An Open VSX search result.
+pub(super) struct Listing {
+    /// `namespace.name`, lowercased, as installed extensions' ids are.
+    id: String,
+    name: String,
+    publisher: String,
+    version: String,
+    description: String,
+    /// The .vsix's URL.
+    download: String,
+}
+
+/// The Extensions view's Open VSX search.
+#[derive(Default)]
+pub(super) struct Market {
+    /// The query searched for, and its results or the error.
+    results: Option<(String, Result<Vec<Listing>, String>)>,
+    /// Bumped per query, so an earlier search landing late is dropped.
+    generation: usize,
+    /// The ids being downloaded and installed.
+    installing: HashSet<String>,
+}
+
+fn search_open_vsx(query: &str) -> Result<Vec<Listing>, String> {
+    let text = ureq::get(format!("{OPEN_VSX}/-/search"))
+        .query("query", query)
+        .query("size", "30")
+        .call()
+        .and_then(|mut r| r.body_mut().read_to_string())
+        .map_err(|e| e.to_string())?;
+    let found: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let s = |e: &Value, key: &str| e[key].as_str().unwrap_or_default().to_string();
+    let listings = (found["extensions"].as_array().into_iter().flatten()).map(|e| Listing {
+        id: format!("{}.{}", s(e, "namespace"), s(e, "name")).to_lowercase(),
+        name: (e["displayName"].as_str()).map_or_else(|| s(e, "name"), str::to_string),
+        publisher: s(e, "namespace"),
+        version: s(e, "version"),
+        description: s(e, "description"),
+        download: e["files"]["download"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+    });
+    Ok(listings.collect())
+}
+
+/// Downloads the .vsix at `url` and installs it, returning its name.
+fn install_from(url: &str) -> Result<String, String> {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let root = root().ok_or("No home folder")?;
+    fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let vsix = root.join(format!(".download-{}-{n}.vsix", std::process::id()));
+    let download = || -> Result<(), String> {
+        let mut r = ureq::get(url).call().map_err(|e| e.to_string())?;
+        let mut file = fs::File::create(&vsix).map_err(|e| e.to_string())?;
+        std::io::copy(&mut r.body_mut().as_reader(), &mut file).map_err(|e| e.to_string())?;
+        Ok(())
+    };
+    let done = download().and_then(|()| install_vsix(&vsix));
+    fs::remove_file(&vsix).ok();
     done
 }
 
@@ -988,6 +1067,59 @@ pub(crate) fn configured_theme() -> String {
 }
 
 /// The Extensions view's "Views and More Actions..." menu.
+/// An Extensions view row: the icon, then the name and version, the
+/// description, and the publisher with `action` on its right.
+fn extension_row(
+    id: impl Into<ElementId>,
+    icon: AnyElement,
+    [name, version, description, publisher]: [String; 4],
+    action: AnyElement,
+) -> Stateful<Div> {
+    // min width 0 lets a long description or publisher shorten instead of widening the view.
+    let line = || {
+        div()
+            .min_w_0()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis()
+    };
+    h_flex()
+        .id(id)
+        .h(px(72.))
+        .px(px(16.))
+        .gap(px(14.))
+        .hover(|d| d.bg(col::hover()))
+        .child(icon)
+        .child(
+            v_flex()
+                .flex_1()
+                // A truncated bold name still widened the sidebar without the zero width and clip.
+                .w(px(0.))
+                .min_w_0()
+                .overflow_hidden()
+                .text_size(px(13.))
+                .child(
+                    h_flex()
+                        .gap(px(6.))
+                        .child(line().font_weight(FontWeight::BOLD).child(name))
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(px(12.))
+                                .text_color(col::fg_muted())
+                                .child(version),
+                        ),
+                )
+                .child(line().child(description))
+                .child(
+                    h_flex()
+                        .justify_between()
+                        .child(line().text_color(col::fg_muted()).child(publisher))
+                        .child(div().flex_none().child(action)),
+                ),
+        )
+}
+
 pub(super) fn more_button() -> impl IntoElement {
     Button::new("ext-more")
         .ghost()
@@ -1018,24 +1150,148 @@ impl Workbench {
                 .background_spawn(async move { install_vsix(&path) })
                 .await;
             this.update(cx, |this, cx| {
-                match done {
-                    Ok(name) => this.note(
-                        format!("Completed installing {name} extension from VSIX.").into(),
-                        Severity::Info,
-                        cx,
-                    ),
-                    Err(err) => this.error(format!("Unable to install extension: {err}"), cx),
+                if let Ok(name) = &done {
+                    let text = format!("Completed installing {name} extension from VSIX.");
+                    this.note(text.into(), Severity::Info, cx);
                 }
-                // Its theme or languages may be the configured ones.
-                apply_theme(&configured_theme(), cx);
-                // A new version replaces the running one.
-                this.restart_extension_host(cx);
-                this.activate_extensions("*", cx);
-                cx.notify();
+                this.extension_installed(done, cx);
             })
             .ok();
         })
         .detach();
+    }
+
+    fn extension_installed(&mut self, done: Result<String, String>, cx: &mut Context<Self>) {
+        if let Err(err) = done {
+            self.error(format!("Unable to install extension: {err}"), cx);
+        }
+        // Its theme or languages may be the configured ones.
+        apply_theme(&configured_theme(), cx);
+        // A new version replaces the running one.
+        self.restart_extension_host(cx);
+        self.activate_extensions("*", cx);
+        cx.notify();
+    }
+
+    /// The Extensions view's search, sent to Open VSX after a pause in typing.
+    /// An empty query or `@installed ...` filters the Installed list instead.
+    pub(super) fn search_market(&mut self, cx: &mut Context<Self>) {
+        let query = self.ext_search.read(cx).value().trim().to_string();
+        self.market.generation += 1;
+        let generation = self.market.generation;
+        if !searches_market(&query) {
+            self.market.results = None;
+            return cx.notify();
+        }
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(300))
+                .await;
+            let current = |this: &Self| this.market.generation == generation;
+            if !this.read_with(cx, |this, _| current(this)).unwrap_or(false) {
+                return;
+            }
+            let q = query.clone();
+            let found = cx
+                .background_spawn(async move { search_open_vsx(&q) })
+                .await;
+            this.update(cx, |this, cx| {
+                if current(this) {
+                    this.market.results = Some((query, found));
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn install_listing(&mut self, id: String, url: String, cx: &mut Context<Self>) {
+        if !self.market.installing.insert(id.clone()) {
+            return;
+        }
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let done = cx.background_spawn(async move { install_from(&url) }).await;
+            this.update(cx, |this, cx| {
+                this.market.installing.remove(&id);
+                this.extension_installed(done, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Open VSX's results for the Extensions view's search, each with Install
+    /// or, once installed, its state.
+    // ponytail: no icons (they're URLs), ratings or download counts.
+    pub(super) fn render_market(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let muted = |text: &str| {
+            div()
+                .px(px(16.))
+                .py(px(8.))
+                .text_size(px(13.))
+                .text_color(col::fg_muted())
+                .child(text.to_string())
+        };
+        let Some((_, results)) = &self.market.results else {
+            return muted("Searching...").into_any_element();
+        };
+        let listings = match results {
+            Err(err) => {
+                return muted(&format!("Error while searching for extensions. {err}"))
+                    .into_any_element();
+            }
+            Ok(l) if l.is_empty() => return muted("No extensions found.").into_any_element(),
+            Ok(l) => l,
+        };
+        let wb = cx.weak_entity();
+        let rows = listings.iter().enumerate().map(|(ix, l)| {
+            let action = if installed().iter().any(|e| e.id == l.id) {
+                div()
+                    .text_size(px(12.))
+                    .text_color(col::fg_muted())
+                    .child("Installed")
+                    .into_any_element()
+            } else if self.market.installing.contains(&l.id) {
+                div()
+                    .text_size(px(12.))
+                    .text_color(col::fg_muted())
+                    .child("Installing")
+                    .into_any_element()
+            } else {
+                // button.background and button.hoverBackground
+                let blue = ButtonCustomVariant::new(cx)
+                    .color(c(0x0078D4))
+                    .hover(c(0x026EC1))
+                    .active(c(0x026EC1))
+                    .foreground(c(0xFFFFFF));
+                let (wb, id, url) = (wb.clone(), l.id.clone(), l.download.clone());
+                Button::new(("ext-install", ix))
+                    .custom(blue)
+                    .bg(c(0x0078D4))
+                    .xsmall()
+                    .label("Install")
+                    .on_click(move |_, _, cx| {
+                        wb.update(cx, |this, cx| {
+                            this.install_listing(id.clone(), url.clone(), cx)
+                        })
+                        .ok();
+                    })
+                    .into_any_element()
+            };
+            let icon = codicon(icon::EXTENSIONS)
+                .size(px(42.))
+                .text_size(px(32.))
+                .justify_center()
+                .text_color(col::fg_muted())
+                .into_any_element();
+            let text = [&l.name, &l.version, &l.description, &l.publisher].map(|s| s.to_string());
+            extension_row(("ext-market", ix), icon, text, action)
+        });
+        v_flex()
+            .children(rows.collect::<Vec<_>>())
+            .into_any_element()
     }
 
     pub(super) fn uninstall_extension(&mut self, id: String, cx: &mut Context<Self>) {
@@ -1060,7 +1316,8 @@ impl Workbench {
     /// The Extensions view's Installed list, filtered by its search box.
     // ponytail: no details page; a row shows what the manifest says.
     pub(super) fn render_installed(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let query = self.ext_search.read(cx).value().trim().to_lowercase();
+        let query = self.ext_search.read(cx).value().to_lowercase();
+        let query = query.trim().trim_start_matches("@installed").trim();
         let wb = cx.weak_entity();
         let rows = installed()
             .iter()
@@ -1068,7 +1325,7 @@ impl Workbench {
                 query.is_empty()
                     || [e.name(), e.id.clone(), e.description()]
                         .iter()
-                        .any(|s| s.to_lowercase().contains(&query))
+                        .any(|s| s.to_lowercase().contains(query))
             })
             .enumerate()
             .map(|(ix, e)| {
@@ -1082,7 +1339,6 @@ impl Workbench {
                         .text_color(col::fg_muted())
                         .into_any_element(),
                 };
-                let line = || div().overflow_hidden().whitespace_nowrap().text_ellipsis();
                 let wb = wb.clone();
                 let manage = Button::new(("ext-manage", ix))
                     .ghost()
@@ -1109,40 +1365,13 @@ impl Workbench {
                                 .ok();
                         }))
                     });
-                h_flex()
-                    .id(("ext", ix))
-                    .h(px(72.))
-                    .px(px(16.))
-                    .gap(px(14.))
-                    .hover(|d| d.bg(col::hover()))
+                let version = match enabled {
+                    true => e.version(),
+                    false => format!("{} (Disabled)", e.version()),
+                };
+                let text = [e.name(), version, e.description(), e.publisher()];
+                extension_row(("ext", ix), icon, text, manage.into_any_element())
                     .when(!enabled, |d| d.opacity(0.6))
-                    .child(icon)
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .text_size(px(13.))
-                            .child(
-                                h_flex()
-                                    .gap(px(6.))
-                                    .child(line().font_weight(FontWeight::BOLD).child(e.name()))
-                                    .child(
-                                        div().text_size(px(12.)).text_color(col::fg_muted()).child(
-                                            match enabled {
-                                                true => e.version(),
-                                                false => format!("{} (Disabled)", e.version()),
-                                            },
-                                        ),
-                                    ),
-                            )
-                            .child(line().child(e.description()))
-                            .child(
-                                h_flex()
-                                    .justify_between()
-                                    .child(line().text_color(col::fg_muted()).child(e.publisher()))
-                                    .child(manage),
-                            ),
-                    )
             })
             .collect::<Vec<_>>();
         v_flex().children(rows).into_any_element()

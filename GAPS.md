@@ -465,7 +465,9 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [ ] The theme picker doesn't preview as the selection moves.
 - [ ] Snippets: only the first tab stop is selected; no Tab to the next, no completion by prefix.
 - [ ] Extension details page (README, changelog) when clicking a row.
-- [ ] Open VSX search and install (needs an HTTP client dependency).
+- [x] Open VSX search and install: typing in the Extensions view searches open-vsx.org; `@installed` filters the Installed list.
+- [ ] Open VSX results have no icons, ratings or download counts, no paging past 30, no update checks, and no `@` filters besides `@installed`.
+- [ ] Ctrl+Shift+X opens the Extensions view without focusing its search box.
 - [ ] Icon themes, brackets and indent rules from extensions.
 - [x] JS extensions run in a Node (or Bun) host: commands in the palette and keys, messages, status bar items, configuration defaults, activation events, restart on crash.
 - [ ] Extension keybindings take effect only after a restart; ones with a `when` clause are skipped.
