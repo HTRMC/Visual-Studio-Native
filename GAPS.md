@@ -239,7 +239,7 @@ Differences from VS Code still to close, smallest first within each area.
 - [ ] No hot exit: quitting with unsaved changes asks Save / Don't Save
       (VS Code's files.hotExit "onExit" keeps them for the next start).
 - [x] No "File: Revert File" command (the File menu's entry was inert).
-- [ ] Revert File leaves an Untitled editor as is (VS Code empties it).
+- [x] Revert File leaves an Untitled editor as is (VS Code empties it).
 - [x] Writing a setting (default profile, file associations) rewrote
       settings.json as plain JSON, dropping its comments; it's now edited in
       place like VS Code's jsonc-parser `modify`.

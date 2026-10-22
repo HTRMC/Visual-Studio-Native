@@ -664,14 +664,14 @@ impl Workbench {
     }
 
     /// File: Revert File: the active editor's file read again, dropping its
-    /// changes.
-    // ponytail: an Untitled editor isn't reverted; VS Code empties it.
+    /// changes; an Untitled editor is emptied.
     fn revert_file(&mut self, _: &RevertFile, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(doc) = self
-            .docs
-            .get(self.active)
-            .filter(|d| !d.binary && !d.untitled)
-        {
+        let Some(doc) = self.docs.get(self.active).filter(|d| !d.binary) else {
+            return;
+        };
+        if doc.untitled {
+            doc.editor.update(cx, |e, cx| e.replace_all("", window, cx));
+        } else {
             self.reopen(self.active, doc.encoding, window, cx);
         }
     }
