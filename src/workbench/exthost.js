@@ -160,6 +160,27 @@ class TextEdit {
   static insert(p, t) { return new TextEdit(new Range(p, p), t); }
   static delete(r) { return new TextEdit(r, ''); }
 }
+class WorkspaceEdit {
+  constructor() { this._edits = new Map(); }
+  _for(uri) {
+    const k = uri.toString();
+    if (!this._edits.has(k)) this._edits.set(k, [uri, []]);
+    return this._edits.get(k)[1];
+  }
+  get size() { return this._edits.size; }
+  set(uri, edits) { this._edits.set(uri.toString(), [uri, (edits || []).map((e) => (Array.isArray(e) ? e[0] : e))]); }
+  get(uri) { return (this._edits.get(uri.toString()) || [uri, []])[1]; }
+  has(uri) { return this._edits.has(uri.toString()); }
+  entries() { return [...this._edits.values()]; }
+  replace(uri, r, t) { this._for(uri).push(new TextEdit(r, t)); }
+  insert(uri, p, t) { this._for(uri).push(TextEdit.insert(p, t)); }
+  delete(uri, r) { this._for(uri).push(TextEdit.delete(r)); }
+  // ponytail: file operations are dropped; vsn applies text edits only.
+  createFile() {}
+  deleteFile() {}
+  renameFile() {}
+}
+class CodeAction { constructor(title, kind) { this.title = title; this.kind = kind; } }
 
 // A document vsn has open, as vscode.TextDocument.
 class TextDocument {
@@ -224,7 +245,7 @@ const changed = new EventEmitter();
 const closed = new EventEmitter();
 const saved = new EventEmitter();
 // Each language feature's providers: { selector, provider }.
-const providers = { hover: [], completion: [], definition: [], formatting: [], rangeFormatting: [] };
+const providers = { hover: [], completion: [], definition: [], formatting: [], rangeFormatting: [], codeAction: [] };
 
 // ---- the vscode API ----------------------------------------------------------
 
@@ -490,13 +511,40 @@ const vscodeLanguages = {
   registerDefinitionProvider: register('definition'),
   registerDocumentFormattingEditProvider: register('formatting'),
   registerDocumentRangeFormattingEditProvider: register('rangeFormatting'),
+  registerCodeActionsProvider: register('codeAction'),
   onDidChangeDiagnostics: never,
 };
 
+// LSP's objects as vscode's, for the extensions.
+const vsRange = (r) => new Range(r.start.line, r.start.character, r.end.line, r.end.character);
+function vsDiagnostic(d) {
+  const v = new Diagnostic(vsRange(d.range), d.message, (d.severity || 1) - 1);
+  return Object.assign(v, { source: d.source, code: d.code });
+}
+
+// The commands of the last code actions sent, which can carry arguments
+// JSON can't, so vsn gets their index instead.
+let actionCommands = [];
+function lspCommand(c) {
+  if (!c) return undefined;
+  actionCommands.push(c);
+  return { title: c.title, command: '_vsn.codeAction', arguments: [actionCommands.length - 1] };
+}
+function lspCodeAction(a) {
+  // A plain Command rather than a CodeAction.
+  if (typeof a.command === 'string') return { title: a.title, command: lspCommand(a) };
+  const changes = a.edit && Object.fromEntries(a.edit.entries().map(([uri, edits]) => [uri.toString(), edits.map((e) => ({ range: lspRange(e.range), newText: e.newText }))]));
+  return { title: a.title, kind: a.kind && a.kind.value, isPreferred: a.isPreferred, edit: changes && { changes }, command: lspCommand(a.command) };
+}
+
 // vsn's requests for a document, answered by the extensions' providers.
 async function provide(method, params) {
+  if (method === 'workspace/executeCommand') {
+    const c = actionCommands[params.arguments[0]];
+    return c && vscodeCommands.executeCommand(c.command, ...(c.arguments || []));
+  }
   const doc = documents.get(params.textDocument.uri);
-  let feature = { 'textDocument/hover': 'hover', 'textDocument/completion': 'completion', 'textDocument/definition': 'definition', 'textDocument/formatting': 'formatting' }[method];
+  let feature = { 'textDocument/hover': 'hover', 'textDocument/completion': 'completion', 'textDocument/definition': 'definition', 'textDocument/formatting': 'formatting', 'textDocument/codeAction': 'codeAction' }[method];
   const find = (f) => doc && f && providers[f].find((p) => match(p.selector, doc));
   let entry = find(feature);
   // Format Document falls back on formatting the whole range.
@@ -526,6 +574,14 @@ async function provide(method, params) {
       const all = new Range(new Position(0, 0), doc.positionAt(doc._text.length));
       const r = await p.provideDocumentRangeFormattingEdits(doc, all, params.options, token);
       return r && r.map((e) => ({ range: lspRange(e.range), newText: e.newText }));
+    }
+    case 'codeAction': {
+      // ponytail: only the first matching provider answers, and actions
+      // needing resolveCodeAction for their edit apply nothing.
+      const context = { diagnostics: params.context.diagnostics.map(vsDiagnostic), only: undefined, triggerKind: 1 };
+      const r = await p.provideCodeActions(doc, vsRange(params.range), context, token);
+      actionCommands = [];
+      return r && r.filter((a) => !a.disabled).map(lspCodeAction);
     }
   }
   return null;
@@ -601,6 +657,7 @@ const known = {
   window: withStubs('window', vscodeWindow), workspace: withStubs('workspace', vscodeWorkspace), languages: withStubs('languages', vscodeLanguages),
   Disposable, EventEmitter, Uri, Position, Range, Selection, ThemeColor, ThemeIcon, CancellationTokenSource,
   Location, Diagnostic, DiagnosticRelatedInformation, MarkdownString, Hover, SnippetString, CompletionItem, CompletionList, TextEdit, CodeActionKind,
+  WorkspaceEdit, CodeAction, CodeActionTriggerKind: { Invoke: 1, Automatic: 2 },
   DiagnosticTag: { Unnecessary: 1, Deprecated: 2 },
   CompletionItemKind: Object.fromEntries('Text Method Function Constructor Field Variable Class Interface Module Property Unit Value Enum Keyword Snippet Color File Reference Folder EnumMember Constant Struct Event Operator TypeParameter User Issue'.split(' ').map((k, i) => [k, i])),
   CompletionTriggerKind: { Invoke: 0, TriggerCharacter: 1, TriggerForIncompleteCompletions: 2 },

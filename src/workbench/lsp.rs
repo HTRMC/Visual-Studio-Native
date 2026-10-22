@@ -21,9 +21,10 @@ use std::{
 
 use futures::channel::oneshot;
 use gpui_kit::base::input::{Diagnostic, DiagnosticSeverity};
-use input::{CompletionProvider, DefinitionProvider, HoverProvider, Rope};
+use input::{CodeActionProvider, CompletionProvider, DefinitionProvider, HoverProvider, Rope};
 use lsp_types::{
-    CompletionContext, CompletionResponse, GotoDefinitionResponse, Hover, LocationLink,
+    CodeAction, CodeActionOrCommand, CompletionContext, CompletionResponse, GotoDefinitionResponse,
+    Hover, LocationLink,
 };
 use serde_json::{Value, json};
 
@@ -59,6 +60,8 @@ pub(super) struct Problem {
     severity: u64,
     message: String,
     source: String,
+    /// As the server sent it, for code actions' context.
+    raw: Value,
 }
 
 #[derive(Default)]
@@ -131,11 +134,13 @@ impl Server {
     }
 }
 
-/// One editor's hover, completion and definition requests, to its server.
+/// One editor's hover, completion, definition and code action requests, to
+/// its server.
 struct Provider {
     server: Weak<Server>,
     path: PathBuf,
     lang: &'static str,
+    workbench: WeakEntity<Workbench>,
 }
 
 impl Provider {
@@ -221,6 +226,112 @@ impl DefinitionProvider for Provider {
             })
         })
     }
+}
+
+impl CodeActionProvider for Provider {
+    fn id(&self) -> SharedString {
+        "lsp".into()
+    }
+
+    fn code_actions(
+        &self,
+        state: Entity<EditorState>,
+        range: std::ops::Range<usize>,
+        _: &mut Window,
+        cx: &mut App,
+    ) -> Task<anyhow::Result<Vec<CodeAction>>> {
+        let Some(server) = self.server.upgrade() else {
+            return Task::ready(Ok(vec![]));
+        };
+        let text = state.read(cx).text().clone();
+        server.sync(&self.path, self.lang, &text.to_string());
+        let [start, end] = [range.start, range.end].map(|o| text.offset_to_position(o));
+        // The diagnostics the range touches, which quick fixes answer.
+        let diagnostics: Vec<Value> = (self.workbench.upgrade())
+            .and_then(|wb| {
+                let problems = wb.read(cx).lsp.problems.get(&self.path)?;
+                let touches = |p: &&Problem| {
+                    (p.line, p.col) <= (end.line, end.character)
+                        && p.end >= (start.line, start.character)
+                };
+                Some(
+                    problems
+                        .iter()
+                        .filter(touches)
+                        .map(|p| p.raw.clone())
+                        .collect(),
+                )
+            })
+            .unwrap_or_default();
+        let rx = server.request(
+            "textDocument/codeAction",
+            json!({
+                "textDocument": { "uri": path_uri(&self.path) },
+                "range": { "start": start, "end": end },
+                "context": { "diagnostics": diagnostics },
+            }),
+        );
+        cx.background_spawn(async move {
+            let reply = rx.await.unwrap_or_default();
+            let items: Option<Vec<CodeActionOrCommand>> = serde_json::from_value(reply)?;
+            Ok((items.into_iter().flatten())
+                .map(|item| match item {
+                    CodeActionOrCommand::CodeAction(action) => action,
+                    CodeActionOrCommand::Command(command) => CodeAction {
+                        title: command.title.clone(),
+                        command: Some(command),
+                        ..Default::default()
+                    },
+                })
+                .collect())
+        })
+    }
+
+    // ponytail: edits to other files, `documentChanges` and the server's
+    // `workspace/applyEdit` requests are dropped; this file's edits apply.
+    fn perform_code_action(
+        &self,
+        state: Entity<EditorState>,
+        action: CodeAction,
+        _: bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Task<anyhow::Result<()>> {
+        let edits = (action.edit.and_then(|e| e.changes).into_iter().flatten())
+            .find(|(uri, _)| uri_path(uri.as_str()).as_ref() == Some(&self.path));
+        // Called from inside the editor's own update; edit once that ends.
+        if let Some((_, edits)) = edits {
+            window.defer(cx, move |window, cx| {
+                state.update(cx, |e, cx| apply_edits(e, edits, window, cx))
+            });
+        }
+        if let (Some(command), Some(server)) = (action.command, self.server.upgrade()) {
+            let params = json!({ "command": command.command, "arguments": command.arguments });
+            _ = server.request("workspace/executeCommand", params);
+        }
+        Task::ready(Ok(()))
+    }
+}
+
+/// Applies a server's `edits` to the editor's text as one undo step.
+fn apply_edits(
+    e: &mut EditorState,
+    mut edits: Vec<lsp_types::TextEdit>,
+    window: &mut Window,
+    cx: &mut Context<EditorState>,
+) {
+    edits.sort_by_key(|e| std::cmp::Reverse((e.range.start.line, e.range.start.character)));
+    let mut text = e.text().clone();
+    for edit in edits {
+        let start = text.position_to_offset(&edit.range.start);
+        text.replace(
+            start..text.position_to_offset(&edit.range.end),
+            &edit.new_text,
+        );
+    }
+    let pos = e.cursor_position();
+    e.replace_all(text.to_string(), window, cx);
+    e.set_cursor_position(pos, window, cx);
 }
 
 fn send(out: &mpsc::Sender<String>, msg: Value) {
@@ -336,6 +447,7 @@ impl Workbench {
             server: Arc::downgrade(server),
             path: path.clone(),
             lang,
+            workbench: cx.weak_entity(),
         });
         let this = cx.weak_entity();
         // A definition in another file opens there; within its own file the
@@ -365,7 +477,8 @@ impl Workbench {
             let lsp = e.lsp_mut();
             lsp.hover_provider = Some(provider.clone());
             lsp.completion_provider = Some(provider.clone());
-            lsp.definition_provider = Some(provider);
+            lsp.definition_provider = Some(provider.clone());
+            lsp.code_action_providers = vec![provider];
             lsp.show_document = Some(show);
         });
     }
@@ -429,27 +542,15 @@ impl Workbench {
         );
         cx.spawn_in(window, async move |_, cx| {
             let reply = reply.await.unwrap_or_default();
-            let Ok(mut edits) = serde_json::from_value::<Vec<lsp_types::TextEdit>>(reply) else {
+            let Ok(edits) = serde_json::from_value::<Vec<lsp_types::TextEdit>>(reply) else {
                 return;
             };
-            edits.sort_by_key(|e| std::cmp::Reverse((e.range.start.line, e.range.start.character)));
             editor
                 .update_in(cx, |e, window, cx| {
                     // Typed over while the server worked: its edits are stale.
-                    if edits.is_empty() || e.value() != before {
-                        return;
+                    if !edits.is_empty() && e.value() == before {
+                        apply_edits(e, edits, window, cx);
                     }
-                    let mut text = e.text().clone();
-                    for edit in edits {
-                        let start = text.position_to_offset(&edit.range.start);
-                        text.replace(
-                            start..text.position_to_offset(&edit.range.end),
-                            &edit.new_text,
-                        );
-                    }
-                    let pos = e.cursor_position();
-                    e.replace_all(text.to_string(), window, cx);
-                    e.set_cursor_position(pos, window, cx);
                 })
                 .ok();
         })
@@ -657,6 +758,11 @@ impl Workbench {
                         "completion": { "completionItem": { "snippetSupport": false } },
                         "definition": { "linkSupport": true },
                         "formatting": {},
+                        "codeAction": { "codeActionLiteralSupport": { "codeActionKind": {
+                            "valueSet": ["", "quickfix", "refactor", "refactor.extract",
+                                "refactor.inline", "refactor.rewrite", "source",
+                                "source.organizeImports"],
+                        }}},
                     },
                     "workspace": { "configuration": true, "workspaceFolders": true },
                 },
@@ -687,6 +793,7 @@ impl Workbench {
                             severity: d["severity"].as_u64().unwrap_or(1),
                             message: d["message"].as_str().unwrap_or_default().to_string(),
                             source: d["source"].as_str().unwrap_or_default().to_string(),
+                            raw: d.clone(),
                         }
                     })
                     .collect();
