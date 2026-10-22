@@ -47,6 +47,8 @@ pub struct Find {
     regex: bool,
     replace_open: bool,
     details_open: bool,
+    /// Search only in open editors (the book toggle in "files to include").
+    open_only: bool,
     replace: Entity<InputState>,
     include: Entity<InputState>,
     exclude: Entity<InputState>,
@@ -69,6 +71,7 @@ impl Find {
             regex: false,
             replace_open: false,
             details_open: true,
+            open_only: false,
             replace: input("Replace", window, cx),
             include: input("e.g. *.ts, src/**/include", window, cx),
             exclude: input("e.g. *.ts, src/**/exclude", window, cx),
@@ -157,6 +160,7 @@ pub(super) fn find_toggle(id: &'static str, ch: char, on: bool) -> Stateful<Div>
                 icon::CASE_SENSITIVE => Some("Match Case (Alt+C)"),
                 icon::WHOLE_WORD => Some("Match Whole Word (Alt+W)"),
                 icon::REGEX => Some("Use Regular Expression (Alt+R)"),
+                icon::BOOK => Some("Search only in Open Editors"),
                 _ => None,
             },
             |d, text| d.tooltip(tip(text)),
@@ -185,15 +189,20 @@ pub(super) fn build_regex(
 
 /// Searches every non-ignored text file under `root` (honours .gitignore, skips `.git`).
 /// Files in `buffers` (unsaved editors) are searched as edited, not as on disk.
+/// With `only`, the walk keeps to those files (the open editors).
 fn search(
     root: &Path,
     re: &Regex,
     overrides: Override,
     buffers: &HashMap<PathBuf, String>,
+    only: Option<HashSet<PathBuf>>,
 ) -> (Vec<FileHit>, bool) {
     let mut hits = Vec::new();
     let mut total = 0;
-    for entry in walk(root, overrides, |_| true).flatten() {
+    let keep = move |e: &ignore::DirEntry| {
+        (only.as_ref()).is_none_or(|o| o.iter().any(|p| p.starts_with(e.path())))
+    };
+    for entry in walk(root, overrides, keep).flatten() {
         if !entry.file_type().is_some_and(|t| t.is_file()) {
             continue;
         }
@@ -453,6 +462,9 @@ impl Workbench {
         let Some(root) = self.root.as_deref().filter(|r| path.starts_with(r)) else {
             return false;
         };
+        if self.find.open_only && !self.docs.iter().any(|d| d.path == path) {
+            return false;
+        }
         let (include, exclude) = (
             self.find.include.read(cx).value(),
             self.find.exclude.read(cx).value(),
@@ -526,12 +538,18 @@ impl Workbench {
             .filter(|d| d.dirty)
             .map(|d| (d.path.clone(), d.editor.read(cx).value().to_string()))
             .collect();
+        let only = (self.find.open_only).then(|| {
+            self.docs
+                .iter()
+                .map(|d| d.path.clone())
+                .collect::<HashSet<_>>()
+        });
         let f = &mut self.find;
         f.task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(debounce).await;
             let re2 = re.clone();
             let (results, capped) = cx
-                .background_spawn(async move { search(&root, &re2, overrides, &buffers) })
+                .background_spawn(async move { search(&root, &re2, overrides, &buffers, only) })
                 .await;
             this.update(cx, |this, cx| {
                 this.find.re = Some(re);
@@ -883,7 +901,13 @@ impl Workbench {
                     )
                     .when(f.details_open, |d| {
                         d.child(label("files to include"))
-                            .child(boxed(Input::new(&f.include)))
+                            .child(boxed(Input::new(&f.include).suffix(toggle(
+                                "open-only",
+                                icon::BOOK,
+                                f.open_only,
+                                |f| &mut f.open_only,
+                                cx,
+                            ))))
                             .child(label("files to exclude"))
                             .child(boxed(Input::new(&f.exclude)))
                     }),

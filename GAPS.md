@@ -243,8 +243,13 @@ Differences from VS Code still to close, smallest first within each area.
       Reveal, Open in Integrated Terminal, Copy Path for the root).
 - [x] Explorer menus lack Find in Folder (Shift+Alt+F; VS Code puts it on
       folder rows and the empty area).
-- [ ] The search's "files to include" box lacks VS Code's "Search Only in
+- [x] The search's "files to include" box lacks VS Code's "Search Only in
       Open Editors" toggle.
+- [ ] With "Search only in Open Editors" on, opening or closing an editor
+      doesn't re-run the search, and an empty result lacks VS Code's
+      "No results found in open editors" wording.
+- [ ] The "files to exclude" box lacks VS Code's "Use Exclude Settings and
+      Ignore Files" toggle (the search always honours .gitignore).
 - [x] A right-click in the explorer's empty area doesn't move the focus
       outline off the last row the way VS Code clears it.
 - [ ] The explorer handles one item at a time: no Ctrl/Shift+click
