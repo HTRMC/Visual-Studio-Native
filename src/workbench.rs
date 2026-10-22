@@ -834,7 +834,22 @@ impl Workbench {
         let Some(name) = from.file_name() else {
             return;
         };
-        if from.parent() == Some(&dir) || dir.starts_with(&from) {
+        if dir.starts_with(&from) {
+            return;
+        }
+        // Ctrl+drop copies, beside any namesake rather than over it.
+        if window.modifiers().control {
+            let to = copy_target(&dir, name);
+            if let Err(err) = copy_all(&from, &to) {
+                return self.warn(format!("Unable to copy '{}' ({err})", from.display()), cx);
+            }
+            self.expanded.insert(dir);
+            self.tree_sel = Some(to.clone());
+            self.tree_cursor = Some(to);
+            self.dirs.clear();
+            return cx.notify();
+        }
+        if from.parent() == Some(&dir) {
             return;
         }
         let to = dir.join(name);
@@ -891,11 +906,18 @@ impl Workbench {
         .detach();
     }
 
-    /// Points an explorer drag at `dir`, unless dropping there would leave
-    /// the item `moving` where it is.
-    fn drag_target(&mut self, dir: Option<PathBuf>, moving: Option<&Path>, cx: &mut Context<Self>) {
-        let dir = dir
-            .filter(|d| moving.is_none_or(|from| from.parent() != Some(d) && !d.starts_with(from)));
+    /// Points an explorer drag at `dir`, unless dropping the item `moving`
+    /// there would leave it where it is (or, `copy`ing, put it inside itself).
+    fn drag_target(
+        &mut self,
+        dir: Option<PathBuf>,
+        moving: Option<&Path>,
+        copy: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let dir = dir.filter(|d| {
+            moving.is_none_or(|from| !d.starts_with(from) && (copy || from.parent() != Some(d)))
+        });
         if self.drop_dir != dir {
             self.drop_dir = dir;
             cx.notify();
@@ -1918,12 +1940,23 @@ impl Workbench {
                         .on_drag_move(cx.listener(|this, e: &DragMoveEvent<DraggedFile>, _, cx| {
                             let from = e.drag(cx).0.clone();
                             let inside = e.bounds.contains(&e.event.position);
-                            this.drag_target(this.root.clone().filter(|_| inside), Some(&from), cx);
+                            let copy = e.event.modifiers.control;
+                            this.drag_target(
+                                this.root.clone().filter(|_| inside),
+                                Some(&from),
+                                copy,
+                                cx,
+                            );
                         }))
                         .on_drag_move(cx.listener(
                             |this, e: &DragMoveEvent<ExternalPaths>, _, cx| {
                                 let inside = e.bounds.contains(&e.event.position);
-                                this.drag_target(this.root.clone().filter(|_| inside), None, cx);
+                                this.drag_target(
+                                    this.root.clone().filter(|_| inside),
+                                    None,
+                                    true,
+                                    cx,
+                                );
                             },
                         ))
                         .when(
@@ -2261,14 +2294,15 @@ impl Workbench {
                     cx.listener(move |this, e: &DragMoveEvent<DraggedFile>, _, cx| {
                         if e.bounds.contains(&e.event.position) {
                             let from = e.drag(cx).0.clone();
-                            this.drag_target(Some(over.clone()), Some(&from), cx);
+                            let copy = e.event.modifiers.control;
+                            this.drag_target(Some(over.clone()), Some(&from), copy, cx);
                         }
                     }),
                 )
                 .on_drag_move(
                     cx.listener(move |this, e: &DragMoveEvent<ExternalPaths>, _, cx| {
                         if e.bounds.contains(&e.event.position) {
-                            this.drag_target(Some(over_ext.clone()), None, cx);
+                            this.drag_target(Some(over_ext.clone()), None, true, cx);
                         }
                     }),
                 )
@@ -3876,7 +3910,7 @@ fn app_menu(
 
 #[cfg(test)]
 mod tests {
-    use super::{Encoding, copy_all, detect_indent, with_eol};
+    use super::{Encoding, copy_all, copy_target, detect_indent, with_eol};
 
     #[test]
     fn copy_folder() {
@@ -3886,6 +3920,13 @@ mod tests {
         std::fs::write(from.join("sub/a.txt"), "a").unwrap();
         copy_all(&from, &to).unwrap();
         assert_eq!(std::fs::read_to_string(to.join("sub/a.txt")).unwrap(), "a");
+        let name = |p: std::path::PathBuf| p.file_name().unwrap().to_string_lossy().into_owned();
+        let sub = from.join("sub");
+        assert_eq!(name(copy_target(&sub, "b.txt".as_ref())), "b.txt");
+        assert_eq!(name(copy_target(&sub, "a.txt".as_ref())), "a copy.txt");
+        std::fs::write(sub.join("a copy.txt"), "").unwrap();
+        assert_eq!(name(copy_target(&sub, "a.txt".as_ref())), "a copy 2.txt");
+        assert_eq!(name(copy_target(&from, "sub".as_ref())), "sub copy");
         std::fs::remove_dir_all(tmp).unwrap();
     }
 
@@ -4060,6 +4101,32 @@ fn drag_label(name: SharedString) -> Div {
         .bg(col::selected())
         .text_color(col::fg())
         .child(name)
+}
+
+/// `name` in `dir`, or when that's taken VS Code's "simple" incremental
+/// name for a copy: `a copy.txt`, `a copy 2.txt`, ...
+fn copy_target(dir: &Path, name: &std::ffi::OsStr) -> PathBuf {
+    let path = dir.join(name);
+    if !path.exists() {
+        return path;
+    }
+    let (stem, ext) = match (path.is_dir(), Path::new(name).extension()) {
+        (false, Some(ext)) => (
+            Path::new(name)
+                .file_stem()
+                .unwrap_or(name)
+                .to_string_lossy(),
+            format!(".{}", ext.to_string_lossy()),
+        ),
+        _ => (name.to_string_lossy(), String::new()),
+    };
+    (1..)
+        .map(|n| match n {
+            1 => dir.join(format!("{stem} copy{ext}")),
+            n => dir.join(format!("{stem} copy {n}{ext}")),
+        })
+        .find(|p| !p.exists())
+        .unwrap_or(path)
 }
 
 /// Copies a file, or a folder with everything in it.
