@@ -29,9 +29,9 @@ use gpui_kit::component::{
     kbd::Kbd,
 };
 
-use super::terminal::{Profile, profiles, set_default_profile};
+use super::terminal::{ANSI, COLORS, Profile, profiles, set_default_profile};
 use super::*;
-use crate::theme::{c, ca, col, file_icon};
+use crate::theme::{c, ca, col, file_icon, icon};
 
 /// Workspace files shown at once; the best matches win.
 const SHOWN: usize = 50;
@@ -64,6 +64,7 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("Terminal: Create New Terminal", Box::new(NewTerminal)),
         ("Terminal: Split Terminal", Box::new(SplitTerminal)),
         ("Terminal: Rename...", Box::new(RenameTerminal)),
+        ("Terminal: Change Color...", Box::new(ChangeTerminalColor)),
         ("Terminal: Focus Find", Box::new(FindInTerminal)),
         (
             "Terminal: Select Default Profile",
@@ -104,6 +105,8 @@ enum Pick {
     Symbol(usize, Vec<usize>, Vec<usize>),
     /// Index into the profiles of Select Default Profile, and the matched offsets.
     Profile(usize, Vec<usize>),
+    /// Index into the terminal colors, or None to reset, and the matched offsets.
+    Color(Option<usize>, Vec<usize>),
 }
 
 /// A definition in the active editor, for `@`.
@@ -142,6 +145,8 @@ pub(super) struct Palette {
     profiles: Option<Vec<Profile>>,
     /// Set while the palette is Terminal: Rename's input, to the terminal's id.
     renaming: Option<u64>,
+    /// Set while the palette is Terminal: Change Color's pick list.
+    coloring: Option<u64>,
     /// 0-based line and column from a `file:line:col` query.
     goto: Option<(u32, u32)>,
     shown: Vec<Pick>,
@@ -185,6 +190,7 @@ impl Palette {
             defs: None,
             profiles: None,
             renaming: None,
+            coloring: None,
             goto: None,
             shown: Vec::new(),
             groups: Vec::new(),
@@ -1401,6 +1407,7 @@ impl Workbench {
         p.defs = None;
         p.profiles = None;
         p.renaming = None;
+        p.coloring = None;
         p.parse = None;
         p.state
             .update(cx, |s, cx| s.set_query(query.to_string(), window, cx));
@@ -1436,6 +1443,17 @@ impl Workbench {
                 input.dispatch_action(&input::SelectAll, window, cx)
             })
         });
+    }
+
+    /// VS Code's Terminal: Change Color: the palette lists the colors for the
+    /// active terminal's tab icon.
+    pub(super) fn change_terminal_color(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((id, _)) = self.terminal_name() else {
+            return;
+        };
+        self.open_palette("", window, cx);
+        self.palette.coloring = Some(id);
+        self.palette_query(String::new(), cx);
     }
 
     /// Re-lists the workspace's files when the watcher saw them change. The
@@ -1521,6 +1539,7 @@ impl Workbench {
         p.parse = None;
         p.profiles = None;
         p.renaming = None;
+        p.coloring = None;
         // A command may have moved focus (Show Search); only restore it when it is still ours.
         if p.focus.contains_focused(window, cx) {
             match p.restore.take() {
@@ -1561,6 +1580,20 @@ impl Workbench {
                 })
                 .collect();
             p.show(shown, Vec::new(), 0);
+            return;
+        }
+        if p.coloring.is_some() {
+            let q = query.trim();
+            let mut shown: Vec<_> = (COLORS.iter().enumerate())
+                .filter_map(|(ix, name)| Some(Pick::Color(Some(ix), command_matches(q, name)?)))
+                .collect();
+            let colors = shown.len();
+            shown.extend(command_matches(q, "Reset to default").map(|h| Pick::Color(None, h)));
+            let groups = match colors {
+                n if n < shown.len() && n > 0 => vec![(n, SharedString::default())],
+                _ => Vec::new(),
+            };
+            p.show(shown, groups, 0);
             return;
         }
         if p.renaming.is_some() {
@@ -1757,6 +1790,12 @@ impl Workbench {
                 set_default_profile(&p.profiles.as_ref().unwrap()[ix].name);
                 (None, None)
             }
+            Some(&Pick::Color(color, _)) => {
+                if let Some(id) = p.coloring {
+                    self.set_terminal_color(id, color, cx);
+                }
+                (None, None)
+            }
             None => (None, None),
         };
         self.palette_unpreview(false, cx);
@@ -1800,6 +1839,8 @@ impl Workbench {
             "Select your default terminal profile"
         } else if p.renaming.is_some() {
             "Enter terminal name"
+        } else if p.coloring.is_some() {
+            "Choose a color for the terminal"
         } else if p.query.starts_with('>') {
             ""
         } else {
@@ -1842,6 +1883,11 @@ impl Workbench {
             list = list.item(match pick {
                 Pick::Line(.., label) => row(RowIcon::None, label, &Vec::new()).item(),
                 Pick::Profile(pr, hits) => row(RowIcon::None, &profiles[*pr].name, hits).item(),
+                Pick::Color(Some(ix), hits) => {
+                    let icon = RowIcon::Symbol(icon::CIRCLE_FILLED, c(ANSI[*ix]));
+                    row(icon, COLORS[*ix], hits).item()
+                }
+                Pick::Color(None, hits) => row(RowIcon::None, "Reset to default", hits).item(),
                 Pick::Command(cmd, hits) => {
                     let (label, action) = &commands[*cmd];
                     Row {

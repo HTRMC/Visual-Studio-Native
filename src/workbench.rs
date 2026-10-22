@@ -65,6 +65,7 @@ actions!(
         NewTerminal,
         SplitTerminal,
         RenameTerminal,
+        ChangeTerminalColor,
         FindInTerminal,
         SelectDefaultProfile,
         NewTextFile,
@@ -1725,6 +1726,9 @@ impl Render for Workbench {
                     this.rename_terminal(window, cx)
                 }),
             )
+            .on_action(cx.listener(|this, _: &ChangeTerminalColor, window, cx| {
+                this.change_terminal_color(window, cx)
+            }))
             .on_action(
                 cx.listener(|this, _: &FindInTerminal, window, cx| {
                     this.find_in_terminal(window, cx)

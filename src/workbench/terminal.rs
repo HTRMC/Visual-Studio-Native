@@ -56,6 +56,8 @@ pub(super) struct Terminal {
     /// The id of the terminal its split group started with.
     group: u64,
     name: String,
+    /// The tab icon's color, an index into `ANSI`, from Change Color.
+    color: Option<usize>,
     /// What it was started with, for splits of it.
     profile: Profile,
     parser: vt100::Parser<Replies>,
@@ -664,6 +666,7 @@ impl Workbench {
             id,
             group: id,
             name: shell_name(&profile),
+            color: None,
             profile,
             parser: vt100::Parser::new_with_callbacks(
                 24.try_into().unwrap(),
@@ -959,6 +962,18 @@ impl Workbench {
                 "" => shell_name(&t.profile),
                 name => name.to_string(),
             };
+            cx.notify();
+        }
+    }
+
+    pub(super) fn set_terminal_color(
+        &mut self,
+        id: u64,
+        color: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(t) = self.terminal(id) {
+            t.color = color;
             cx.notify();
         }
     }
@@ -1468,7 +1483,7 @@ impl Workbench {
                 .when(active, |d| d.bg(col::selected()))
                 .when(!active, |d| d.hover(|s| s.bg(col::hover())))
                 .child(div().w(px(8.)).text_color(col::fg_muted()).child(tree))
-                .child(codicon(icon::TERMINAL))
+                .child(tab_icon(t))
                 .child(div().flex_1().min_w_0().truncate().child(t.name.clone()))
                 .when(active, |d| {
                     d.child(
@@ -1508,7 +1523,7 @@ impl Workbench {
             .gap(px(4.))
             .rounded(px(5.))
             .hover(|s| s.bg(col::hover()))
-            .child(codicon(icon::TERMINAL))
+            .child(tab_icon(t))
             .child(t.name.clone())
             .on_click(cx.listener(move |this, _, w, cx| this.activate_terminal(id, w, cx)))
             .context_menu(move |menu, _, _| tab_menu(menu, &wb, id));
@@ -1820,11 +1835,19 @@ fn tab_menu(menu: PopupMenu, wb: &WeakEntity<Workbench>, id: u64) -> PopupMenu {
     menu.item(item("Split Terminal", |this, _, w, cx| {
         this.new_terminal(true, w, cx)
     }))
+    .item(item("Change Color...", |this, _, w, cx| {
+        this.change_terminal_color(w, cx)
+    }))
     .item(item("Rename...", |this, _, w, cx| {
         this.rename_terminal(w, cx)
     }))
     .separator()
     .item(item("Kill Terminal", Workbench::kill_terminal))
+}
+
+/// A terminal tab's icon, in the color Change Color gave it.
+fn tab_icon(t: &Terminal) -> Div {
+    codicon(icon::TERMINAL).when_some(t.color, |d, i| d.text_color(c(ANSI[i])))
 }
 
 /// A terminal's name until it is renamed: its program's, like `pwsh`.
@@ -2057,18 +2080,25 @@ fn mouse_bytes(
     }
 }
 
-/// VS Code's dark terminal colors; `bold` brightens the first eight like its
+/// VS Code's dark terminal colors.
+pub(super) const ANSI: [u32; 16] = [
+    0x000000, 0xCD3131, 0x0DBC79, 0xE5E510, 0x2472C8, 0xBC3FBC, 0x11A8CD, 0xE5E5E5, 0x666666,
+    0xF14C4C, 0x23D18B, 0xF5F543, 0x3B8EEA, 0xD670D6, 0x29B8DB, 0xE5E5E5,
+];
+
+/// Change Color's names for the first eight of `ANSI`, as VS Code lists them.
+pub(super) const COLORS: [&str; 8] = [
+    "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
+];
+
+/// `ANSI` as cell colors; `bold` brightens the first eight like its
 /// `terminal.integrated.drawBoldTextInBrightColors`.
 fn ansi(color: vt100::Color, bold: bool) -> Option<Hsla> {
-    const BASE: [u32; 16] = [
-        0x000000, 0xCD3131, 0x0DBC79, 0xE5E510, 0x2472C8, 0xBC3FBC, 0x11A8CD, 0xE5E5E5, 0x666666,
-        0xF14C4C, 0x23D18B, 0xF5F543, 0x3B8EEA, 0xD670D6, 0x29B8DB, 0xE5E5E5,
-    ];
     let rgb = |r: u8, g: u8, b: u8| (r as u32) << 16 | (g as u32) << 8 | b as u32;
     Some(c(match color {
         vt100::Color::Default => return None,
-        vt100::Color::Idx(i @ 0..8) if bold => BASE[i as usize + 8],
-        vt100::Color::Idx(i @ 0..16) => BASE[i as usize],
+        vt100::Color::Idx(i @ 0..8) if bold => ANSI[i as usize + 8],
+        vt100::Color::Idx(i @ 0..16) => ANSI[i as usize],
         // The 6x6x6 cube, then 24 grays.
         vt100::Color::Idx(i @ 16..232) => {
             let level = |v: u8| if v == 0 { 0 } else { 55 + v * 40 };
