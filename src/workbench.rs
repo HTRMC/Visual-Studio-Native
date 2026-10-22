@@ -1242,7 +1242,7 @@ impl Workbench {
                 self.set_root(path.clone(), cx);
                 continue;
             }
-            self.open_path(path.clone(), window, cx);
+            self.open_recent(path.clone(), window, cx);
             let from = self.docs.iter().position(|d| &d.path == path);
             if let (Some(from), Some(to)) = (from, at) {
                 self.move_doc(from, to, window, cx);
@@ -1903,6 +1903,13 @@ impl Workbench {
         self.prompt(true, cx);
     }
 
+    /// Opens a file from outside the explorer, which VS Code lists in
+    /// File > Open Recent.
+    pub fn open_recent(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.palette.remember_opened(false, &path, cx);
+        self.open_path(path, window, cx);
+    }
+
     fn set_root(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.root = Some(path);
         self.expanded.clear();
@@ -1930,7 +1937,7 @@ impl Workbench {
                     let this = cx.entity();
                     window
                         .update(cx, |_, window, cx| {
-                            this.update(cx, |this, cx| this.open_path(path, window, cx))
+                            this.update(cx, |this, cx| this.open_recent(path, window, cx))
                         })
                         .ok();
                 }
@@ -2283,6 +2290,18 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
+        // Open Recent leaves out the open folder, as VS Code does.
+        let root = self.root.as_ref().map(|r| r.to_string_lossy());
+        let folders = self.palette.folders.iter();
+        let recent = Recent {
+            // 20 leaves room for gone ones the menu skips.
+            folders: (folders.filter(|f| Some(f.as_str()) != root.as_deref()))
+                .take(20)
+                .cloned()
+                .collect(),
+            files: self.palette.opened.iter().take(20).cloned().collect(),
+            workbench: cx.entity().downgrade(),
+        };
         let menubar = [
             "File",
             "Edit",
@@ -2297,6 +2316,7 @@ impl Workbench {
         .map(|name| {
             let wrap = self.docs.get(self.active).map(|d| self.wraps(d));
             let focus = self.menu_focus.clone();
+            let recent = recent.clone();
             Button::new(name)
                 .ghost()
                 .compact()
@@ -2311,7 +2331,7 @@ impl Workbench {
                         Some(focus) => menu.action_context(focus),
                         None => menu,
                     };
-                    app_menu(name, wrap, menu, window, cx)
+                    app_menu(name, wrap, recent.clone(), menu, window, cx)
                 })
         });
 
@@ -2922,6 +2942,7 @@ impl Workbench {
         let Some(root) = self.root.clone() else {
             return;
         };
+        self.palette.remember_opened(true, &root, cx);
         let (tx, mut rx) = futures::channel::mpsc::unbounded::<Vec<PathBuf>>();
         let watcher = notify::recommended_watcher(move |ev: notify::Result<notify::Event>| {
             // Only changes to a folder's entries matter, and launch.json's contents.
@@ -5035,12 +5056,21 @@ fn watermark() -> impl IntoElement {
         .child(row("Open Folder", &["Ctrl", "+", "K", "Ctrl", "+", "O"]))
 }
 
+/// File > Open Recent's entries, and the workbench they open in.
+#[derive(Clone)]
+struct Recent {
+    folders: Vec<String>,
+    files: Vec<String>,
+    workbench: WeakEntity<Workbench>,
+}
+
 /// VS Code's application menus, minus anything AI.
 /// Menu bar menu `name`; `wrap` checks View > Word Wrap, which is greyed
 /// out (`None`) with no editor open.
 fn app_menu(
     name: &str,
     wrap: Option<bool>,
+    recent: Recent,
     menu: PopupMenu,
     window: &mut Window,
     cx: &mut Context<PopupMenu>,
@@ -5053,7 +5083,25 @@ fn app_menu(
             .separator()
             .menu("Open File...", Box::new(OpenFile))
             .map(|m| chord(m, "Open Folder...", OpenFolder))
-            .submenu("Open Recent", window, cx, |m, _, _| {
+            .submenu("Open Recent", window, cx, move |mut m, _, _| {
+                // VS Code's menu shows 10 of each; gone ones are left out.
+                // ponytail: no Reopen Closed Editor or Clear Recently Opened...
+                for (folder, list) in [(true, &recent.folders), (false, &recent.files)] {
+                    let paths = list.iter().map(PathBuf::from).filter(|p| p.exists());
+                    for path in paths.take(10) {
+                        let wb = recent.workbench.clone();
+                        let item = PopupMenuItem::new(path.to_string_lossy().into_owned());
+                        m = m.item(item.on_click(move |_, window, cx| {
+                            let path = path.clone();
+                            wb.update(cx, |wb, cx| match folder {
+                                true => wb.set_root(path, cx),
+                                false => wb.open_recent(path, window, cx),
+                            })
+                            .ok();
+                        }));
+                    }
+                    m = m.separator();
+                }
                 m.menu("More...", Box::new(Noop))
             })
             .separator()

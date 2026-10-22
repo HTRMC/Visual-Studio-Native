@@ -44,9 +44,11 @@ const PATH_IDENTITY: i32 = 1 << 18;
 const LABEL_PREFIX: i32 = 1 << 17;
 const LABEL: i32 = 1 << 16;
 
-// VS Code's history lengths: editors per workspace, commands overall.
+// VS Code's history lengths: editors per workspace, commands overall,
+// Open Recent's folders and files.
 const EDITOR_HISTORY: usize = 200;
 const COMMAND_HISTORY: usize = 50;
+const RECENTLY_OPENED: usize = 500;
 
 /// Change Icon's grid columns: VS Code's 486px box less 30px, in 36px cells.
 const ICON_COLS: usize = 12;
@@ -383,6 +385,10 @@ pub(super) struct Palette {
     editors: HashMap<String, Vec<String>>,
     /// Command labels in the order they were last run.
     recent: Vec<String>,
+    /// File > Open Recent: workspace folders, and files opened from outside
+    /// the workspace (Open File..., a drop, the command line), latest first.
+    pub(super) folders: Vec<String>,
+    pub(super) opened: Vec<String>,
     /// Symbols of the active editor, parsed on the first `@` query.
     defs: Option<Vec<Def>>,
     /// Symbols of every workspace file with its path, parsed on the first
@@ -454,6 +460,8 @@ impl Palette {
             stale: true,
             editors,
             recent: serde_json::from_value(state["commands"].clone()).unwrap_or_default(),
+            folders: serde_json::from_value(state["folders"].clone()).unwrap_or_default(),
+            opened: serde_json::from_value(state["files"].clone()).unwrap_or_default(),
             dnd: state["doNotDisturb"].as_bool().unwrap_or_default(),
             defs: None,
             ws_defs: None,
@@ -505,6 +513,22 @@ impl Palette {
         }
     }
 
+    /// Moves `path` to the front of Open Recent's folders, or else its files.
+    pub(super) fn remember_opened(&mut self, folder: bool, path: &Path, cx: &App) {
+        let list = if folder {
+            &mut self.folders
+        } else {
+            &mut self.opened
+        };
+        let path = path.to_string_lossy().into_owned();
+        if list.first() != Some(&path) {
+            list.retain(|p| *p != path);
+            list.insert(0, path);
+            list.truncate(RECENTLY_OPENED);
+            self.save(cx);
+        }
+    }
+
     /// Writes the histories on a background thread. Writes can finish out of
     /// order, so each carries a generation and an older one never replaces a
     /// newer file; the temp file and rename keep a crash from leaving half a file.
@@ -519,6 +543,8 @@ impl Palette {
             "commands": self.recent,
             "editors": self.editors,
             "doNotDisturb": self.dnd,
+            "folders": self.folders,
+            "files": self.opened,
         });
         cx.background_spawn(async move {
             let mut written = WRITTEN.lock().unwrap();

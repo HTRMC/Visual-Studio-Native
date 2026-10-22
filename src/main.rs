@@ -56,7 +56,9 @@ fn main() {
                 let wb = cx.new(|cx| Workbench::new(root, window, cx));
                 window.focus(&wb.read(cx).focus.clone(), cx);
                 wb.update(cx, |wb, cx| {
-                    files.into_iter().for_each(|f| wb.open_path(f, window, cx))
+                    files
+                        .into_iter()
+                        .for_each(|f| wb.open_recent(f, window, cx))
                 });
                 wb
             })
