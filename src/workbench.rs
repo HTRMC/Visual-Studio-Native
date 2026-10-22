@@ -526,6 +526,9 @@ pub struct Workbench {
     autosave: Option<Task<()>>,
     /// View > Word Wrap (Alt+Z), for every editor; starts from editor.wordWrap.
     word_wrap: bool,
+    /// What had focus when a menu bar menu was opened, so its Edit and
+    /// Selection entries reach that editor rather than the menu's own path.
+    menu_focus: Option<FocusHandle>,
     debug: debug::Debug,
     /// Spawned when the Terminal tab first shows; the error if the shell didn't start.
     terminals: terminal::Terminals,
@@ -583,6 +586,7 @@ impl Workbench {
             last_edit: None,
             autosave: None,
             word_wrap: word_wrap(&terminal::settings()),
+            menu_focus: None,
             debug: debug::Debug::new(window, cx),
             terminals: Default::default(),
         };
@@ -1658,6 +1662,7 @@ impl Workbench {
         .into_iter()
         .map(|name| {
             let wrap = self.word_wrap;
+            let focus = self.menu_focus.clone();
             Button::new(name)
                 .ghost()
                 .compact()
@@ -1667,7 +1672,12 @@ impl Workbench {
                 .text_size(px(13.))
                 .text_color(col::fg())
                 .dropdown_menu(move |menu, window, cx| {
-                    app_menu(name, wrap, menu.min_w(px(240.)), window, cx)
+                    let menu = menu.min_w(px(240.));
+                    let menu = match focus.clone() {
+                        Some(focus) => menu.action_context(focus),
+                        None => menu,
+                    };
+                    app_menu(name, wrap, menu, window, cx)
                 })
         });
 
@@ -1730,7 +1740,16 @@ impl Workbench {
                             .window_control_area(WindowControlArea::Drag)
                             .child(crate::theme::logo(16.)),
                     )
-                    .child(h_flex().flex_none().children(menubar))
+                    .child(
+                        h_flex()
+                            .flex_none()
+                            // Before the menu's popover takes focus.
+                            .capture_any_mouse_down(cx.listener(|this, _, window, cx| {
+                                this.menu_focus = window.focused(cx);
+                                cx.notify();
+                            }))
+                            .children(menubar),
+                    )
                     .child(
                         div()
                             .flex_1()
@@ -4295,8 +4314,14 @@ fn app_menu(
             .menu("Move Line Up", noop())
             .menu("Move Line Down", noop())
             .separator()
-            .menu("Add Cursor Above", noop())
-            .menu("Add Cursor Below", noop()),
+            .menu(
+                "Add Cursor Above",
+                Box::new(gpui_kit::base::input::AddCursorAbove),
+            )
+            .menu(
+                "Add Cursor Below",
+                Box::new(gpui_kit::base::input::AddCursorBelow),
+            ),
         "View" => menu
             .menu("Command Palette...", Box::new(CommandPalette))
             .menu("Open View...", noop())
