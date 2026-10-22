@@ -256,13 +256,18 @@ Differences from VS Code still to close, smallest first within each area.
       active one as VS Code does.
 - [ ] Still-inert menu entries: Open Recent > More..., Preferences >
       Keyboard Shortcuts / Themes; Edit > Toggle Line/Block Comment;
-      Selection > Expand/Shrink Selection, Copy/Move Line Up/Down; View > Open View..., Editor Layout > Split
+      Selection > Expand/Shrink Selection; View > Open View..., Editor Layout > Split
       Up/Down; Go to Symbol in Workspace...; Run > Open/Add
       Configuration..., Run Task..., Run Build Task...; Help's entries.
 - [x] Edit and Selection menu entries (Undo, Cut, Select All...) never
       reached the editor and showed no shortcuts; they now go to whatever
       had focus when the menu opened. Selection > Add Cursor Above/Below
       work.
+- [x] Selection > Copy/Move Line Up/Down were inert; they and
+      Shift+Alt+Up/Down, Alt+Up/Down copy or move the selected lines.
+- [ ] Copy/Move Line take the active selection's lines only, not every
+      cursor's; undoing one leaves the swapped lines selected instead of
+      putting the cursor back.
 - [x] File > Auto Save was inert; it and "File: Toggle Auto Save" flip
       files.autoSave, and "afterDelay" saves dirty files after
       files.autoSaveDelay.

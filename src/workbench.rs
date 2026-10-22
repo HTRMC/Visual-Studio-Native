@@ -110,6 +110,10 @@ actions!(
         FindPreviousInTerminal,
         ToggleSizeToContentWidth,
         ToggleWordWrap,
+        CopyLinesUp,
+        CopyLinesDown,
+        MoveLinesUp,
+        MoveLinesDown,
         ScrollTerminalUp,
         ScrollTerminalDown,
         ScrollTerminalUpPage,
@@ -224,6 +228,14 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         ),
         KeyBinding::new("alt-z", ToggleSizeToContentWidth, Some("Terminal")),
         KeyBinding::new("alt-z", ToggleWordWrap, None),
+        KeyBinding::new("shift-alt-up", CopyLinesUp, Some("Input && mode == editor")),
+        KeyBinding::new(
+            "shift-alt-down",
+            CopyLinesDown,
+            Some("Input && mode == editor"),
+        ),
+        KeyBinding::new("alt-up", MoveLinesUp, Some("Input && mode == editor")),
+        KeyBinding::new("alt-down", MoveLinesDown, Some("Input && mode == editor")),
         KeyBinding::new(
             "ctrl-alt-pageup",
             ScrollTerminalUp,
@@ -362,6 +374,58 @@ fn text_hash(editor: &Entity<EditorState>, cx: &App) -> u64 {
         h.write(chunk.as_bytes());
     }
     h.finish()
+}
+
+/// The edit for Copy/Move Line Up/Down on the lines `sel` touches in
+/// `text`: the range to replace, its replacement, and the selection after.
+/// None when there's no line to move past.
+fn lines_moved(
+    text: &str,
+    sel: Range<usize>,
+    up: bool,
+    copy: bool,
+) -> Option<(Range<usize>, String, Range<usize>)> {
+    let line_start = |i: usize| text[..i].rfind('\n').map_or(0, |n| n + 1);
+    let line_end = |i: usize| text[i..].find('\n').map_or(text.len(), |n| i + n);
+    let start = line_start(sel.start);
+    // A selection ending at a line's start doesn't take that line, as in VS Code.
+    let last = match sel.end > sel.start && sel.end == line_start(sel.end) {
+        true => sel.end - 1,
+        false => sel.end,
+    };
+    let end = line_end(last);
+    let block = &text[start..end];
+    let shift = |by: isize| {
+        let at = |i: usize| i.saturating_add_signed(by);
+        at(sel.start)..at(sel.end)
+    };
+    Some(match (up, copy) {
+        (true, true) => (start..start, format!("{block}\n"), sel),
+        (false, true) => (
+            end..end,
+            format!("\n{block}"),
+            shift(block.len() as isize + 1),
+        ),
+        (true, false) => {
+            let prev = line_start(start.checked_sub(1)?);
+            let above = &text[prev..start - 1];
+            (
+                prev..end,
+                format!("{block}\n{above}"),
+                shift(-(above.len() as isize + 1)),
+            )
+        }
+        (false, false) => {
+            (end < text.len()).then_some(())?;
+            let below = &text[end + 1..line_end(end + 1)];
+            let range = start..end + 1 + below.len();
+            (
+                range,
+                format!("{below}\n{block}"),
+                shift(below.len() as isize + 1),
+            )
+        }
+    })
 }
 
 /// `text` with every line ending made CRLF or LF, as VS Code keeps one
@@ -1625,6 +1689,23 @@ impl Workbench {
             (doc.editor).update(cx, |e, cx| e.set_soft_wrap(wrap, window, cx));
         }
         cx.notify();
+    }
+
+    /// Selection > Copy/Move Line Up/Down on the active editor's selected
+    /// lines.
+    // ponytail: the active selection only; VS Code moves every cursor's lines.
+    fn line_op(&mut self, up: bool, copy: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.get(self.active).filter(|d| !d.binary) else {
+            return;
+        };
+        doc.editor.update(cx, |e, cx| {
+            let text = e.value();
+            if let Some((range, new, sel)) = lines_moved(&text, e.selected_range(), up, copy) {
+                e.set_selected_range(range, cx);
+                e.replace(new, window, cx);
+                e.set_selected_range(sel, cx);
+            }
+        });
     }
 
     /// View > Problems / Output / Debug Console: shows the panel on tab
@@ -4010,6 +4091,20 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &ToggleWordWrap, window, cx| {
                 this.set_word_wrap(!this.word_wrap, window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &CopyLinesUp, window, cx| {
+                    this.line_op(true, true, window, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &CopyLinesDown, window, cx| {
+                this.line_op(false, true, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &MoveLinesUp, window, cx| {
+                this.line_op(true, false, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &MoveLinesDown, window, cx| {
+                this.line_op(false, false, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &ToggleSizeToContentWidth, _, cx| {
                 this.toggle_size_to_content_width(cx)
             }))
@@ -4309,10 +4404,10 @@ fn app_menu(
             .menu("Expand Selection", noop())
             .menu("Shrink Selection", noop())
             .separator()
-            .menu("Copy Line Up", noop())
-            .menu("Copy Line Down", noop())
-            .menu("Move Line Up", noop())
-            .menu("Move Line Down", noop())
+            .menu("Copy Line Up", Box::new(CopyLinesUp))
+            .menu("Copy Line Down", Box::new(CopyLinesDown))
+            .menu("Move Line Up", Box::new(MoveLinesUp))
+            .menu("Move Line Down", Box::new(MoveLinesDown))
             .separator()
             .menu(
                 "Add Cursor Above",
@@ -4397,7 +4492,29 @@ fn app_menu(
 
 #[cfg(test)]
 mod tests {
-    use super::{Encoding, copy_all, copy_target, detect_indent, with_eol};
+    use super::{Encoding, copy_all, copy_target, detect_indent, lines_moved, with_eol};
+
+    #[test]
+    fn move_and_copy_lines() {
+        let text = "a\nbb\nc";
+        let edit = |sel, up, copy| {
+            let (range, new, sel) = lines_moved(text, sel, up, copy)?;
+            let mut out = text.to_string();
+            out.replace_range(range, &new);
+            Some((out, sel))
+        };
+        assert_eq!(edit(3..3, false, false), Some(("a\nc\nbb".into(), 5..5)));
+        assert_eq!(edit(3..3, true, false), Some(("bb\na\nc".into(), 1..1)));
+        assert_eq!(
+            edit(0..3, true, true),
+            Some(("a\nbb\na\nbb\nc".into(), 0..3))
+        );
+        assert_eq!(edit(2..2, false, true), Some(("a\nbb\nbb\nc".into(), 5..5)));
+        // Ending at line 3's start leaves line 3 out.
+        assert_eq!(edit(0..5, false, false), Some(("c\na\nbb".into(), 2..7)));
+        assert_eq!(edit(0..0, true, false), None);
+        assert_eq!(edit(6..6, false, false), None);
+    }
 
     #[test]
     fn copy_folder() {
