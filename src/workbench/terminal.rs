@@ -718,12 +718,30 @@ impl Workbench {
             }
         };
         self.terminals.finding = true;
+        let seed = self.find_seed();
         // The query starts selected, so typing replaces it.
         input.update(cx, |s, cx| {
+            if let Some(seed) = seed {
+                s.set_value(seed, window, cx);
+            }
             s.focus(window, cx);
             s.select_all(window, cx);
         });
         self.search_terminal(cx);
+    }
+
+    /// The active terminal's selection as a query, as VS Code seeds find:
+    /// one line, and not just find's own selected match.
+    fn find_seed(&mut self) -> Option<String> {
+        let t = self.terminals.list.get_mut(self.terminals.active)?;
+        let (a, b) = t
+            .selection
+            .filter(|(a, b)| a != b && !t.block)
+            .map(sorted)?;
+        if t.current.is_some_and(|i| t.matches[i] == (a, b)) {
+            return None;
+        }
+        Some(text_between(t.parser.screen_mut(), a, b)).filter(|s| !s.contains('\n'))
     }
 
     pub(super) fn close_terminal_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {

@@ -30,6 +30,7 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Find's case, whole word and regex toggles (Alt+C/W/R).
 - [x] An invalid find regex reddens the box instead of quietly finding
       nothing.
+- [x] Ctrl+F starts find with the terminal's one-line selection.
 - [x] Find re-searches output that arrives while it's open.
 - [x] Switching terminals with find open searches the newly active one.
 - [x] Rename a terminal (Terminal: Rename..., or Rename... on a tab).
