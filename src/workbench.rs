@@ -17,7 +17,7 @@ use notify::{EventKind, RecursiveMode, Watcher as _, event::ModifyKind};
 
 use gpui_kit::component::{
     Sizable as _,
-    button::{Button, ButtonVariants as _},
+    button::{Button, ButtonCustomVariant, ButtonVariants as _},
     h_resizable,
     input::{self, Editor, EditorState, Input, InputEvent, InputState, RopeExt as _, TabSize},
     menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem},
@@ -3301,8 +3301,16 @@ impl Workbench {
             )));
         v_flex().child(row).when(*settings, |d| {
             // An action closes its notification, as in VS Code.
+            // button.background, button.hoverBackground and button.foreground; the
+            // custom variant dims its colour, so bg sets it too.
+            let blue = ButtonCustomVariant::new(cx)
+                .color(c(0x0078D4))
+                .hover(c(0x026EC1))
+                .active(c(0x026EC1))
+                .foreground(c(0xFFFFFF));
             let button = Button::new((id, "open-settings"))
-                .primary()
+                .custom(blue)
+                .bg(c(0x0078D4))
                 .small()
                 .label("Open Settings")
                 .on_click(cx.listener(move |this, _, window, cx| {

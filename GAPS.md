@@ -142,8 +142,10 @@ Differences from VS Code still to close, smallest first within each area.
       one, which closes the notification and opens settings.json.
 - [ ] It's still a warning; VS Code shows it as an error (red icon, and it
       toasts through Do Not Disturb).
-- [ ] Notification buttons use gpui-component's primary colour, not
-      button.background (#0078D4).
+- [x] Notification buttons used gpui-component's primary colour; they now
+      use button.background (#0078D4) and button.hoverBackground.
+- [ ] Notification buttons aren't in the keyboard focus order (VS Code tabs
+      into them from a focused notification).
 - [x] A long notification ran past the toast's edge, pushing its close
       button out of view; it now wraps.
 - [x] A notification's icon and close button centred on a wrapped message;
