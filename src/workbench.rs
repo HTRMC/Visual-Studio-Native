@@ -763,6 +763,96 @@ impl Workbench {
         }
     }
 
+    /// Copies files dropped from Windows into the explorer folder `dir`,
+    /// asking before replacing any, and opens a single dropped file.
+    fn import_paths(
+        &mut self,
+        paths: &[PathBuf],
+        dir: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Nothing to copy onto itself, or into itself.
+        let paths: Vec<_> = paths
+            .iter()
+            .filter(|p| p.parent() != Some(&dir) && !dir.starts_with(p))
+            .cloned()
+            .collect();
+        let taken: Vec<_> = paths
+            .iter()
+            .filter_map(|p| p.file_name())
+            .filter(|name| dir.join(name).exists())
+            .map(|name| name.to_string_lossy().into_owned())
+            .collect();
+        if taken.is_empty() {
+            return self.copy_in(&paths, &dir, window, cx);
+        }
+        let message = match taken.as_slice() {
+            [name] => format!(
+                "A file or folder with the name '{name}' already exists in the destination folder. Do you want to replace it?"
+            ),
+            _ => format!(
+                "The following {} files and/or folders already exist in the destination folder. Do you want to replace them?",
+                taken.len()
+            ),
+        };
+        let detail = match taken.len() {
+            1 => "This action is irreversible!".to_string(),
+            _ => format!("{}\n\nThis action is irreversible!", taken.join("\n")),
+        };
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &message,
+            Some(&detail),
+            &["Replace", "Cancel"],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            if answer.await != Ok(0) {
+                return;
+            }
+            this.update_in(cx, |this, window, cx| {
+                this.copy_in(&paths, &dir, window, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn copy_in(
+        &mut self,
+        paths: &[PathBuf],
+        dir: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut copied = Vec::new();
+        for path in paths {
+            let Some(name) = path.file_name() else {
+                continue;
+            };
+            let to = dir.join(name);
+            let replaced = match to.is_dir() {
+                true => fs::remove_dir_all(&to),
+                false if to.exists() => fs::remove_file(&to),
+                false => Ok(()),
+            };
+            match replaced.and_then(|_| copy_all(path, &to)) {
+                Ok(()) => copied.push(to),
+                Err(err) => self.warn(format!("Unable to copy '{}' ({err})", path.display()), cx),
+            }
+        }
+        self.dirs.clear();
+        self.expanded.insert(dir.to_path_buf());
+        if let [file] = copied.as_slice() {
+            self.tree_sel = Some(file.clone());
+            if file.is_file() {
+                self.open_path(file.clone(), window, cx);
+            }
+        }
+        cx.notify();
+    }
+
     fn move_doc(&mut self, from: usize, to: usize, window: &mut Window, cx: &mut Context<Self>) {
         let doc = self.docs.remove(from);
         self.docs.insert(to, doc);
@@ -1740,6 +1830,11 @@ impl Workbench {
                         .track_scroll(&self.tree_scroll)
                         .track_focus(&self.tree_focus)
                         .on_key_down(cx.listener(Self::tree_key))
+                        .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                            if let Some(root) = this.root.clone() {
+                                this.import_paths(paths.paths(), root, window, cx)
+                            }
+                        }))
                         .group("explorer-tree")
                         .flex_1()
                         .min_h_0(),
@@ -2047,6 +2142,20 @@ impl Workbench {
             .when(!is_dir, |d| {
                 d.on_drag(DraggedFile(path.clone()), |file, _, _, cx| {
                     cx.new(|_| file.clone())
+                })
+            })
+            // Files from Windows are copied into this folder, or this file's.
+            // ponytail: tints the row only; VS Code tints the whole target
+            // folder with its children.
+            .drag_over::<ExternalPaths>(|s, _, _, _| s.bg(col::drop()))
+            .on_drop({
+                let dir = match is_dir {
+                    true => path.clone(),
+                    false => path.parent().unwrap_or(path).to_path_buf(),
+                };
+                cx.listener(move |this, paths: &ExternalPaths, window, cx| {
+                    cx.stop_propagation();
+                    this.import_paths(paths.paths(), dir.clone(), window, cx)
                 })
             })
             .relative()
@@ -3634,7 +3743,18 @@ fn app_menu(
 
 #[cfg(test)]
 mod tests {
-    use super::{Encoding, detect_indent, with_eol};
+    use super::{Encoding, copy_all, detect_indent, with_eol};
+
+    #[test]
+    fn copy_folder() {
+        let tmp = std::env::temp_dir().join(format!("vsn-copy-{}", std::process::id()));
+        let (from, to) = (tmp.join("from"), tmp.join("to"));
+        std::fs::create_dir_all(from.join("sub")).unwrap();
+        std::fs::write(from.join("sub/a.txt"), "a").unwrap();
+        copy_all(&from, &to).unwrap();
+        assert_eq!(std::fs::read_to_string(to.join("sub/a.txt")).unwrap(), "a");
+        std::fs::remove_dir_all(tmp).unwrap();
+    }
 
     #[test]
     fn indent() {
@@ -3807,6 +3927,19 @@ fn drag_label(name: SharedString) -> Div {
         .bg(col::selected())
         .text_color(col::fg())
         .child(name)
+}
+
+/// Copies a file, or a folder with everything in it.
+fn copy_all(from: &Path, to: &Path) -> std::io::Result<()> {
+    if !from.is_dir() {
+        return fs::copy(from, to).map(drop);
+    }
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        copy_all(&entry.path(), &to.join(entry.file_name()))?;
+    }
+    Ok(())
 }
 
 /// A file dragged from the explorer.

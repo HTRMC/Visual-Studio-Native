@@ -227,8 +227,10 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Files from Windows dropped on a tab open at the end, not at that tab.
 - [x] A drag over a tab only tints it faintly; VS Code also draws
       `tab.dragAndDropBorder` on the side the tab will land.
-- [ ] Files from Windows dropped on the explorer aren't copied into the
+- [x] Files from Windows dropped on the explorer aren't copied into the
       folder under the mouse.
+- [ ] A drop over the explorer tints only the row under the mouse; VS Code
+      tints the whole target folder with its children.
 - [ ] Dragging in the explorer can't move files between folders.
 - [x] Go menu: Back/Forward (Alt+Left/Right, the title bar arrows) and
       Last Edit Location (Ctrl+K Ctrl+Q) were placeholders.
