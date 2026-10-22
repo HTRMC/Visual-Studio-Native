@@ -20,7 +20,7 @@ use serde_json::{Map, Value, json};
 
 use gpui_kit::base::input::language_config::LanguageConfig;
 use gpui_kit::base::input::{AutoClosingPair, BracketPair, IndentationRules, SyntaxContext};
-use gpui_kit::component::{Theme, ThemeConfig, ThemeMode, ThemeRegistry};
+use gpui_kit::component::{Theme, ThemeConfig, ThemeMode, ThemeRegistry, text::TextView};
 
 use super::debug::strip_jsonc;
 use super::*;
@@ -1251,6 +1251,52 @@ pub(crate) fn configured_theme() -> String {
 /// The Extensions view's "Views and More Actions..." menu.
 /// An Extensions view row: the icon, then the name and version, the
 /// description, and the publisher with `action` on its right.
+/// An extension's details editor: which one, the tab showing, and its
+/// README and CHANGELOG as they were when it opened.
+pub(crate) struct Page {
+    id: String,
+    tab: usize,
+    readme: SharedString,
+    changelog: SharedString,
+}
+
+/// `dir`'s `NAME.md`, any case, or "".
+fn markdown_file(dir: &Path, name: &str) -> SharedString {
+    let file = fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .find(|f| f.file_name().to_string_lossy().to_lowercase() == format!("{name}.md"));
+    (file.and_then(|f| fs::read_to_string(f.path()).ok()))
+        .unwrap_or_default()
+        .into()
+}
+
+/// A contribution's row on the Features tab: what it's called, and what
+/// it runs or names.
+fn feature(e: &Extension, entry: &Value) -> (String, String) {
+    let first = |keys: &[&str]| {
+        (keys.iter())
+            .map(|k| e.localize(&entry[*k]))
+            .find(|s| !s.is_empty())
+            .unwrap_or_default()
+    };
+    let name = first(&[
+        "title",
+        "label",
+        "displayName",
+        "name",
+        "id",
+        "language",
+        "key",
+    ]);
+    let more = first(&["command", "id", "path"]);
+    (
+        name.clone(),
+        if more == name { String::new() } else { more },
+    )
+}
+
 fn extension_row(
     id: impl Into<ElementId>,
     icon: AnyElement,
@@ -1495,8 +1541,229 @@ impl Workbench {
         cx.notify();
     }
 
+    /// Opens extension `id`'s details in an editor, or shows the open one.
+    pub(super) fn open_extension(
+        &mut self,
+        id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let open = self
+            .docs
+            .iter()
+            .position(|d| d.page.as_ref().is_some_and(|p| p.id == id));
+        if let Some(ix) = open {
+            self.activate(ix, window, cx);
+            return;
+        }
+        let Some((name, dir)) = (installed().iter())
+            .find(|e| e.id == id)
+            .map(|e| (e.name(), e.dir.clone()))
+        else {
+            return;
+        };
+        let page = Page {
+            id,
+            tab: 0,
+            readme: markdown_file(&dir, "readme"),
+            changelog: markdown_file(&dir, "changelog"),
+        };
+        // Binary, so saving and the editor's commands leave its empty text alone.
+        let path = PathBuf::from(format!("Extension: {}", name.replace(['/', '\\'], " ")));
+        self.push_doc(path, String::new(), Encoding::Utf8, true, false, window, cx);
+        self.docs.last_mut().unwrap().page = Some(page);
+    }
+
+    /// Doc `ix`'s extension details: VS Code's header, then Details
+    /// (README), Features (contributions) and Changelog.
+    // ponytail: installed extensions only, and the README's relative
+    // images don't load; an Open VSX result has no page yet.
+    pub(super) fn render_page(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+        let Some(page) = self.docs[ix].page.as_ref() else {
+            return div().into_any_element();
+        };
+        let list = installed();
+        let Some(e) = list.iter().find(|e| e.id == page.id) else {
+            return (div().p(px(20.)).text_color(col::fg_muted()))
+                .child("This extension is not installed.")
+                .into_any_element();
+        };
+        let (id, enabled) = (e.id.clone(), e.enabled);
+        let icon = match e.icon() {
+            Some(path) => img(path).size(px(128.)).flex_none().into_any_element(),
+            None => codicon(icon::EXTENSIONS)
+                .size(px(128.))
+                .flex_none()
+                .text_size(px(96.))
+                .justify_center()
+                .text_color(col::fg_muted())
+                .into_any_element(),
+        };
+        let blue = ButtonCustomVariant::new(cx)
+            .color(c(0x0078D4))
+            .hover(c(0x026EC1))
+            .active(c(0x026EC1))
+            .foreground(c(0xFFFFFF));
+        let button = |key: &'static str, label: &'static str| {
+            Button::new(key)
+                .custom(blue)
+                .bg(c(0x0078D4))
+                .xsmall()
+                .label(label)
+        };
+        let id2 = id.clone();
+        let header = h_flex().p(px(20.)).gap(px(20.)).child(icon).child(
+            v_flex()
+                .gap(px(6.))
+                .min_w_0()
+                .child(
+                    h_flex()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .text_size(px(26.))
+                                .font_weight(FontWeight::BOLD)
+                                .child(e.name()),
+                        )
+                        .child(
+                            div()
+                                .px(px(6.))
+                                .rounded(px(3.))
+                                .bg(col::hover())
+                                .text_size(px(12.))
+                                .text_color(col::fg_muted())
+                                .child(id.clone()),
+                        ),
+                )
+                .child(
+                    h_flex()
+                        .gap(px(12.))
+                        .text_color(col::fg_muted())
+                        .child(e.publisher())
+                        .child(format!("v{}", e.version())),
+                )
+                .child(e.description())
+                .child(
+                    h_flex()
+                        .gap(px(8.))
+                        .pt(px(4.))
+                        .child(
+                            button(
+                                "ext-page-enable",
+                                if enabled { "Disable" } else { "Enable" },
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    this.enable_extension(id.clone(), !enabled, cx)
+                                },
+                            )),
+                        )
+                        .child(
+                            button("ext-page-uninstall", "Uninstall").on_click(cx.listener(
+                                move |this, _, _, cx| this.uninstall_extension(id2.clone(), cx),
+                            )),
+                        ),
+                ),
+        );
+        let tabs = ["DETAILS", "FEATURES", "CHANGELOG"]
+            .into_iter()
+            .enumerate()
+            .map(|(t, label)| {
+                let active = t == page.tab;
+                div()
+                    .id(("ext-page-tab", t))
+                    .py(px(4.))
+                    .cursor_pointer()
+                    .text_color(if active { col::fg() } else { col::fg_muted() })
+                    .when(active, |d| d.border_b_1().border_color(col::accent()))
+                    .hover(|d| d.text_color(col::fg()))
+                    .child(label)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(page) = this.docs.get_mut(ix).and_then(|d| d.page.as_mut()) {
+                            page.tab = t;
+                            cx.notify();
+                        }
+                    }))
+            });
+        let markdown = |text: &SharedString, none: &'static str| match text.is_empty() {
+            true => div()
+                .text_color(col::fg_muted())
+                .child(none)
+                .into_any_element(),
+            false => TextView::markdown(("ext-page-md", ix), text.clone())
+                .selectable(true)
+                .into_any_element(),
+        };
+        let body = match page.tab {
+            0 => markdown(&page.readme, "No README available."),
+            2 => markdown(&page.changelog, "No changelog available."),
+            _ => {
+                let points = e.manifest["contributes"]
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default();
+                let sections = points.keys().map(|point| {
+                    let rows: Vec<(String, String)> = match point.as_str() {
+                        "configuration" => (e.contributes(point))
+                            .flat_map(|c| c["properties"].as_object().cloned().unwrap_or_default())
+                            .map(|(key, v)| (key, e.localize(&v["description"])))
+                            .collect(),
+                        "menus" | "viewsContainers" | "views" => (points[point].as_object())
+                            .map(|m| m.keys().map(|k| (k.clone(), String::new())).collect())
+                            .unwrap_or_default(),
+                        _ => e.contributes(point).map(|v| feature(e, v)).collect(),
+                    };
+                    v_flex()
+                        .gap(px(2.))
+                        .child(
+                            div()
+                                .pb(px(4.))
+                                .font_weight(FontWeight::BOLD)
+                                .child(format!("{point} ({})", rows.len())),
+                        )
+                        .children(rows.into_iter().map(|(name, more)| {
+                            h_flex()
+                                .gap(px(12.))
+                                .child(div().w(px(260.)).flex_none().overflow_hidden().child(name))
+                                .child(div().min_w_0().text_color(col::fg_muted()).child(more))
+                        }))
+                });
+                v_flex()
+                    .gap(px(16.))
+                    .when(points.is_empty(), |d| {
+                        d.child(div().text_color(col::fg_muted()).child("No contributions."))
+                    })
+                    .children(sections)
+                    .into_any_element()
+            }
+        };
+        v_flex()
+            .size_full()
+            .text_size(px(13.))
+            .text_color(col::fg())
+            .child(header)
+            .child(
+                h_flex()
+                    .px(px(20.))
+                    .gap(px(20.))
+                    .text_size(px(11.))
+                    .border_b_1()
+                    .border_color(col::border())
+                    .children(tabs),
+            )
+            .child(
+                div()
+                    .id("ext-page-body")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .p(px(20.))
+                    .child(body),
+            )
+            .into_any_element()
+    }
+
     /// The Extensions view's Installed list, filtered by its search box.
-    // ponytail: no details page; a row shows what the manifest says.
     pub(super) fn render_installed(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let query = self.ext_search.read(cx).value().to_lowercase();
         let query = query.trim().trim_start_matches("@installed").trim();
@@ -1522,6 +1789,7 @@ impl Workbench {
                         .into_any_element(),
                 };
                 let wb = wb.clone();
+                let page = id.clone();
                 let manage = Button::new(("ext-manage", ix))
                     .ghost()
                     .compact()
@@ -1554,6 +1822,9 @@ impl Workbench {
                 let text = [e.name(), version, e.description(), e.publisher()];
                 extension_row(("ext", ix), icon, text, manage.into_any_element())
                     .when(!enabled, |d| d.opacity(0.6))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_extension(page.clone(), window, cx)
+                    }))
             })
             .collect::<Vec<_>>();
         v_flex().children(rows).into_any_element()

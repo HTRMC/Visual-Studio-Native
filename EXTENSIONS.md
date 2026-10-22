@@ -125,7 +125,8 @@ there.
    extensions and comments; language configurations' brackets,
    auto-closing pairs and indentation rules; Preferences: File Icon Theme
    with extensions' icon themes (`workbench.iconTheme`, image and folder
-   icons). *Left:* the details page.
+   icons); an installed extension's details page (Details, Features,
+   Changelog). *Left:* nothing.
 2. **Core API and command registry.** Extension commands in the palette,
    menus and keybindings; activation events (`onCommand`, `onLanguage`,
    `workspaceContains`, `onStartupFinished`, `*`).

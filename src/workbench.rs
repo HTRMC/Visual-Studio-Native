@@ -446,6 +446,8 @@ struct Doc {
     untitled: bool,
     /// Alt+Z's word wrap for this editor alone, overriding editor.wordWrap.
     wrap: Option<bool>,
+    /// An extension's details instead of a file.
+    page: Option<extensions::Page>,
 }
 
 /// The encodings VS Code detects without `files.autoGuessEncoding`.
@@ -1134,6 +1136,7 @@ impl Workbench {
             binary,
             untitled,
             wrap: None,
+            page: None,
         });
         self.activate(self.docs.len() - 1, window, cx);
         self.open_editors_changed(cx);
@@ -3796,6 +3799,7 @@ impl Workbench {
             .child(
                 div()
                     .id("breadcrumbs-row")
+                    .when(doc.page.is_some(), |d| d.hidden())
                     .relative()
                     .h(px(22.))
                     .flex_none()
@@ -3816,6 +3820,9 @@ impl Workbench {
             )
             .child(
                 div().flex_1().min_h_0().map(|d| {
+                    if doc.page.is_some() {
+                        return d.child(self.render_page(self.active, cx));
+                    }
                     if !doc.binary {
                         let keys = exthost::editor_keys(&doc.path, doc.lang);
                         return d.key_context(keys).child(self.render_code(self.active, cx));
