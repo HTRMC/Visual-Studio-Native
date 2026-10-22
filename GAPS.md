@@ -59,7 +59,7 @@ Differences from VS Code still to close, smallest first within each area.
       output.
 - [x] Terminal: Join Terminals from the palette: a pick of the terminals
       alone in their group, joined to the active one's.
-- [ ] With nothing to join, Join Terminals warns in a notification (VS Code's
+- [x] With nothing to join, Join Terminals warns in a notification (VS Code's
       "All terminals are joined already") instead of an empty pick list.
 - [x] Kill Terminal and Change Color/Icon on a multi-selection act on every
       selected tab.
@@ -93,3 +93,8 @@ Differences from VS Code still to close, smallest first within each area.
 - [ ] Dragging a tab onto the editor area moves the terminal into an editor.
 - [ ] Shell integration: command decorations, run recent command, go to
       recent directory.
+
+## Workbench
+
+- [ ] Notifications: several toasts stacked, the bell's notification center,
+      and toasts that stay while the mouse is over them.

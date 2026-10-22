@@ -29,7 +29,7 @@ mod palette;
 mod search;
 mod terminal;
 
-use crate::theme::{action_button, codicon, col, file_icon, icon, language_id, language_label};
+use crate::theme::{action_button, c, codicon, col, file_icon, icon, language_id, language_label};
 
 actions!(
     vsn,
@@ -293,6 +293,8 @@ pub struct Workbench {
     search: Entity<InputState>,
     find: search::Find,
     palette: palette::Palette,
+    /// A warning toast over the status bar, and the timer that hides it.
+    toast: Option<(SharedString, Task<()>)>,
     debug: debug::Debug,
     /// Spawned when the Terminal tab first shows; the error if the shell didn't start.
     terminals: terminal::Terminals,
@@ -326,6 +328,7 @@ impl Workbench {
             focus: cx.focus_handle(),
             find: search::Find::new(window, cx),
             palette: palette::Palette::new(window, cx),
+            toast: None,
             debug: debug::Debug::new(window, cx),
             terminals: Default::default(),
         };
@@ -1717,6 +1720,60 @@ impl Workbench {
     }
 }
 
+impl Workbench {
+    /// A warning toast, as VS Code's notifications show it, hidden after
+    /// VS Code's 18 seconds.
+    // ponytail: one toast at a time and no notification center behind the bell.
+    fn warn(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
+        let hide = cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(18))
+                .await;
+            this.update(cx, |this, cx| {
+                this.toast = None;
+                cx.notify();
+            })
+            .ok();
+        });
+        self.toast = Some((message.into(), hide));
+        cx.notify();
+    }
+
+    fn render_toast(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let (message, _) = self.toast.as_ref()?;
+        Some(
+            h_flex()
+                .id("toast")
+                .absolute()
+                .right(px(11.))
+                .bottom(px(33.))
+                .w(px(450.))
+                .min_h(px(42.))
+                .px(px(8.))
+                .gap(px(8.))
+                .rounded(px(6.))
+                // notifications.background
+                .bg(c(0x202122))
+                .border_1()
+                .border_color(col::border())
+                .shadow_lg()
+                .text_size(px(13.))
+                .text_color(col::fg())
+                // notificationsWarningIcon.foreground
+                .child(codicon(icon::WARNING).text_color(c(0xCCA700)))
+                .child(div().flex_1().child(message.clone()))
+                .child(
+                    action_button("toast-close", icon::CLOSE).on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.toast = None;
+                            cx.notify();
+                        },
+                    )),
+                ),
+        )
+    }
+}
+
 impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let sidebar = self.render_sidebar(cx);
@@ -1899,6 +1956,7 @@ impl Render for Workbench {
             )
             .child(self.render_statusbar(cx))
             .children(toolbar)
+            .children(self.render_toast(cx))
             .children(palette)
     }
 }

@@ -1560,6 +1560,9 @@ impl Workbench {
         if self.terminal_name().is_none() {
             return;
         }
+        if self.joinable().is_empty() {
+            return self.warn("All terminals are joined already", cx);
+        }
         self.open_palette("", window, cx);
         self.palette.joining = true;
         self.palette_query(String::new(), cx);
@@ -1712,9 +1715,7 @@ impl Workbench {
                     Some(Pick::Join(id, name, ch, color, hits))
                 })
                 .collect();
-            let p = &mut self.palette;
-            p.empty = "All terminals are joined already".into();
-            p.show(shown, Vec::new(), 0);
+            self.palette.show(shown, Vec::new(), 0);
             return;
         }
         if p.coloring.is_some() {
