@@ -257,9 +257,10 @@ Differences from VS Code still to close, smallest first within each area.
       other Preferences commands (no keybindings editor or keybindings.json).
 - [x] The "files to exclude" box lacks VS Code's "Use Exclude Settings and
       Ignore Files" toggle (the search always honours .gitignore).
-- [ ] Search and the explorer ignore the `files.exclude` and `search.exclude`
+- [x] Search and the explorer ignore the `files.exclude` and `search.exclude`
       settings (VS Code hides `.git` etc. and skips `node_modules` by default).
-- [x] A right-click in the explorer's empty area doesn't move the focus
+- [ ] `files.exclude` ignores `{"when": ...}` sibling conditions, and an edit
+      to settings.json shows in the explorer only after a refresh (no watcher).- [x] A right-click in the explorer's empty area doesn't move the focus
       outline off the last row the way VS Code clears it.
 - [ ] The explorer handles one item at a time: no Ctrl/Shift+click
       multi-select for drag, cut, copy or paste.

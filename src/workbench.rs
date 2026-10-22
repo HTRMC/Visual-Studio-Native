@@ -12,6 +12,7 @@ use std::{
 };
 
 use futures::StreamExt as _;
+use ignore::overrides::Override;
 use notify::{EventKind, RecursiveMode, Watcher as _, event::ModifyKind};
 
 use gpui_kit::component::{
@@ -2310,11 +2311,17 @@ impl Workbench {
             .dirs
             .entry(dir.to_path_buf())
             .or_insert_with(|| {
+                // ponytail: settings.json is read per folder read, and an edit to
+                // `files.exclude` shows on the next refresh, not live.
+                let root = self.root.as_deref().unwrap_or(dir);
+                let excluded = search::overrides(root, "", "", &search::exclude_globs(false))
+                    .unwrap_or_else(|_| Override::empty());
                 let mut entries: Vec<_> = fs::read_dir(dir)
                     .into_iter()
                     .flatten()
                     .flatten()
                     .map(|e| (e.path(), e.file_type().is_ok_and(|t| t.is_dir())))
+                    .filter(|(p, is_dir)| !excluded.matched(p, *is_dir).is_ignore())
                     .collect();
                 // VS Code's default explorer sort: folders first, then case-insensitive name.
                 entries.sort_by_cached_key(|(p, is_dir)| {

@@ -1,7 +1,7 @@
 //! Search view: find in files across the workspace root.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     ops::Range,
     path::{Path, PathBuf},
@@ -87,9 +87,49 @@ impl Find {
     }
 }
 
+/// VS Code's default `files.exclude`.
+const FILES_EXCLUDE: [&str; 5] = [
+    "**/.git",
+    "**/.svn",
+    "**/.hg",
+    "**/.DS_Store",
+    "**/Thumbs.db",
+];
+/// VS Code's default `search.exclude`, on top of `files.exclude`.
+const SEARCH_EXCLUDE: [&str; 3] = ["**/node_modules", "**/bower_components", "**/*.code-search"];
+
+/// The `files.exclude` (and, for `search`, also `search.exclude`) globs in force:
+/// the defaults, overlaid by `settings` where `false` turns one off.
+// ponytail: a `{"when": ...}` sibling condition counts as off.
+fn exclude_set(settings: &serde_json::Value, search: bool) -> Vec<String> {
+    let mut on: BTreeMap<String, bool> = FILES_EXCLUDE
+        .iter()
+        .chain(if search { &SEARCH_EXCLUDE[..] } else { &[] })
+        .map(|g| (g.to_string(), true))
+        .collect();
+    let keys = ["files.exclude", "search.exclude"];
+    for key in &keys[..1 + search as usize] {
+        for (g, v) in settings[key].as_object().into_iter().flatten() {
+            on.insert(g.clone(), v == true);
+        }
+    }
+    on.into_iter().filter(|(_, v)| *v).map(|(g, _)| g).collect()
+}
+
+/// `exclude_set` from the user's settings.json.
+pub(super) fn exclude_globs(search: bool) -> Vec<String> {
+    exclude_set(&super::terminal::settings(), search)
+}
+
 /// VS Code's include/exclude syntax: comma-separated globs, `./x` is relative to the root,
 /// anything else matches at any depth, and a folder matches everything inside it.
-fn overrides(root: &Path, include: &str, exclude: &str) -> Result<Override, ignore::Error> {
+/// `excluded` are settings globs (see `exclude_globs`), relative to the root.
+pub(super) fn overrides(
+    root: &Path,
+    include: &str,
+    exclude: &str,
+    excluded: &[String],
+) -> Result<Override, ignore::Error> {
     let mut b = OverrideBuilder::new(root);
     // Includes first: in gitignore matching the last glob wins, so excludes beat includes.
     for (list, neg) in [(include, ""), (exclude, "!")] {
@@ -106,6 +146,17 @@ fn overrides(root: &Path, include: &str, exclude: &str) -> Result<Override, igno
             b.add(&format!("{neg}{p}"))?;
             b.add(&format!("{neg}{p}/**"))?;
         }
+    }
+    for g in excluded {
+        let g = g.trim_end_matches('/');
+        // A settings glob without `/` matches at the root only, unlike gitignore's.
+        let g = match g.contains('/') {
+            true => g.to_string(),
+            false => format!("/{g}"),
+        };
+        // A bad glob in settings.json is skipped rather than failing the search.
+        b.add(&format!("!{g}")).ok();
+        b.add(&format!("!{g}/**")).ok();
     }
     b.build()
 }
@@ -357,7 +408,7 @@ impl Workbench {
     /// Open User Settings (JSON), and the empty result's Open Settings: the user settings.json, created
     /// empty if missing, as VS Code's Open User Settings (JSON) does.
     // ponytail: VS Code opens its Settings UI filtered to ".exclude"; there's
-    // no Settings UI here, and search doesn't read exclude settings yet.
+    // no Settings UI here.
     pub(super) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(path) = super::terminal::settings_path() else {
             return;
@@ -526,7 +577,13 @@ impl Workbench {
             self.find.exclude.read(cx).value(),
         );
         let use_ignore = self.find.use_ignore;
-        overrides(root, &include, &exclude).is_ok_and(|o| walks_to(root, o, use_ignore, path))
+        let excluded = if use_ignore {
+            exclude_globs(true)
+        } else {
+            vec![]
+        };
+        overrides(root, &include, &exclude, &excluded)
+            .is_ok_and(|o| walks_to(root, o, use_ignore, path))
     }
 
     /// The explorer's Find in Folder: Search, limited to files under `dir`.
@@ -571,7 +628,12 @@ impl Workbench {
             return;
         };
         let (include, exclude) = (f.include.read(cx).value(), f.exclude.read(cx).value());
-        let overrides = match overrides(&root, &include, &exclude) {
+        let excluded = if f.use_ignore {
+            exclude_globs(true)
+        } else {
+            vec![]
+        };
+        let overrides = match overrides(&root, &include, &exclude, &excluded) {
             Ok(o) => o,
             Err(err) => {
                 f.results.clear();
@@ -1035,7 +1097,33 @@ impl Workbench {
 mod tests {
     use std::path::Path;
 
-    use super::{build_regex, overrides, replace_text, search_text, summary, walks_to};
+    use super::{
+        build_regex, exclude_set, overrides, replace_text, search_text, summary, walks_to,
+    };
+
+    #[test]
+    fn exclude_settings_overlay_defaults() {
+        let settings = serde_json::json!({
+            "files.exclude": { "**/.hg": false, "out": true },
+            "search.exclude": { "**/node_modules": false },
+        });
+        let files = exclude_set(&settings, false);
+        assert!(files.contains(&"**/.git".into()) && files.contains(&"out".into()));
+        assert!(
+            !files
+                .iter()
+                .any(|g| g == "**/.hg" || g.contains("node_modules"))
+        );
+        let search = exclude_set(&settings, true);
+        assert!(search.contains(&"**/bower_components".into()));
+        assert!(!search.contains(&"**/node_modules".into()));
+
+        let root = std::path::Path::new("/w");
+        let ov = overrides(root, "", "", &files).unwrap();
+        let hidden = |p: &str, dir| ov.matched(root.join(p), dir).is_ignore();
+        assert!(hidden(".git", true) && hidden("a/.git", true) && hidden("out", true));
+        assert!(!hidden(".github", true) && !hidden("a/out", true));
+    }
 
     #[test]
     fn empty_summary_names_scope() {
@@ -1068,14 +1156,14 @@ mod tests {
         let reaches = |rel: &str, exclude: &str| {
             walks_to(
                 &root,
-                overrides(&root, "", exclude).unwrap(),
+                overrides(&root, "", exclude, &[]).unwrap(),
                 true,
                 &root.join(rel),
             )
         };
         assert!(walks_to(
             &root,
-            overrides(&root, "", "").unwrap(),
+            overrides(&root, "", "", &[]).unwrap(),
             false,
             &root.join("out/a.rs")
         ));
@@ -1128,11 +1216,11 @@ mod tests {
         assert_eq!(replace_text(text, &re, "", true, Some(2)), "a=b\r\nx\n");
 
         let root = Path::new("/w");
-        let ov = overrides(root, "src, ./docs/*.md", "*.gen.rs").unwrap();
+        let ov = overrides(root, "src, ./docs/*.md", "*.gen.rs", &[]).unwrap();
         let ok = |p: &str| !ov.matched(root.join(p), false).is_ignore();
         assert!(ok("src/main.rs") && ok("a/src/b/c.rs") && ok("docs/x.md"));
         assert!(!ok("src/x.gen.rs") && !ok("tests/t.rs") && !ok("a/docs/x.md"));
-        assert!(overrides(root, "a[", "").is_err());
+        assert!(overrides(root, "a[", "", &[]).is_err());
 
         // `$1` and `^` see the whole line, not just the cut-down preview.
         let re = build_regex(r"^\s+(\w+)", true, false, true).unwrap();

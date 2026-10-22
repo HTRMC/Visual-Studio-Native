@@ -643,7 +643,7 @@ pub(super) fn settings_path() -> Option<PathBuf> {
     Some(dirs::config_dir()?.join("vsn").join("settings.json"))
 }
 
-fn settings() -> serde_json::Value {
+pub(super) fn settings() -> serde_json::Value {
     settings_path()
         .and_then(|p| fs::read(p).ok())
         .and_then(|b| serde_json::from_slice(&b).ok())
