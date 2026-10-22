@@ -639,6 +639,7 @@ impl Workbench {
             untitled,
         });
         self.activate(self.docs.len() - 1, window, cx);
+        self.open_editors_changed(cx);
     }
 
     /// Ctrl+N: an `Untitled-N` editor, saved through Save As.
@@ -1317,6 +1318,7 @@ impl Workbench {
     ) {
         let active = self.docs.get(self.active).map(|d| d.editor.clone());
         self.docs.retain(|d| !gone(d));
+        self.open_editors_changed(cx);
         self.active = (active.and_then(|e| self.docs.iter().position(|d| d.editor == e)))
             .unwrap_or(self.docs.len().saturating_sub(1));
         if self.docs.is_empty() {
@@ -1329,6 +1331,7 @@ impl Workbench {
 
     fn remove(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.docs.remove(ix);
+        self.open_editors_changed(cx);
         if self.active > ix || self.active >= self.docs.len() {
             self.active = self.active.saturating_sub(1);
         }

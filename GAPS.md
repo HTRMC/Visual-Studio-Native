@@ -245,9 +245,11 @@ Differences from VS Code still to close, smallest first within each area.
       folder rows and the empty area).
 - [x] The search's "files to include" box lacks VS Code's "Search Only in
       Open Editors" toggle.
-- [ ] With "Search only in Open Editors" on, opening or closing an editor
+- [x] With "Search only in Open Editors" on, opening or closing an editor
       doesn't re-run the search, and an empty result lacks VS Code's
       "No results found in open editors" wording.
+- [ ] The search's empty-result message lacks VS Code's trailing "Open
+      Settings" and "Learn More" links.
 - [ ] The "files to exclude" box lacks VS Code's "Use Exclude Settings and
       Ignore Files" toggle (the search always honours .gitignore).
 - [x] A right-click in the explorer's empty area doesn't move the focus

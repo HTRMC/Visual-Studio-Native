@@ -299,9 +299,25 @@ fn search_text(text: &str, re: &Regex) -> Vec<LineHit> {
         .collect()
 }
 
-fn summary(results: &[FileHit]) -> String {
+/// The result count, or VS Code's empty-result message for the current scope.
+fn summary(results: &[FileHit], include: &str, exclude: &str, open_only: bool) -> String {
     if results.is_empty() {
-        return "No results found. Review your settings for configured exclusions and check your gitignore files.".into();
+        let editors = if open_only { " in open editors" } else { "" };
+        let (include, exclude) = (include.trim(), exclude.trim());
+        return match (include.is_empty(), exclude.is_empty()) {
+            (true, true) => format!(
+                "No results found{editors}. Review your settings for configured exclusions and check your gitignore files."
+            ),
+            (false, true) if open_only => {
+                format!("No results found in open editors matching '{include}'.")
+            }
+            (false, true) => format!("No results found in '{include}'."),
+            (true, false) => format!("No results found{editors} excluding '{exclude}'."),
+            (false, false) if open_only => format!(
+                "No results found in open editors matching '{include}' excluding '{exclude}'."
+            ),
+            (false, false) => format!("No results found in '{include}' excluding '{exclude}'."),
+        };
     }
     let matches: usize = results
         .iter()
@@ -323,6 +339,19 @@ enum Row {
 }
 
 impl Workbench {
+    fn summary(&self, cx: &App) -> String {
+        let f = &self.find;
+        let (include, exclude) = (f.include.read(cx).value(), f.exclude.read(cx).value());
+        summary(&f.results, &include, &exclude, f.open_only)
+    }
+
+    /// With "Search only in Open Editors" on, opening or closing an editor searches again.
+    pub(super) fn open_editors_changed(&mut self, cx: &mut Context<Self>) {
+        if self.find.open_only {
+            self.run_search(Duration::ZERO, cx);
+        }
+    }
+
     pub(super) fn init_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         cx.subscribe_in(
             &self.search,
@@ -454,7 +483,7 @@ impl Workbench {
                 lines,
             }),
         }
-        self.find.message = Some(summary(&self.find.results));
+        self.find.message = Some(self.summary(cx));
     }
 
     /// Whether the search walk would visit `path`: the same walk, kept to `path`'s ancestors.
@@ -553,15 +582,15 @@ impl Workbench {
                 .await;
             this.update(cx, |this, cx| {
                 this.find.re = Some(re);
-                let msg = summary(&results);
-                this.find.message = Some(if capped && !results.is_empty() {
+                this.find.results = results;
+                let msg = this.summary(cx);
+                this.find.message = Some(if capped && !this.find.results.is_empty() {
                     format!(
                         "{msg} - The result set only contains a subset of all matches. Be more specific in your search to narrow down the results."
                     )
                 } else {
                     msg
                 });
-                this.find.results = results;
                 cx.notify();
             })
             .ok();
@@ -591,7 +620,7 @@ impl Workbench {
             }
             None => _ = results.remove(fi),
         }
-        self.find.message = Some(summary(results));
+        self.find.message = Some(self.summary(cx));
         cx.notify();
     }
 
@@ -942,7 +971,20 @@ impl Workbench {
 mod tests {
     use std::path::Path;
 
-    use super::{build_regex, overrides, replace_text, search_text, walks_to};
+    use super::{build_regex, overrides, replace_text, search_text, summary, walks_to};
+
+    #[test]
+    fn empty_summary_names_scope() {
+        assert_eq!(
+            summary(&[], "./a", "", true),
+            "No results found in open editors matching './a'."
+        );
+        assert_eq!(
+            summary(&[], "", " b ", false),
+            "No results found excluding 'b'."
+        );
+        assert!(summary(&[], "", "", true).starts_with("No results found in open editors. Review"));
+    }
 
     #[test]
     fn scope_follows_gitignore() {
