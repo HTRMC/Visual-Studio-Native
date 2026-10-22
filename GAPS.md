@@ -53,8 +53,14 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Drag tabs to reorder terminals, or whole split groups.
 - [x] Drag a tab onto a terminal to move it into that split group.
 - [x] Unsplit Terminal (a split terminal's tab menu, and the palette).
-- [ ] Terminal: Join Terminals merges the selected tabs into one split group
-      (needs multi-select in the tab list: Ctrl/Shift+click).
+- [x] Terminal: Join Terminals merges the selected tabs into one split group
+      (Ctrl/Shift+click selects several tabs).
+- [x] A terminal shown at a new size redraws at it, not only on its next
+      output.
+- [ ] Terminal: Join Terminals from the palette: a multi-pick of terminals to
+      join with the active one.
+- [ ] Kill Terminal and Change Color/Icon on a multi-selection act on every
+      selected tab.
 - [x] Terminal: Toggle Size to Content Width (Alt+Z) stops wrapping at the
       panel's width; Shift+wheel scrolls sideways.
 - [x] The sideways scrollbar's thumb can be dragged, and shows while the

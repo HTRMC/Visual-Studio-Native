@@ -41,6 +41,8 @@ pub(super) struct Terminals {
     /// Split groups are runs of the same `group`, shown side by side.
     list: Vec<Terminal>,
     active: usize,
+    /// Tabs Ctrl/Shift+clicked into a multi-selection, with the active one.
+    picked: Vec<u64>,
     /// Why the last terminal failed to launch.
     error: Option<String>,
     next_id: u64,
@@ -1260,6 +1262,62 @@ impl Workbench {
         cx.notify();
     }
 
+    /// A tab clicked: alone it activates, with Ctrl it joins or leaves the
+    /// selection, with Shift the selection runs from the active tab to it.
+    fn click_tab(&mut self, id: u64, m: Modifiers, window: &mut Window, cx: &mut Context<Self>) {
+        let ts = &mut self.terminals;
+        let active = ts.list.get(ts.active).map(|t| t.id);
+        if m.shift {
+            let ix = ts.list.iter().position(|t| t.id == id).unwrap_or(ts.active);
+            let (a, b) = (ix.min(ts.active), ix.max(ts.active));
+            ts.picked = ts.list[a..=b].iter().map(|t| t.id).collect();
+        } else if m.control {
+            if ts.picked.is_empty() {
+                ts.picked.extend(active);
+            }
+            match ts.picked.iter().position(|&p| p == id) {
+                Some(i) => _ = ts.picked.remove(i),
+                None => ts.picked.push(id),
+            }
+        } else {
+            ts.picked.clear();
+            return self.activate_terminal(id, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// VS Code's Join Terminals: the selected tabs become one split group,
+    /// in the place of the first that's alone in its group, else at the end.
+    fn join_terminals(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ts = &mut self.terminals;
+        let picked = std::mem::take(&mut ts.picked);
+        let alone = |list: &Vec<Terminal>, g| list.iter().filter(|t| t.group == g).count() == 1;
+        let ids: Vec<u64> = (ts.list.iter())
+            .map(|t| t.id)
+            .filter(|id| picked.contains(id))
+            .collect();
+        let host = ts
+            .list
+            .iter()
+            .find(|t| ids.contains(&t.id) && alone(&ts.list, t.group));
+        let (host, group) = match host {
+            Some(t) => (Some(t.id), t.group),
+            None => (None, ts.next_id),
+        };
+        ts.next_id += host.is_none() as u64;
+        let (mut moved, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut ts.list)
+            .into_iter()
+            .partition(|t| ids.contains(&t.id) && Some(t.id) != host);
+        moved.iter_mut().for_each(|t| t.group = group);
+        ts.list = rest;
+        let at = (host.and_then(|h| ts.list.iter().position(|t| t.id == h)))
+            .map_or(ts.list.len(), |i| i + 1);
+        ts.list.splice(at..at, moved);
+        if let Some(&first) = ids.first() {
+            self.activate_terminal(first, window, cx);
+        }
+    }
+
     /// A tab dropped on a terminal: it leaves its group to split beside that
     /// one, before or `after` it, and becomes active.
     fn join_terminal(
@@ -1757,6 +1815,8 @@ impl Workbench {
                 (true, false) => "└",
             };
             let active = ix == self.terminals.active;
+            let picked = self.terminals.picked.contains(&id);
+            let joins = picked && self.terminals.picked.len() > 1;
             h_flex()
                 .id(("terminal-tab", id as usize))
                 .h(px(22.))
@@ -1765,8 +1825,8 @@ impl Workbench {
                 .pr(px(4.))
                 .gap(px(6.))
                 .cursor_pointer()
-                .when(active, |d| d.bg(col::selected()))
-                .when(!active, |d| d.hover(|s| s.bg(col::hover())))
+                .when(active || picked, |d| d.bg(col::selected()))
+                .when(!active && !picked, |d| d.hover(|s| s.bg(col::hover())))
                 .child(div().w(px(8.)).text_color(col::fg_muted()).child(tree))
                 .child(tab_icon(t))
                 .child(div().flex_1().min_w_0().truncate().child(t.name.clone()))
@@ -1780,9 +1840,9 @@ impl Workbench {
                         ),
                     )
                 })
-                .on_click(
-                    cx.listener(move |this, _, window, cx| this.activate_terminal(id, window, cx)),
-                )
+                .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
+                    this.click_tab(id, ev.modifiers(), window, cx)
+                }))
                 .on_drag(DraggedTab(id, t.name.clone().into()), |tab, _, _, cx| {
                     cx.new(|_| tab.clone())
                 })
@@ -1790,7 +1850,7 @@ impl Workbench {
                 .on_drop(cx.listener(move |this, tab: &DraggedTab, _, cx| {
                     this.move_terminal(tab.0, id, cx)
                 }))
-                .context_menu(move |menu, _, _| tab_menu(menu, &wb, id, !tree.is_empty()))
+                .context_menu(move |menu, _, _| tab_menu(menu, &wb, id, !tree.is_empty(), joins))
         });
         v_flex()
             .w(px(TABS_W))
@@ -1818,7 +1878,7 @@ impl Workbench {
             .child(tab_icon(t))
             .child(t.name.clone())
             .on_click(cx.listener(move |this, _, w, cx| this.activate_terminal(id, w, cx)))
-            .context_menu(move |menu, _, _| tab_menu(menu, &wb, id, false));
+            .context_menu(move |menu, _, _| tab_menu(menu, &wb, id, false, false));
         Some(tab)
     }
 
@@ -2122,8 +2182,9 @@ impl Workbench {
             .child(
                 canvas(
                     move |b, window, _| {
+                        // A refresh mid-draw is lost; redraw on the next frame.
                         if bounds.replace(b) != b {
-                            window.refresh();
+                            window.request_animation_frame();
                         }
                     },
                     move |b, _, window, _| {
@@ -2207,8 +2268,15 @@ impl Workbench {
 }
 
 /// A terminal tab's right-click menu. Each item acts on that terminal, made
-/// active first as in VS Code. A `split` one can be unsplit.
-fn tab_menu(menu: PopupMenu, wb: &WeakEntity<Workbench>, id: u64, split: bool) -> PopupMenu {
+/// active first as in VS Code. A `split` one can be unsplit; one of several
+/// selected `joins` them.
+fn tab_menu(
+    menu: PopupMenu,
+    wb: &WeakEntity<Workbench>,
+    id: u64,
+    split: bool,
+    joins: bool,
+) -> PopupMenu {
     type Act = fn(&mut Workbench, u64, &mut Window, &mut Context<Workbench>);
     let item = |label: &'static str, act: Act| {
         let wb = wb.clone();
@@ -2233,6 +2301,15 @@ fn tab_menu(menu: PopupMenu, wb: &WeakEntity<Workbench>, id: u64, split: bool) -
         this.rename_terminal(w, cx)
     }))
     .separator()
+    .when(joins, |menu| {
+        let wb = wb.clone();
+        menu.item(
+            PopupMenuItem::new("Join Terminals").on_click(move |_, window, cx| {
+                wb.update(cx, |this, cx| this.join_terminals(window, cx))
+                    .ok();
+            }),
+        )
+    })
     .when(split, |menu| {
         menu.item(item("Unsplit Terminal", |this, _, w, cx| {
             this.unsplit_terminal(w, cx)
