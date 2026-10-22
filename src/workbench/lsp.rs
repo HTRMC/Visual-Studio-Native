@@ -520,8 +520,14 @@ impl Workbench {
         }
     }
 
-    /// Format Document: the server's edits to the active file, as one undo step.
-    pub(super) fn format_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Format Document, or Format Selection (the cursor's line when nothing
+    /// is selected): the server's edits to the active file, as one undo step.
+    pub(super) fn format_document(
+        &mut self,
+        selection: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(doc) = self.docs.get(self.active) else {
             return;
         };
@@ -533,13 +539,23 @@ impl Workbench {
             return;
         };
         let (editor, before) = (doc.editor.clone(), doc.editor.read(cx).value());
-        let reply = server.request(
-            "textDocument/formatting",
-            json!({
-                "textDocument": { "uri": path_uri(&doc.path) },
-                "options": { "tabSize": doc.indent.tab_size, "insertSpaces": !doc.indent.hard_tabs },
-            }),
-        );
+        let mut params = json!({
+            "textDocument": { "uri": path_uri(&doc.path) },
+            "options": { "tabSize": doc.indent.tab_size, "insertSpaces": !doc.indent.hard_tabs },
+        });
+        let mut method = "textDocument/formatting";
+        if selection {
+            let e = editor.read(cx);
+            let sel = e.selected_range();
+            let [mut start, mut end] = [sel.start, sel.end].map(|o| e.text().offset_to_position(o));
+            if start == end {
+                start.character = 0;
+                (end.line, end.character) = (end.line + 1, 0);
+            }
+            params["range"] = json!({ "start": start, "end": end });
+            method = "textDocument/rangeFormatting";
+        }
+        let reply = server.request(method, params);
         cx.spawn_in(window, async move |_, cx| {
             let reply = reply.await.unwrap_or_default();
             let Ok(edits) = serde_json::from_value::<Vec<lsp_types::TextEdit>>(reply) else {
@@ -758,6 +774,7 @@ impl Workbench {
                         "completion": { "completionItem": { "snippetSupport": false } },
                         "definition": { "linkSupport": true },
                         "formatting": {},
+                        "rangeFormatting": {},
                         "codeAction": { "codeActionLiteralSupport": { "codeActionKind": {
                             "valueSet": ["", "quickfix", "refactor", "refactor.extract",
                                 "refactor.inline", "refactor.rewrite", "source",

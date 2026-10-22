@@ -484,7 +484,8 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [x] Format Document (Shift+Alt+F) from language servers, as one undo step.
 - [x] Code actions (Ctrl+.) from language servers and extensions, applied as one undo step.
 - [ ] Code actions: edits to other files, `documentChanges`, file operations, `workspace/applyEdit` and `codeAction/resolve` are dropped; no lightbulb.
-- [ ] Format Selection, format on save/type, rename, references, signature help and document symbols from language servers.
+- [x] Format Selection (Ctrl+K Ctrl+F; the cursor's line when nothing is selected) from language servers and extensions.
+- [ ] Format on save/type, rename, references, signature help and document symbols from language servers.
 - [ ] Completion ignores the server's trigger characters and snippets (`snippetSupport` is off).
 - [ ] Problems panel: collapsing a file, filter, related information, and the Explorer's red file decorations.
 - [x] A crashed language server restarts and reopens its files, up to 5 times.

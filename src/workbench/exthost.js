@@ -544,7 +544,7 @@ async function provide(method, params) {
     return c && vscodeCommands.executeCommand(c.command, ...(c.arguments || []));
   }
   const doc = documents.get(params.textDocument.uri);
-  let feature = { 'textDocument/hover': 'hover', 'textDocument/completion': 'completion', 'textDocument/definition': 'definition', 'textDocument/formatting': 'formatting', 'textDocument/codeAction': 'codeAction' }[method];
+  let feature = { 'textDocument/hover': 'hover', 'textDocument/completion': 'completion', 'textDocument/definition': 'definition', 'textDocument/formatting': 'formatting', 'textDocument/rangeFormatting': 'rangeFormatting', 'textDocument/codeAction': 'codeAction' }[method];
   const find = (f) => doc && f && providers[f].find((p) => match(p.selector, doc));
   let entry = find(feature);
   // Format Document falls back on formatting the whole range.
@@ -571,8 +571,8 @@ async function provide(method, params) {
       return r && r.map((e) => ({ range: lspRange(e.range), newText: e.newText }));
     }
     case 'rangeFormatting': {
-      const all = new Range(new Position(0, 0), doc.positionAt(doc._text.length));
-      const r = await p.provideDocumentRangeFormattingEdits(doc, all, params.options, token);
+      const range = params.range ? vsRange(params.range) : new Range(new Position(0, 0), doc.positionAt(doc._text.length));
+      const r = await p.provideDocumentRangeFormattingEdits(doc, doc.validateRange(range), params.options, token);
       return r && r.map((e) => ({ range: lspRange(e.range), newText: e.newText }));
     }
     case 'codeAction': {

@@ -168,8 +168,8 @@ there.
    so the Zig extension's own zls serves hover, completion, definition,
    formatting and diagnostics. Code actions (Ctrl+.) on both paths: quick
    fixes for the diagnostics under the cursor, their edits to this file and
-   their commands. *Left:* range formatting, rename, references and signature
-   help, on both paths.
+   their commands. Format Selection (Ctrl+K Ctrl+F). *Left:* rename,
+   references and signature help, on both paths.
 5. **WASM host.** wasmtime, a WIT world generated from the core API, and a
    sample plugin in Rust.
 
