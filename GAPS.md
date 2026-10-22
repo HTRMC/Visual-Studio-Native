@@ -213,7 +213,8 @@ Differences from VS Code still to close, smallest first within each area.
       reveals it on a switch).
 - [x] Double-clicking the tab strip's empty space doesn't open a new
       untitled file, as VS Code's does.
-- [ ] Middle-clicking a tab doesn't close it, as VS Code's does.
+- [x] Middle-clicking a tab doesn't close it, as VS Code's does.
+- [ ] Hovering a tab shows no tooltip with the file's full path.
 - [x] Go menu: Back/Forward (Alt+Left/Right, the title bar arrows) and
       Last Edit Location (Ctrl+K Ctrl+Q) were placeholders.
 - [ ] Go to Symbol in Workspace (Ctrl+T) is still a placeholder.

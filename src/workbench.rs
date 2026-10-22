@@ -2145,6 +2145,11 @@ impl Workbench {
                         })),
                 )
                 .on_click(cx.listener(move |this, _, window, cx| this.activate(ix, window, cx)))
+                .on_aux_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
+                    if ev.is_middle_click() {
+                        this.close(ix, window, cx);
+                    }
+                }))
                 .context_menu({
                     let (wb, editor) = (wb.clone(), doc.editor.clone());
                     let last = ix + 1 == self.docs.len();
