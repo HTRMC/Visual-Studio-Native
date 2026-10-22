@@ -1041,7 +1041,11 @@ impl Workbench {
     // ---- activity bar ------------------------------------------------------
 
     fn render_activitybar(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let item = |id: &'static str, ch: char, view: Option<View>, cx: &mut Context<Self>| {
+        let item = |id: &'static str,
+                    ch: char,
+                    tip: &'static str,
+                    view: Option<View>,
+                    cx: &mut Context<Self>| {
             let active = self.sidebar && view == Some(self.view);
             div()
                 .id(id)
@@ -1065,6 +1069,7 @@ impl Workbench {
                     )
                 })
                 .child(codicon(ch).text_size(px(24.)).line_height(px(24.)))
+                .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
                 .when_some(view, |d, view| {
                     d.on_click(cx.listener(move |this, _, _, cx| this.show(view, cx)))
                 })
@@ -1080,21 +1085,46 @@ impl Workbench {
             .border_color(col::border())
             .child(
                 v_flex()
-                    .child(item("act-explorer", icon::FILES, Some(View::Explorer), cx))
-                    .child(item("act-search", icon::SEARCH, Some(View::Search), cx))
-                    .child(item("act-scm", icon::SOURCE_CONTROL, Some(View::Scm), cx))
-                    .child(item("act-run", icon::DEBUG_ALT, Some(View::Run), cx))
+                    .child(item(
+                        "act-explorer",
+                        icon::FILES,
+                        "Explorer (Ctrl+Shift+E)",
+                        Some(View::Explorer),
+                        cx,
+                    ))
+                    .child(item(
+                        "act-search",
+                        icon::SEARCH,
+                        "Search (Ctrl+Shift+F)",
+                        Some(View::Search),
+                        cx,
+                    ))
+                    .child(item(
+                        "act-scm",
+                        icon::SOURCE_CONTROL,
+                        "Source Control (Ctrl+Shift+G)",
+                        Some(View::Scm),
+                        cx,
+                    ))
+                    .child(item(
+                        "act-run",
+                        icon::DEBUG_ALT,
+                        "Run and Debug (Ctrl+Shift+D)",
+                        Some(View::Run),
+                        cx,
+                    ))
                     .child(item(
                         "act-ext",
                         icon::EXTENSIONS,
+                        "Extensions (Ctrl+Shift+X)",
                         Some(View::Extensions),
                         cx,
                     )),
             )
             .child(
                 v_flex()
-                    .child(item("act-account", icon::ACCOUNT, None, cx))
-                    .child(item("act-manage", icon::SETTINGS_GEAR, None, cx)),
+                    .child(item("act-account", icon::ACCOUNT, "Accounts", None, cx))
+                    .child(item("act-manage", icon::SETTINGS_GEAR, "Manage", None, cx)),
             )
     }
 

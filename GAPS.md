@@ -106,7 +106,10 @@ Differences from VS Code still to close, smallest first within each area.
       center's list.
 - [x] The bell's tooltip ("No Notifications", "1 New Notification").
 - [x] Tooltips on the status bar items.
-- [ ] Tooltips on the activity bar and the title-bar/panel action buttons.
+- [x] Tooltips on the activity bar ("Explorer (Ctrl+Shift+E)", ...).
+- [ ] Tooltips on the title-bar, side bar, editor and panel action buttons.
+- [ ] Activity bar tooltips show under the mouse; VS Code puts them to the
+      right of the bar with a pointer.
 - [x] Clicking Ln/Col opens Go to Line; so do Ctrl+G and the Go menu
       (Ctrl+Shift+O and the menu open Go to Symbol in Editor). In the
       terminal both keys still reach the shell, as in VS Code.
