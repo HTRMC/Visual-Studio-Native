@@ -113,8 +113,10 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Clicking LF/CRLF (or Change End of Line Sequence) picks the line
       endings; undo brings the old ones back.
 - [ ] Clicking Spaces/encoding/language opens their pickers.
-- [ ] Undoing back to the saved text leaves the tab dirty (VS Code clears
+- [x] Undoing back to the saved text leaves the tab dirty (VS Code clears
       the dot).
+- [ ] A file changed on disk while open isn't noticed (VS Code reloads a
+      clean editor, and asks before overwriting a dirty one on save).
 - [x] Enter in a CRLF file inserts a bare LF; saving now writes the file's
       one ending throughout, and the label goes by most endings.
 - [x] New untitled files start LF; VS Code's files.eol "auto" makes them

@@ -207,6 +207,9 @@ struct Doc {
     path: PathBuf,
     editor: Entity<EditorState>,
     dirty: bool,
+    /// [`text_hash`] of the text as last opened or saved: an edit back to it
+    /// clears `dirty`, as undoing to the saved text does in VS Code.
+    saved: u64,
     crlf: bool,
     /// Opened without line breaks, so `crlf` is VS Code's files.eol "auto"
     /// (CRLF on Windows) and Enter's bare LFs don't overrule it.
@@ -225,6 +228,16 @@ enum Encoding {
     Utf8Bom,
     Utf16Le,
     Utf16Be,
+}
+
+/// A hash of an editor's text, to tell whether it's back to the saved text.
+fn text_hash(editor: &Entity<EditorState>, cx: &App) -> u64 {
+    use std::hash::Hasher;
+    let mut h = std::hash::DefaultHasher::new();
+    for chunk in editor.read(cx).text().chunks() {
+        h.write(chunk.as_bytes());
+    }
+    h.finish()
 }
 
 /// `text` with every line ending made CRLF or LF, as VS Code keeps one
@@ -427,6 +440,7 @@ impl Workbench {
         let editor = self.new_editor(&path, text, window, cx);
         self.docs.push(Doc {
             path,
+            saved: text_hash(&editor, cx),
             editor,
             dirty: false,
             crlf,
@@ -462,6 +476,7 @@ impl Workbench {
         let path = self.docs[ix].path.clone();
         let editor = self.new_editor(&path, text, window, cx);
         let doc = &mut self.docs[ix];
+        doc.saved = text_hash(&editor, cx);
         doc.editor = editor;
         doc.binary = false;
         self.activate(ix, window, cx);
@@ -490,7 +505,9 @@ impl Workbench {
             if matches!(ev, InputEvent::Change)
                 && let Some(doc) = this.docs.iter_mut().find(|d| d.editor == editor)
             {
-                doc.dirty = true;
+                // ponytail: hashes the whole text per edit; keep a saved
+                // undo version instead if huge files lag.
+                doc.dirty = text_hash(&editor, cx) != doc.saved;
                 // Most endings decide, as Enter inserts a bare LF and undoing
                 // Change End of Line Sequence brings the old endings back.
                 let text = editor.read(cx).text();
@@ -542,7 +559,10 @@ impl Workbench {
         }
         let text = with_eol(&doc.editor.read(cx).value(), doc.crlf);
         match fs::write(&doc.path, doc.encoding.encode(&text)) {
-            Ok(()) => doc.dirty = false,
+            Ok(()) => {
+                doc.dirty = false;
+                doc.saved = text_hash(&doc.editor, cx);
+            }
             Err(err) => eprintln!("save {}: {err}", doc.path.display()),
         }
         cx.notify();
@@ -573,6 +593,7 @@ impl Workbench {
                 }
                 let editor = this.new_editor(&path, text, window, cx);
                 let doc = &mut this.docs[ix];
+                doc.saved = text_hash(&editor, cx);
                 doc.editor = editor;
                 doc.path = path;
                 doc.untitled = false;
