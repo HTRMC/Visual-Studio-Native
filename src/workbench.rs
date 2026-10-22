@@ -4227,7 +4227,8 @@ impl Workbench {
                         .relative()
                         .with_animation(
                             SharedString::from(format!("toast-in {message}")),
-                            Animation::new(Duration::from_millis(300)).with_easing(ease_in_out),
+                            Animation::new(Duration::from_millis(300))
+                                .with_easing(|t| 1. - (1. - t).powi(2)),
                             |toast, d| toast.top(px(50. * (1. - d))).opacity(d),
                         ),
                 )

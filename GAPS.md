@@ -298,7 +298,8 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Ctrl+K Ctrl+D (Move Last Selection to Next Find Match) was missing;
       it's in the palette too, and Ctrl+D skips matches already selected.
 - [ ] The occurrence commands only know the selections they added; ones
-      from Alt+Click or Add Cursor aren't skipped or moved.
+      from Alt+Click or Add Cursor aren't skipped or moved (gpui-base has no
+      way to read an editor's other selections).
 - [x] Selection > Add Previous Occurrence was missing; it's in the menu
       and the palette (Add Selection To Previous Find Match).
 - [x] Selection > Expand/Shrink Selection were inert; they and
@@ -430,4 +431,3 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] A queued toast that comes into view may hide sooner than a full 18
       seconds.
 - [x] Toasts appeared without VS Code's slide-in; they now fade in from below.
-- [ ] A closed toast vanishes at once; VS Code fades it out.
