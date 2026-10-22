@@ -1039,11 +1039,21 @@ impl Workbench {
         }
     }
 
-    pub(super) fn set_terminal_icon(&mut self, id: u64, icon: char, cx: &mut Context<Self>) {
-        if let Some(t) = self.terminal(id) {
-            t.icon = icon;
-            cx.notify();
+    /// A tab's menu acts on every selected tab when it's one of them.
+    fn targets(&self, id: u64) -> Vec<u64> {
+        match self.terminals.picked.contains(&id) {
+            true => self.terminals.picked.clone(),
+            false => vec![id],
         }
+    }
+
+    pub(super) fn set_terminal_icon(&mut self, id: u64, icon: char, cx: &mut Context<Self>) {
+        for id in self.targets(id) {
+            if let Some(t) = self.terminal(id) {
+                t.icon = icon;
+            }
+        }
+        cx.notify();
     }
 
     pub(super) fn set_terminal_color(
@@ -1052,10 +1062,12 @@ impl Workbench {
         color: Option<usize>,
         cx: &mut Context<Self>,
     ) {
-        if let Some(t) = self.terminal(id) {
-            t.color = color;
-            cx.notify();
+        for id in self.targets(id) {
+            if let Some(t) = self.terminal(id) {
+                t.color = color;
+            }
         }
+        cx.notify();
     }
 
     /// Output from a shell; true once it exited.
@@ -1412,6 +1424,7 @@ impl Workbench {
         let focused = self.terminal_focused(window);
         let was = self.active_id();
         self.terminals.list.remove(ix);
+        self.terminals.picked.retain(|&p| p != id);
         let list = &self.terminals.list;
         let active = &mut self.terminals.active;
         if *active > ix || *active == list.len() {
@@ -2316,7 +2329,11 @@ fn tab_menu(
         }))
         .separator()
     })
-    .item(item("Kill Terminal", Workbench::kill_terminal))
+    .item(item("Kill Terminal", |this, id, w, cx| {
+        for id in this.targets(id) {
+            this.kill_terminal(id, w, cx)
+        }
+    }))
 }
 
 /// A terminal tab being dragged: its id, and its name to draw under the mouse.

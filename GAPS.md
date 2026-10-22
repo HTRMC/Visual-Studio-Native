@@ -59,8 +59,10 @@ Differences from VS Code still to close, smallest first within each area.
       output.
 - [ ] Terminal: Join Terminals from the palette: a multi-pick of terminals to
       join with the active one.
-- [ ] Kill Terminal and Change Color/Icon on a multi-selection act on every
+- [x] Kill Terminal and Change Color/Icon on a multi-selection act on every
       selected tab.
+- [ ] Rename... on a multi-selection renames every selected tab (VS Code
+      asks once and applies the name to all).
 - [x] Terminal: Toggle Size to Content Width (Alt+Z) stops wrapping at the
       panel's width; Shift+wheel scrolls sideways.
 - [x] The sideways scrollbar's thumb can be dragged, and shows while the
