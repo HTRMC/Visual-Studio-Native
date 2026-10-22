@@ -80,6 +80,7 @@ actions!(
         OpenView,
         GoToLine,
         GoToSymbol,
+        GoToSymbolInWorkspace,
         GoBack,
         GoForward,
         GoToLastEditLocation,
@@ -208,6 +209,7 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-q", OpenView, None),
         KeyBinding::new("ctrl-g", GoToLine, None),
         KeyBinding::new("ctrl-shift-o", GoToSymbol, None),
+        KeyBinding::new("ctrl-t", GoToSymbolInWorkspace, None),
         // VS Code sends these two to the shell rather than skipping it.
         KeyBinding::new("ctrl-g", NoAction, Some("Terminal")),
         KeyBinding::new("ctrl-shift-o", NoAction, Some("Terminal")),
@@ -4508,6 +4510,9 @@ impl Render for Workbench {
             .on_action(
                 cx.listener(|this, _: &GoToSymbol, window, cx| this.open_palette("@", window, cx)),
             )
+            .on_action(cx.listener(|this, _: &GoToSymbolInWorkspace, window, cx| {
+                this.open_palette("#", window, cx)
+            }))
             .on_action(cx.listener(|this, _: &CommandPalette, window, cx| {
                 this.open_palette(">", window, cx)
             }))
@@ -4976,7 +4981,10 @@ fn app_menu(
             })
             .separator()
             .menu("Go to File...", Box::new(QuickOpen))
-            .menu("Go to Symbol in Workspace...", noop())
+            .menu(
+                "Go to Symbol in Workspace...",
+                Box::new(GoToSymbolInWorkspace),
+            )
             .separator()
             .menu("Go to Symbol in Editor...", Box::new(GoToSymbol))
             .menu("Go to Definition", Box::new(input::GoToDefinition))

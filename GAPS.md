@@ -256,8 +256,8 @@ Differences from VS Code still to close, smallest first within each area.
       active one as VS Code does.
 - [ ] Still-inert menu entries: Open Recent > More..., Preferences >
       Keyboard Shortcuts / Themes; View > Editor Layout > Split Up/Down;
-      Go to Symbol in Workspace...; Run > Open/Add Configuration..., Run
-      Task..., Run Build Task...; Help's entries.
+      Run > Open/Add Configuration..., Run Task..., Run Build Task...;
+      Help's entries.
 - [x] Edit and Selection menu entries (Undo, Cut, Select All...) never
       reached the editor and showed no shortcuts; they now go to whatever
       had focus when the menu opened. Selection > Add Cursor Above/Below
@@ -396,7 +396,15 @@ Differences from VS Code still to close, smallest first within each area.
       VS Code's drag image does.
 - [x] Go menu: Back/Forward (Alt+Left/Right, the title bar arrows) and
       Last Edit Location (Ctrl+K Ctrl+Q) were placeholders.
-- [ ] Go to Symbol in Workspace (Ctrl+T) is still a placeholder.
+- [x] Go to Symbol in Workspace (Ctrl+T, `#` in Quick Open, the Go menu,
+      the palette) lists every workspace file's definitions by fuzzy name
+      and opens the picked one.
+- [ ] Workspace symbols are tree-sitter definitions parsed again on each
+      Ctrl+T (no index, no progress bar while parsing; files over 1 MB
+      skipped), only the best 50 show, rows lack the container name, and
+      there's no preview; VS Code asks language servers.
+- [ ] Jumping to a line (Go to Symbol, `file:line`) puts it at the
+      viewport's edge; VS Code centers it.
 - [x] The mouse's back/forward side buttons didn't navigate.
 - [x] Go menu: Switch Editor's Next/Previous Editor (Ctrl+PageDown/Up).
 - [ ] Go menu's other navigation entries (Next/Previous Used Editor's

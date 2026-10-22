@@ -1,6 +1,7 @@
 //! Quick Open (Ctrl+P) and the Command Palette (Ctrl+Shift+P): one popup, and
 //! like VS Code a leading `>` switches it to commands, `@` to symbols in the
-//! active editor and `:` to a line (`file:line:col` jumps into a file).
+//! active editor, `#` to symbols in the workspace and `:` to a line
+//! (`file:line:col` jumps into a file).
 
 use std::{
     cmp::Ordering,
@@ -100,6 +101,10 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("View: Toggle Terminal", Box::new(ToggleTerminal)),
         ("Go to Line/Column...", Box::new(GoToLine)),
         ("Go to Symbol in Editor...", Box::new(GoToSymbol)),
+        (
+            "Go to Symbol in Workspace...",
+            Box::new(GoToSymbolInWorkspace),
+        ),
         ("View: Open View", Box::new(OpenView)),
         (
             "Notifications: Show Notifications",
@@ -265,6 +270,8 @@ enum Pick {
     Line(u32, u32, String),
     /// Index into the defs, with the offsets matched in its name and container.
     Symbol(usize, Vec<usize>, Vec<usize>),
+    /// Index into the workspace's defs, with the offsets matched in its name.
+    WorkspaceSymbol(usize, Vec<usize>),
     /// Index into the profiles of Select Default Profile, and the matched offsets.
     Profile(usize, Vec<usize>),
     /// Index into the terminal colors, or None to reset, and the matched offsets.
@@ -374,6 +381,9 @@ pub(super) struct Palette {
     recent: Vec<String>,
     /// Symbols of the active editor, parsed on the first `@` query.
     defs: Option<Vec<Def>>,
+    /// Symbols of every workspace file with its path, parsed on the first
+    /// `#` query.
+    ws_defs: Option<Arc<Vec<(String, Def)>>>,
     /// Set while the palette is Select Default Profile's pick list.
     profiles: Option<Vec<Profile>>,
     /// Set while the palette is Terminal: Rename's input, to the terminal's id.
@@ -442,6 +452,7 @@ impl Palette {
             recent: serde_json::from_value(state["commands"].clone()).unwrap_or_default(),
             dnd: state["doNotDisturb"].as_bool().unwrap_or_default(),
             defs: None,
+            ws_defs: None,
             profiles: None,
             renaming: None,
             coloring: None,
@@ -1515,6 +1526,31 @@ fn byte_offsets(s: &str, chars: Vec<usize>) -> Vec<usize> {
         .collect()
 }
 
+/// Every workspace file's definitions, with its path relative to `root`.
+// ponytail: parses the whole workspace on each Go to Symbol in Workspace,
+// skipping files over 1 MB; VS Code asks language servers, which keep an index.
+fn workspace_defs(
+    root: &Path,
+    settings: &serde_json::Value,
+    files: &[String],
+) -> Vec<(String, Def)> {
+    let read = |path: &Path| {
+        let small = fs::metadata(path).is_ok_and(|m| m.len() < 1 << 20);
+        small.then(|| fs::read_to_string(path).ok()).flatten()
+    };
+    files
+        .iter()
+        .flat_map(|rel| {
+            let path = root.join(rel);
+            let lang = search::associated_language(settings, root, &path)
+                .unwrap_or_else(|| language_id(&path));
+            let text = (lang != "plaintext").then(|| read(&path)).flatten();
+            let defs = text.map(|text| defs(&editor_language(lang), &text));
+            defs.into_iter().flatten().map(move |d| (rel.clone(), d))
+        })
+        .collect()
+}
+
 /// VS Code's Go to Symbol: `@name` by score, `@:name` grouped by kind. With
 /// spaces, the first word matches the name and the rest the container, unless
 /// the whole query matches the name. Returns the picks, their groups and, for
@@ -1750,6 +1786,7 @@ impl Workbench {
             p.open = true;
         }
         p.defs = None;
+        p.ws_defs = None;
         p.profiles = None;
         p.renaming = None;
         p.coloring = None;
@@ -2449,6 +2486,55 @@ impl Workbench {
             return;
         }
 
+        if let Some(q) = query.strip_prefix('#') {
+            let Some(ws) = p.ws_defs.clone() else {
+                // Parsed once the file walk is done; the list fills then.
+                if let (None, None, false) = (&p.parse, &p.walk, p.stale) {
+                    let root = self.root.clone().unwrap_or_default();
+                    let files = p.files.clone();
+                    let settings = super::terminal::settings();
+                    p.parse = Some(cx.spawn(async move |this, cx| {
+                        let ws = cx
+                            .background_spawn(
+                                async move { workspace_defs(&root, &settings, &files) },
+                            )
+                            .await;
+                        this.update(cx, |this, cx| {
+                            this.palette.ws_defs = Some(Arc::new(ws));
+                            let query = this.palette.query.clone();
+                            this.palette_query(query, cx);
+                        })
+                        .ok();
+                    }));
+                }
+                p.empty = SharedString::default();
+                p.show(Vec::new(), Vec::new(), 0);
+                return;
+            };
+            let q = q.trim();
+            let mut scored: Vec<_> = (ws.iter().enumerate())
+                .filter_map(|(ix, (_, d))| {
+                    if q.is_empty() {
+                        return Some((0, ix, Vec::new()));
+                    }
+                    // Scored like `@` names: `$(icon) name`.
+                    let (s, hits) = fuzzy_score(q, &format!(" {}", d.name), 1)?;
+                    Some((s, ix, byte_offsets(&d.name, hits)))
+                })
+                .collect();
+            scored.sort_by_key(|&(s, ix, _)| (-s, ix));
+            let shown = scored.into_iter().take(SHOWN);
+            p.empty = "No matching workspace symbols".into();
+            p.show(
+                shown
+                    .map(|(_, ix, hits)| Pick::WorkspaceSymbol(ix, hits))
+                    .collect(),
+                Vec::new(),
+                0,
+            );
+            return;
+        }
+
         if let Some(q) = query.strip_prefix('@') {
             let Some(doc) = active else {
                 p.empty =
@@ -2602,6 +2688,11 @@ impl Workbench {
             Some(Pick::Symbol(ix, ..)) => {
                 let def = &p.defs.as_ref().unwrap()[*ix];
                 (None, Some((def.line, def.col)))
+            }
+            Some(Pick::WorkspaceSymbol(ix, _)) => {
+                let (rel, def) = &p.ws_defs.as_ref().unwrap()[*ix];
+                let root = self.root.clone().unwrap_or_default();
+                (Some(root.join(rel)), Some((def.line, def.col)))
             }
             Some(&Pick::Command(ix, _)) => {
                 let (label, action) = commands().swap_remove(ix);
@@ -2781,6 +2872,7 @@ impl Workbench {
             .placeholder(placeholder);
         let commands = commands();
         let defs = p.defs.as_deref().unwrap_or_default();
+        let ws_defs = p.ws_defs.as_deref().map_or(&[][..], |w| w.as_slice());
         let profiles = p.profiles.as_deref().unwrap_or_default();
         for (ix, pick) in p.shown.iter().enumerate() {
             let group = p
@@ -2871,6 +2963,15 @@ impl Workbench {
                     Row {
                         desc: container.unwrap_or_default().into(),
                         desc_hits: container_hits.clone(),
+                        ..row(RowIcon::Symbol(ch, color), &def.name, hits)
+                    }
+                    .item()
+                }
+                Pick::WorkspaceSymbol(ix, hits) => {
+                    let (rel, def) = &ws_defs[*ix];
+                    let (ch, color) = symbol_icon(def.kind);
+                    Row {
+                        desc: rel.clone().into(),
                         ..row(RowIcon::Symbol(ch, color), &def.name, hits)
                     }
                     .item()
@@ -2999,7 +3100,28 @@ mod tests {
     use super::{
         Pick, command_matches, defs, fuzzy_score, goto_line, highlights, prepare_query, rank_files,
         rank_symbols, reindent, score_fuzzy, split_line, status_column, trim_trailing,
+        workspace_defs,
     };
+
+    #[test]
+    fn workspace_symbols() {
+        let root = std::env::temp_dir().join("vsn-workspace-defs");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.rs"), "fn alpha() {}\n").unwrap();
+        std::fs::write(root.join("b.txt"), "fn beta() {}\n").unwrap();
+        let files = [
+            "a.rs".to_string(),
+            "b.txt".to_string(),
+            "gone.rs".to_string(),
+        ];
+        let got = workspace_defs(&root, &serde_json::Value::Null, &files);
+        std::fs::remove_dir_all(&root).ok();
+        let got: Vec<_> = got
+            .iter()
+            .map(|(rel, d)| (rel.as_str(), d.name.as_str()))
+            .collect();
+        assert_eq!(got, [("a.rs", "alpha")]);
+    }
 
     #[test]
     fn indentation() {
