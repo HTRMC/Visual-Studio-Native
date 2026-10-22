@@ -169,8 +169,8 @@ there.
    formatting and diagnostics. Code actions (Ctrl+.) on both paths: quick
    fixes for the diagnostics under the cursor, their edits across files and
    their commands. Format Selection (Ctrl+K Ctrl+F). Rename Symbol (F2),
-   its new name asked for in the palette. *Left:* references and signature
-   help, on both paths.
+   its new name asked for in the palette. Find All References (Shift+F12),
+   a pick list grouped by file. *Left:* signature help, on both paths.
 5. **WASM host.** wasmtime, a WIT world generated from the core API, and a
    sample plugin in Rust.
 

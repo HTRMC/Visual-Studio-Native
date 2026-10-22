@@ -204,6 +204,7 @@ fn builtin_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("Format Document", Box::new(FormatDocument)),
         ("Format Selection", Box::new(FormatSelection)),
         ("Rename Symbol", Box::new(RenameSymbol)),
+        ("Find All References", Box::new(FindAllReferences)),
         ("Toggle Line Comment", Box::new(ToggleLineComment)),
         ("Add Line Comment", Box::new(AddLineComment)),
         ("Remove Line Comment", Box::new(RemoveLineComment)),
@@ -422,6 +423,8 @@ pub(super) enum Picker {
     /// `workbench.colorTheme` names.
     Theme(Vec<String>),
     Snippet(Vec<extensions::Snippet>),
+    /// Find All References' places.
+    Location(Vec<(PathBuf, Position)>),
 }
 
 pub(super) struct Palette {

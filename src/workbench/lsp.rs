@@ -646,22 +646,93 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let server = (self.lsp.servers.values().flatten())
-            .find(|s| s.open.lock().unwrap().contains_key(&path));
-        let Some(server) = server else {
+        let params =
+            json!({ "textDocument": { "uri": path_uri(&path) }, "position": at, "newName": name });
+        let Some(reply) = self.request_for(&path, "textDocument/rename", params) else {
             self.note("No result.".into(), Severity::Info, cx);
             return;
         };
-        let reply = server.request(
-            "textDocument/rename",
-            json!({ "textDocument": { "uri": path_uri(&path) }, "position": at, "newName": name }),
-        );
         cx.spawn_in(window, async move |this, cx| {
             let reply = reply.await.unwrap_or_default();
             let edit = serde_json::from_value::<Option<lsp_types::WorkspaceEdit>>(reply);
             this.update_in(cx, |this, window, cx| match edit {
                 Ok(Some(edit)) => this.apply_workspace_edit(edit, window, cx),
                 _ => this.note("No result.".into(), Severity::Info, cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Sends `method` to the server that has `path` open.
+    fn request_for(
+        &self,
+        path: &Path,
+        method: &str,
+        params: Value,
+    ) -> Option<oneshot::Receiver<Value>> {
+        (self.lsp.servers.values().flatten())
+            .find(|s| s.open.lock().unwrap().contains_key(path))
+            .map(|s| s.request(method, params))
+    }
+
+    /// Shift+F12: the symbol's references, a pick list grouped by file.
+    // ponytail: a pick list stands in for VS Code's peek view and References
+    // panel.
+    pub(super) fn find_references(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.get(self.active) else {
+            return;
+        };
+        let e = doc.editor.read(cx);
+        let at = e.text().offset_to_position(e.selected_range().start);
+        let params = json!({
+            "textDocument": { "uri": path_uri(&doc.path) },
+            "position": at,
+            "context": { "includeDeclaration": true },
+        });
+        let Some(reply) = self.request_for(&doc.path.clone(), "textDocument/references", params)
+        else {
+            self.note("No references found".into(), Severity::Info, cx);
+            return;
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            let reply = reply.await.unwrap_or_default();
+            let found = serde_json::from_value::<Option<Vec<lsp_types::Location>>>(reply);
+            this.update_in(cx, |this, window, cx| {
+                let mut found: Vec<_> = (found.ok().flatten().into_iter().flatten())
+                    .filter_map(|l| Some((uri_path(l.uri.as_str())?, l.range.start)))
+                    .collect();
+                if found.is_empty() {
+                    return this.note("No references found".into(), Severity::Info, cx);
+                }
+                found.sort_by_key(|(path, at)| (path.clone(), at.line, at.character));
+                let (mut rows, mut groups) = (Vec::new(), Vec::new());
+                let mut lines = Vec::new();
+                for (ix, (path, at)) in found.iter().enumerate() {
+                    if ix == 0 || found[ix - 1].0 != *path {
+                        let open = this.docs.iter().find(|d| d.path == *path);
+                        let text = match open {
+                            Some(d) => d.editor.read(cx).value().to_string(),
+                            None => fs::read_to_string(path).unwrap_or_default(),
+                        };
+                        lines = text.lines().map(str::to_string).collect();
+                        let name = path.file_name().unwrap_or_default().to_string_lossy();
+                        groups.push((ix, name.into_owned().into()));
+                    }
+                    let line = lines.get(at.line as usize).map_or("", |l| l.trim());
+                    rows.push((
+                        line.to_string(),
+                        format!("{}:{}", at.line + 1, at.character + 1),
+                    ));
+                }
+                let items = super::palette::Items {
+                    picker: super::palette::Picker::Location(found),
+                    rows,
+                    groups,
+                    placeholder: "Go to reference",
+                    current: 0,
+                };
+                this.open_items(items, window, cx);
             })
             .ok();
         })

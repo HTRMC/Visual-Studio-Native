@@ -1230,6 +1230,10 @@ impl Workbench {
             super::palette::Picker::Snippet(snippets) => {
                 self.expand_snippet(&snippets[ix], window, cx)
             }
+            super::palette::Picker::Location(mut places) => {
+                let (path, at) = places.swap_remove(ix);
+                self.go_to(path, at, window, cx);
+            }
         }
     }
 

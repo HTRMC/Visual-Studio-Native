@@ -245,7 +245,7 @@ const changed = new EventEmitter();
 const closed = new EventEmitter();
 const saved = new EventEmitter();
 // Each language feature's providers: { selector, provider }.
-const providers = { hover: [], completion: [], definition: [], formatting: [], rangeFormatting: [], codeAction: [], rename: [] };
+const providers = { hover: [], completion: [], definition: [], formatting: [], rangeFormatting: [], codeAction: [], rename: [], references: [] };
 
 // ---- the vscode API ----------------------------------------------------------
 
@@ -513,6 +513,7 @@ const vscodeLanguages = {
   registerDocumentRangeFormattingEditProvider: register('rangeFormatting'),
   registerCodeActionsProvider: register('codeAction'),
   registerRenameProvider: register('rename'),
+  registerReferenceProvider: register('references'),
   onDidChangeDiagnostics: never,
 };
 
@@ -547,7 +548,7 @@ async function provide(method, params) {
     return c && vscodeCommands.executeCommand(c.command, ...(c.arguments || []));
   }
   const doc = documents.get(params.textDocument.uri);
-  let feature = { 'textDocument/hover': 'hover', 'textDocument/completion': 'completion', 'textDocument/definition': 'definition', 'textDocument/formatting': 'formatting', 'textDocument/rangeFormatting': 'rangeFormatting', 'textDocument/codeAction': 'codeAction', 'textDocument/rename': 'rename' }[method];
+  let feature = { 'textDocument/hover': 'hover', 'textDocument/completion': 'completion', 'textDocument/definition': 'definition', 'textDocument/formatting': 'formatting', 'textDocument/rangeFormatting': 'rangeFormatting', 'textDocument/codeAction': 'codeAction', 'textDocument/rename': 'rename', 'textDocument/references': 'references' }[method];
   const find = (f) => doc && f && providers[f].find((p) => match(p.selector, doc));
   let entry = find(feature);
   // Format Document falls back on formatting the whole range.
@@ -588,6 +589,10 @@ async function provide(method, params) {
     }
     case 'rename':
       return lspWorkspaceEdit(await p.provideRenameEdits(doc, pos, params.newName, token));
+    case 'references': {
+      const r = await p.provideReferences(doc, pos, params.context, token);
+      return r && r.map((l) => ({ uri: l.uri.toString(), range: lspRange(l.range) }));
+    }
   }
   return null;
 }
