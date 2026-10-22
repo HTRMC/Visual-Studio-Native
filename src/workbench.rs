@@ -1635,7 +1635,9 @@ impl Workbench {
     // ---- status bar --------------------------------------------------------
 
     fn render_statusbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let item = |id: &'static str| {
+        /// A status bar entry with VS Code's tooltip.
+        fn item(id: &'static str, tip: impl Into<SharedString>) -> Stateful<Div> {
+            let tip = tip.into();
             h_flex()
                 .id(id)
                 .h_full()
@@ -1643,7 +1645,8 @@ impl Workbench {
                 .gap(px(4.))
                 .cursor_pointer()
                 .hover(|s| s.bg(col::status_hover()).text_color(col::fg()))
-        };
+                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+        }
 
         let mut right: Vec<AnyElement> = Vec::new();
         if let Some(doc) = self.docs.get(self.active).filter(|d| !d.binary) {
@@ -1653,19 +1656,19 @@ impl Workbench {
             let col = palette::status_column(&line, pos.character as usize);
             let lang = language_label(language_id(&doc.path));
             right.extend([
-                item("sb-pos")
+                item("sb-pos", "Go to Line/Column")
                     .child(format!("Ln {}, Col {col}", pos.line + 1))
                     .into_any_element(),
-                item("sb-indent")
+                item("sb-indent", "Select Indentation")
                     .child(format!("Spaces: {TAB_SIZE}"))
                     .into_any_element(),
-                item("sb-enc")
+                item("sb-enc", "Select Encoding")
                     .child(doc.encoding.label())
                     .into_any_element(),
-                item("sb-eol")
+                item("sb-eol", "Select End of Line Sequence")
                     .child(if doc.crlf { "CRLF" } else { "LF" })
                     .into_any_element(),
-                item("sb-lang")
+                item("sb-lang", "Select Language Mode")
                     .child(codicon(icon::CODE).text_size(px(14.)))
                     .child(lang)
                     .into_any_element(),
@@ -1680,7 +1683,7 @@ impl Workbench {
             (_, _, n) => format!("{n} New Notifications").into(),
         };
         right.push(
-            item("sb-bell")
+            item("sb-bell", bell_tip)
                 .child(
                     codicon(if self.unseen > 0 {
                         icon::BELL_DOT
@@ -1690,7 +1693,6 @@ impl Workbench {
                     .text_size(px(14.)),
                 )
                 .on_click(cx.listener(|this, _, _, cx| this.show_center(!this.center, cx)))
-                .tooltip(move |window, cx| Tooltip::new(bell_tip.clone()).build(window, cx))
                 .into_any_element(),
         );
 
@@ -1714,6 +1716,9 @@ impl Workbench {
                     .child(
                         h_flex()
                             .id("sb-remote")
+                            .tooltip(|window, cx| {
+                                Tooltip::new("Open a Remote Window").build(window, cx)
+                            })
                             .h_full()
                             .px(px(10.))
                             .bg(col::remote())
@@ -1723,14 +1728,17 @@ impl Workbench {
                     )
                     .when(self.root.is_some(), |d| {
                         d.child(
-                            item("sb-branch")
+                            item("sb-branch", "main, Checkout Branch/Tag...")
                                 .child(codicon(icon::SOURCE_CONTROL).text_size(px(14.)))
                                 .child("main"),
                         )
-                        .child(item("sb-sync").child(codicon(icon::SYNC).text_size(px(14.))))
+                        .child(
+                            item("sb-sync", "Synchronize Changes")
+                                .child(codicon(icon::SYNC).text_size(px(14.))),
+                        )
                     })
                     .child(
-                        item("sb-problems")
+                        item("sb-problems", "No Problems")
                             .child(codicon(icon::ERROR).text_size(px(14.)))
                             .child("0")
                             .child(codicon(icon::WARNING).text_size(px(14.)))
@@ -1743,7 +1751,7 @@ impl Workbench {
                     )
                     .when_some(debugging, |d, (name, _)| {
                         d.child(
-                            item("sb-debug")
+                            item("sb-debug", "Select and Start Debug Configuration")
                                 .child(codicon(icon::DEBUG_ALT_SMALL).text_size(px(14.)))
                                 .child(name)
                                 .on_click(cx.listener(|this, _, _, cx| this.show(View::Run, cx))),

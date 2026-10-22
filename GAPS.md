@@ -105,7 +105,9 @@ Differences from VS Code still to close, smallest first within each area.
 - [ ] Notifications: Focus Notification Toast, and arrow keys through the
       center's list.
 - [x] The bell's tooltip ("No Notifications", "1 New Notification").
-- [ ] Tooltips on the other status bar items, the activity bar, and the
-      title-bar/panel action buttons (only the bell has one).
+- [x] Tooltips on the status bar items.
+- [ ] Tooltips on the activity bar and the title-bar/panel action buttons.
+- [ ] Clicking a status bar item does what its tooltip says: Ln/Col opens
+      Go to Line, Spaces/encoding/EOL/language open their pickers.
 - [ ] Do Not Disturb (the center's bell-slash button).
 - [ ] Notifications: several toasts stacked (only one warning exists so far).
