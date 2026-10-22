@@ -142,9 +142,10 @@ Differences from VS Code still to close, smallest first within each area.
       severity (toasts are warnings only, without actions).
 - [x] A long notification ran past the toast's edge, pushing its close
       button out of view; it now wraps.
-- [ ] A notification's icon and close button centre on a wrapped message;
-      VS Code keeps them on its first line, and collapses long messages
-      behind a details chevron in the center.
+- [x] A notification's icon and close button centred on a wrapped message;
+      they now stay on its first line, as VS Code's do.
+- [ ] VS Code collapses a long notification to one line behind a details
+      chevron (expand/collapse); ours always shows it whole.
 - [ ] A settings.json that doesn't parse is ignored whole; VS Code's lenient
       JSONC parser keeps the values it can read and underlines the errors.
 - [x] The explorer draws indent guides while the mouse is over the tree.

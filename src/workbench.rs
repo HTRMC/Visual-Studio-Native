@@ -3262,18 +3262,21 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) -> Div {
         let gone = message.clone();
+        // Icon and close button stay on a wrapped message's first line, as VS Code's do.
         h_flex()
+            .items_start()
             .min_h(px(42.))
             .px(px(8.))
+            .py(px(8.))
             .gap(px(8.))
             // notificationsWarningIcon.foreground
-            .child(codicon(icon::WARNING).text_color(c(0xCCA700)))
+            .child(codicon(icon::WARNING).mt(px(5.)).text_color(c(0xCCA700)))
             // min width 0 lets a long message wrap instead of pushing out the close button.
             .child(
                 div()
                     .flex_1()
                     .min_w(px(0.))
-                    .py(px(6.))
+                    .py(px(4.))
                     .child(message.clone()),
             )
             .child(
