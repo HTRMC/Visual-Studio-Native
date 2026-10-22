@@ -855,7 +855,7 @@ impl Workbench {
                     picker: super::palette::Picker::Location(found),
                     rows,
                     groups,
-                    placeholder: "Go to reference",
+                    placeholder: "Go to reference".into(),
                     current: 0,
                 };
                 this.open_items(items, window, cx);

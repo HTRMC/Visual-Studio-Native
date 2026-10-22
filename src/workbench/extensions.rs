@@ -1174,7 +1174,7 @@ impl Workbench {
             picker: super::palette::Picker::Theme(names),
             rows,
             groups,
-            placeholder: "Select Color Theme",
+            placeholder: "Select Color Theme".into(),
             current,
         };
         self.open_items(items, window, cx);
@@ -1204,7 +1204,7 @@ impl Workbench {
             picker: super::palette::Picker::Snippet(snippets),
             rows,
             groups: Vec::new(),
-            placeholder: "Select a snippet",
+            placeholder: "Select a snippet".into(),
             current: 0,
         };
         self.open_items(items, window, cx);
@@ -1234,6 +1234,7 @@ impl Workbench {
                 let (path, at) = places.swap_remove(ix);
                 self.go_to(path, at, window, cx);
             }
+            super::palette::Picker::Host(id) => self.ext.answer(id, json!(ix)),
         }
     }
 

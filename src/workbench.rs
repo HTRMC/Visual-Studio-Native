@@ -1023,7 +1023,7 @@ impl Workbench {
             expand_history: None,
             debug: debug::Debug::new(window, cx),
             terminals: Default::default(),
-            ext: Default::default(),
+            ext: exthost::Host::new(window.window_handle()),
             lsp: Default::default(),
             output: output::Output::new(),
         };
@@ -4199,6 +4199,9 @@ impl Workbench {
 
     /// Clear All Notifications, which closes the center too.
     fn clear_notes(&mut self, cx: &mut Context<Self>) {
+        for (_, (id, _)) in std::mem::take(&mut self.ext.buttons) {
+            self.ext.answer(id, serde_json::Value::Null);
+        }
         self.notes.clear();
         self.toasts.clear();
         self.unseen = 0;
@@ -4208,6 +4211,10 @@ impl Workbench {
 
     /// Clears a notification, from the center and its toast.
     fn clear_note(&mut self, message: &SharedString, cx: &mut Context<Self>) {
+        // An extension's buttons, closed without one: dismissed.
+        if let Some((id, _)) = self.ext.buttons.remove(message) {
+            self.ext.answer(id, serde_json::Value::Null);
+        }
         let count = self.notes.len();
         self.notes.retain(|n| &n.0 != message);
         if self.notes.len() < count && !self.center {
@@ -4267,7 +4274,7 @@ impl Workbench {
                     .hover(c(0x026EC1))
                     .active(c(0x026EC1))
                     .foreground(c(0xFFFFFF));
-                let button = Button::new((id, "open-settings"))
+                let button = Button::new((id.clone(), "open-settings"))
                     .custom(blue)
                     .bg(c(0x0078D4))
                     .small()
@@ -4278,6 +4285,42 @@ impl Workbench {
                         this.open_settings(window, cx);
                     }));
                 d.child(h_flex().justify_end().px(px(8.)).pb(px(8.)).child(button))
+            })
+            // An extension's buttons, the first one primary, as in VS Code.
+            .when_some(self.ext.buttons.get(message), |d, (_, titles)| {
+                let buttons = titles.iter().enumerate().map(|(i, title)| {
+                    let m = message.clone();
+                    let button = Button::new(SharedString::from(format!("{id}-button-{i}")))
+                        .small()
+                        .label(title.clone())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some((q, _)) = this.ext.buttons.remove(&m) {
+                                this.ext.answer(q, serde_json::json!(i));
+                            }
+                            this.clear_note(&m, cx);
+                            this.center &= !this.notes.is_empty();
+                        }));
+                    match i {
+                        0 => {
+                            let blue = ButtonCustomVariant::new(cx)
+                                .color(c(0x0078D4))
+                                .hover(c(0x026EC1))
+                                .active(c(0x026EC1))
+                                .foreground(c(0xFFFFFF));
+                            button.custom(blue).bg(c(0x0078D4))
+                        }
+                        // button.secondaryBackground
+                        _ => button.bg(c(0x313131)),
+                    }
+                });
+                d.child(
+                    h_flex()
+                        .justify_end()
+                        .gap(px(8.))
+                        .px(px(8.))
+                        .pb(px(8.))
+                        .children(buttons),
+                )
             })
     }
 

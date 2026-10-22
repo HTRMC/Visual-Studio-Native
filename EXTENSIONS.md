@@ -148,8 +148,8 @@ there.
    Text documents (`workspace.textDocuments` and their events), diagnostic
    collections, `TextDocument`, `CodeActionKind` and the other provider
    types. Stubs chain, iterate and accept assignments, so unsupported API
-   doesn't break activation. *Left:*
-   quick pick, input box and message buttons, VS Code's built-in
+   doesn't break activation. `showQuickPick`, `showInputBox` (the palette)
+   and message buttons (the notification's). *Left:* VS Code's built-in
    commands, persistent mementos, `activeTextEditor`, a
    bundled runtime in the installer (today: `runtime\` next to vsn.exe, then
    PATH).

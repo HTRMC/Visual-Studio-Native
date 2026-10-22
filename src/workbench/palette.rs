@@ -297,6 +297,8 @@ pub(super) enum Rename {
     Terminal(u64),
     /// Rename Symbol, at this position of this file.
     Symbol(PathBuf, Position),
+    /// An extension's input box: the host's question and the placeholder.
+    Host(u64, SharedString),
 }
 
 enum Pick {
@@ -414,7 +416,7 @@ pub(super) struct Items {
     pub picker: Picker,
     pub rows: Vec<(String, String)>,
     pub groups: Groups,
-    pub placeholder: &'static str,
+    pub placeholder: SharedString,
     /// The row highlighted when the list opens.
     pub current: usize,
 }
@@ -426,6 +428,8 @@ pub(super) enum Picker {
     Snippet(Vec<extensions::Snippet>),
     /// Find All References' places.
     Location(Vec<(PathBuf, Position)>),
+    /// An extension's quick pick, by the host's question.
+    Host(u64),
 }
 
 pub(super) struct Palette {
@@ -2330,6 +2334,18 @@ impl Workbench {
         }
         self.palette_unpreview(true, cx);
         let p = &mut self.palette;
+        // An extension's quick pick or input box closed without an answer.
+        if let (
+            Some(Items {
+                picker: Picker::Host(id),
+                ..
+            }),
+            _,
+        )
+        | (_, Some(Rename::Host(id, _))) = (&p.items, &p.renaming)
+        {
+            self.ext.answer(*id, serde_json::Value::Null);
+        }
         p.open = false;
         // The walk keeps going: its files are the next open's index.
         p.rank = None;
@@ -2969,11 +2985,13 @@ impl Workbench {
         let (this2, this3) = (this.clone(), this.clone());
         let associate_placeholder;
         let placeholder = if let Some(items) = &p.items {
-            items.placeholder
+            &items.placeholder
         } else if p.profiles.is_some() {
             "Select your default terminal profile"
         } else if let Some(Rename::Terminal(_)) = p.renaming {
             "Enter terminal name"
+        } else if let Some(Rename::Host(_, placeholder)) = &p.renaming {
+            placeholder
         } else if p.renaming.is_some() {
             "Enter the new name"
         } else if p.iconing.is_some() {
@@ -3187,6 +3205,7 @@ impl Workbench {
                             Rename::Symbol(path, at) => {
                                 this.rename_symbol_to(path, at, name, window, cx)
                             }
+                            Rename::Host(id, _) => this.ext.answer(id, name.into()),
                         }
                     }
                 }))

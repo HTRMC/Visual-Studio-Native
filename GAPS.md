@@ -470,7 +470,8 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [x] JS extensions run in a Node (or Bun) host: commands in the palette and keys, messages, status bar items, configuration defaults, activation events, restart on crash.
 - [ ] Extension keybindings take effect only after a restart; ones with a `when` clause are skipped.
 - [ ] `when` clauses and `menus` (editor title, context menus) for extension commands.
-- [ ] Quick pick, input box and message buttons for extensions (they read as cancelled).
+- [x] Quick pick, input box and message buttons for extensions, in the palette and the notification.
+- [ ] Extension quick picks pick one even with `canPickMany`, `createQuickPick`/`createInputBox` are stubs, input boxes don't run `validateInput`, show `prompt` only as the placeholder, and a password box reads as cancelled; `modal` messages are toasts.
 - [x] Output channels, the extension host's console and language server logs
       show in the Output panel, picked from its channel dropdown.
 - [ ] Output: `append` always starts a new line, `show()`/`clear()`/`replace()`

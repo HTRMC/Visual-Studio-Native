@@ -13,6 +13,7 @@ use std::{
 use serde_json::{Value, json};
 
 use super::extensions::{Extension, installed};
+use super::palette::{Items, Picker, Rename};
 use super::*;
 use crate::theme::codicons;
 
@@ -47,6 +48,11 @@ pub(super) struct Host {
     /// Counts the hosts started, so a closed one's last messages are ignored.
     generation: usize,
     crashes: usize,
+    /// The window, for the palette an extension's quick pick or input box opens.
+    window: Option<AnyWindowHandle>,
+    /// Notifications with an extension's buttons: the host's question and the
+    /// buttons' titles.
+    pub(super) buttons: HashMap<SharedString, (u64, Vec<String>)>,
 }
 
 impl Host {
@@ -54,6 +60,18 @@ impl Host {
         if let Some(out) = &self.out {
             out.send(msg.to_string() + "\n").ok();
         }
+    }
+
+    pub(super) fn new(window: AnyWindowHandle) -> Self {
+        Self {
+            window: Some(window),
+            ..Default::default()
+        }
+    }
+
+    /// Answers the host's question `id`; null is cancelled.
+    pub(super) fn answer(&self, id: u64, value: Value) {
+        self.send(json!({ "m": "answer", "id": id, "value": value }));
     }
 
     pub fn send_settings(&self) {
@@ -365,7 +383,58 @@ impl Workbench {
                     Some("warning") => Severity::Warning,
                     _ => Severity::Info,
                 };
-                self.note(text("text").into(), severity, cx);
+                let message: SharedString = text("text").into();
+                self.note(message.clone(), severity, cx);
+                let buttons: Vec<String> = (msg["buttons"].as_array().into_iter().flatten())
+                    .filter_map(|b| Some(b.as_str()?.to_string()))
+                    .collect();
+                if let (Some(id), false) = (msg["id"].as_u64(), buttons.is_empty()) {
+                    self.ext.buttons.insert(message, (id, buttons));
+                }
+            }
+            "quickPick" | "inputBox" => {
+                let (Some(id), Some(window)) = (msg["id"].as_u64(), self.ext.window) else {
+                    return;
+                };
+                let placeholder: SharedString = text("placeholder").into();
+                let rows = (msg["rows"].as_array().into_iter().flatten())
+                    .map(|r| {
+                        (
+                            r[0].as_str().unwrap_or_default().into(),
+                            r[1].as_str().unwrap_or_default().into(),
+                        )
+                    })
+                    .collect();
+                let (value, quick) = (text("value"), msg["m"] == "quickPick");
+                let this = cx.entity();
+                // The palette needs the window, which a host message comes without.
+                cx.defer(move |cx| {
+                    (window.update(cx, |_, window, cx| {
+                        this.update(cx, |this, cx| {
+                            this.close_palette(window, cx);
+                            match quick {
+                                true => this.open_items(
+                                    Items {
+                                        picker: Picker::Host(id),
+                                        rows,
+                                        groups: Vec::new(),
+                                        placeholder,
+                                        current: 0,
+                                    },
+                                    window,
+                                    cx,
+                                ),
+                                false => this.rename_input(
+                                    Rename::Host(id, placeholder),
+                                    value,
+                                    window,
+                                    cx,
+                                ),
+                            }
+                        })
+                    }))
+                    .ok();
+                });
             }
             "error" => {
                 // The stack goes to Output; the toast gets its first line.

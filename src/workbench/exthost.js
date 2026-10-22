@@ -271,9 +271,48 @@ const vscodeCommands = {
   async getCommands() { return [...commands.keys()]; },
 };
 
+// vsn's answers to the host's questions (quick picks, input boxes, message
+// buttons), by id. They skip the queue: a command may be awaiting one.
+const asking = new Map();
+let nextAsk = 0;
+function ask(msg) {
+  const id = ++nextAsk;
+  send({ ...msg, id });
+  return new Promise((resolve) => asking.set(id, resolve));
+}
+
+// Codicons in labels (`$(check) Done`) as plain text.
+const plain = (s) => String(s || '').replace(/\$\([\w~-]+\)\s*/g, '');
+
 function message(severity) {
-  // ponytail: the buttons aren't shown, so it resolves to undefined (dismissed).
-  return async (text) => { send({ m: 'message', severity, text: String(text) }); return undefined; };
+  // (message, options?, ...items); items are strings or { title }.
+  // ponytail: `modal` messages are toasts too, and `detail` isn't shown.
+  return async (text, ...items) => {
+    if (items[0] && typeof items[0] === 'object' && !('title' in items[0])) items.shift();
+    items = items.filter((i) => i !== undefined);
+    const buttons = items.map((i) => (typeof i === 'string' ? i : String(i.title)));
+    if (!buttons.length) { send({ m: 'message', severity, text: String(text) }); return undefined; }
+    const ix = await ask({ m: 'message', severity, text: String(text), buttons });
+    return ix == null ? undefined : items[ix];
+  };
+}
+
+async function showQuickPick(items, options = {}) {
+  // ponytail: one pick even with `canPickMany`, and onDidSelectItem never fires.
+  const picks = ((await items) || []).filter((i) => typeof i === 'string' || i.kind !== -1);
+  if (!picks.length) return undefined;
+  const rows = picks.map((i) => (typeof i === 'string' ? [i, ''] : [plain(i.label), plain(i.description)]));
+  const ix = await ask({ m: 'quickPick', placeholder: options.placeHolder || options.title || '', rows });
+  if (ix == null) return undefined;
+  return options.canPickMany ? [picks[ix]] : picks[ix];
+}
+
+async function showInputBox(options = {}) {
+  // ponytail: the palette's input can't mask, so a password box reads as
+  // cancelled rather than showing the secret; validateInput isn't run.
+  if (options.password) return undefined;
+  const value = await ask({ m: 'inputBox', placeholder: options.placeHolder || options.prompt || '', value: options.value || '' });
+  return value == null ? undefined : value;
 }
 
 let nextItem = 0;
@@ -324,9 +363,8 @@ const vscodeWindow = {
   showInformationMessage: message('info'),
   showWarningMessage: message('warning'),
   showErrorMessage: message('error'),
-  // ponytail: no pickers or input boxes for extensions yet; they read as cancelled.
-  showQuickPick: async () => undefined,
-  showInputBox: async () => undefined,
+  showQuickPick,
+  showInputBox,
   showOpenDialog: async () => undefined,
   showSaveDialog: async () => undefined,
   createStatusBarItem,
@@ -770,6 +808,11 @@ const rl = readline.createInterface({ input: process.stdin });
 rl.on('line', (line) => {
   let msg;
   try { msg = JSON.parse(line); } catch { return; }
+  if (msg.m === 'answer') {
+    asking.get(msg.id)?.(msg.value);
+    asking.delete(msg.id);
+    return;
+  }
   queue = queue.then(() => {
     switch (msg.m) {
       case 'init':
@@ -785,7 +828,9 @@ rl.on('line', (line) => {
       case 'activate':
         return activate(msg.id);
       case 'run':
-        return run(msg.command, msg.args);
+        // Not awaited: a command waiting on a quick pick mustn't hold up the rest.
+        run(msg.command, msg.args);
+        return;
       case 'lsp':
         return onLsp(msg.msg);
     }
