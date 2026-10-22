@@ -184,9 +184,48 @@ pub(super) fn palette_commands() -> Vec<(String, String)> {
     list
 }
 
+/// A VS Code `when` clause as a gpui context predicate. vsn's editor,
+/// terminal and explorer set VS Code's focus keys and `editorLangId`; other
+/// keys are unset, so false as in VS Code when nothing sets them.
+// ponytail: all keys of a clause are matched on one element's context, so
+// it's focus keys plus the editor's language; `<`, `=~` and `in` aren't
+// expressible in gpui's and their bindings are skipped.
+fn when_predicate(when: &str) -> Option<KeyBindingContextPredicate> {
+    if ["<", ">", "=~", " in "].iter().any(|op| when.contains(op)) {
+        return None;
+    }
+    let os = match std::env::consts::OS {
+        "macos" => "isMac",
+        "windows" => "isWindows",
+        _ => "isLinux",
+    };
+    let word = |w: &str| -> String {
+        let w = w.trim_matches(['\'', '"']);
+        match w {
+            "true" => "!false_".into(),
+            "isMac" | "isWindows" | "isLinux" | "isWeb" if w == os => "!false_".into(),
+            "false" | "isMac" | "isWindows" | "isLinux" | "isWeb" => "false_".into(),
+            _ => w.replace(|c: char| !c.is_alphanumeric() && c != '-', "_"),
+        }
+    };
+    let mut out = String::new();
+    let mut rest = when;
+    while let Some(c) = rest.chars().next() {
+        let len = match "!&|=() \t".contains(c) {
+            true => c.len_utf8(),
+            false => rest.find(|c| "!&|=() \t".contains(c)).unwrap_or(rest.len()),
+        };
+        let (tok, tail) = rest.split_at(len);
+        out += &match "!&|=() \t".contains(c) {
+            true => tok.to_string(),
+            false => word(tok),
+        };
+        rest = tail;
+    }
+    KeyBindingContextPredicate::parse(&out).ok()
+}
+
 /// Extensions' keybindings, VS Code's "ctrl+shift+h" as gpui's "ctrl-shift-h".
-// ponytail: a binding with a `when` clause is skipped, as vsn doesn't
-// evaluate those yet.
 pub(super) fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
     let platform = match std::env::consts::OS {
         "macos" => "mac",
@@ -195,7 +234,7 @@ pub(super) fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBindin
     };
     let mut list = Vec::new();
     for e in installed().iter().filter(|e| e.enabled) {
-        for k in e.contributes("keybindings").filter(|k| k["when"].is_null()) {
+        for k in e.contributes("keybindings") {
             let (Some(key), Some(id)) = (
                 k[platform].as_str().or(k["key"].as_str()),
                 k["command"].as_str(),
@@ -206,8 +245,15 @@ pub(super) fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBindin
                 .map(|chord| chord.replace('+', "-"))
                 .collect::<Vec<_>>()
                 .join(" ");
+            let context = match k["when"].as_str() {
+                Some(when) => match when_predicate(when) {
+                    Some(p) => Some(p.into()),
+                    None => continue,
+                },
+                None => None,
+            };
             let action = Box::new(RunExtensionCommand { id: id.into() });
-            list.extend(KeyBinding::load(&keys, action, None, false, None, mapper).ok());
+            list.extend(KeyBinding::load(&keys, action, context, false, None, mapper).ok());
         }
     }
     list
@@ -733,7 +779,31 @@ impl Workbench {
 
 #[cfg(test)]
 mod tests {
-    use super::{contains, status_label};
+    use super::KeyContext;
+    use super::{contains, status_label, when_predicate};
+
+    #[test]
+    fn when_clauses() {
+        let mut editor = KeyContext::default();
+        editor.add("editorTextFocus");
+        editor.set("editorLangId", "markdown");
+        let terminal = KeyContext::parse("Terminal terminalFocus").unwrap();
+        let eval = |when: &str, cx: &KeyContext| when_predicate(when).unwrap().eval(&[cx.clone()]);
+        let md = "editorTextFocus && editorLangId == 'markdown' && !editorReadonly";
+        assert!(eval(md, &editor));
+        assert!(!eval(md, &terminal));
+        assert!(!eval("editorLangId != markdown", &editor));
+        assert!(eval(
+            "terminalFocus || isWindows || isMac || isLinux",
+            &terminal
+        ));
+        assert!(!eval("config.foo.enabled", &editor));
+        assert!(eval("!(suggestWidgetVisible || false)", &editor));
+        assert!(
+            when_predicate("editorTextFocus && view == 'x' || resourceExtname =~ /md/").is_none()
+        );
+        assert!(when_predicate("listFocus && foo > 2").is_none());
+    }
 
     #[test]
     fn workspace_contains_globs() {

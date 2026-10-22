@@ -2400,8 +2400,8 @@ impl Workbench {
             }))
             .track_focus(&t.focus)
             .key_context(match alt {
-                true => "Terminal altBuffer",
-                false => "Terminal",
+                true => "Terminal altBuffer terminalFocus",
+                false => "Terminal terminalFocus",
             })
             .map(|d| match hover {
                 Some(_) => d.cursor_pointer(),

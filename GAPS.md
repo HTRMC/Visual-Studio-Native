@@ -475,8 +475,9 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [ ] Icon themes, brackets and indent rules from extensions.
 - [x] JS extensions run in a Node (or Bun) host: commands in the palette and keys, messages, status bar items, configuration defaults, activation events, restart on crash.
 - [x] Extension keybindings took effect only after a restart; they're rebound on install, uninstall and enable.
-- [ ] Extension keybindings with a `when` clause are skipped.
-- [ ] `when` clauses and `menus` (editor title, context menus) for extension commands.
+- [x] Extension keybindings with a `when` clause were skipped; focus keys, `editorLangId` and the platform are matched now.
+- [ ] Extension keybindings' `when` with `<`, `>`, `=~` or `in` are skipped, and context keys beyond focus and language are unset.
+- [ ] `menus` (editor title, context menus) and `commandPalette` `when` clauses for extension commands.
 - [x] Quick pick, input box and message buttons for extensions, in the palette and the notification.
 - [x] `globalState`/`workspaceState` persist (JSON under `~/.vsn/globalStorage` and `workspaceStorage`); `storageUri` is per folder.
 - [x] `executeCommand` runs ~35 of VS Code's built-in commands (`vscode.open`, saves, views, panels, formatting, ...) as vsn's actions.

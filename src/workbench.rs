@@ -2911,7 +2911,7 @@ impl Workbench {
                         // A right-click past the rows gets the workspace folder's menu.
                         div()
                             .id("explorer-empty")
-                            .key_context("Explorer")
+                            .key_context("Explorer filesExplorerFocus explorerViewletFocus")
                             // A right-click drops the focus outline; one on a
                             // row puts it back there after this.
                             .capture_any_mouse_down(cx.listener(
@@ -3735,7 +3735,14 @@ impl Workbench {
             .child(
                 div().flex_1().min_h_0().map(|d| {
                     if !doc.binary {
-                        return d.child(self.render_code(self.active, cx));
+                        // VS Code's context keys, for extensions' `when` clauses.
+                        let mut keys = KeyContext::default();
+                        for key in ["editorFocus", "editorTextFocus", "textInputFocus"] {
+                            keys.add(key);
+                        }
+                        keys.set("editorLangId", doc.lang);
+                        keys.set("resourceLangId", doc.lang);
+                        return d.key_context(keys).child(self.render_code(self.active, cx));
                     }
                     // VS Code's binary editor placeholder.
                     let ix = self.active;
