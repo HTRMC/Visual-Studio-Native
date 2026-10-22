@@ -243,7 +243,7 @@ Differences from VS Code still to close, smallest first within each area.
       Reveal, Open in Integrated Terminal, Copy Path for the root).
 - [ ] Explorer menus lack New File/Folder and Find in Folder (VS Code puts
       them on folder rows and the empty area).
-- [ ] A right-click in the explorer's empty area doesn't move the focus
+- [x] A right-click in the explorer's empty area doesn't move the focus
       outline off the last row the way VS Code clears it.
 - [ ] The explorer handles one item at a time: no Ctrl/Shift+click
       multi-select for drag, cut, copy or paste.

@@ -1996,6 +1996,17 @@ impl Workbench {
                         div()
                             .id("explorer-empty")
                             .key_context("Explorer")
+                            // A right-click drops the focus outline; one on a
+                            // row puts it back there after this.
+                            .capture_any_mouse_down(cx.listener(
+                                |this, e: &MouseDownEvent, window, cx| {
+                                    if e.button == MouseButton::Right {
+                                        this.tree_cursor = None;
+                                        window.focus(&this.tree_focus, cx);
+                                        cx.notify();
+                                    }
+                                },
+                            ))
                             .flex()
                             .flex_1()
                             .min_h_0()
