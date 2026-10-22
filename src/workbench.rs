@@ -97,6 +97,7 @@ actions!(
         StepOut,
         ToggleBreakpoint,
         OpenLaunchJson,
+        ClearRecent,
         NewTerminal,
         SplitTerminal,
         RenameTerminal,
@@ -1605,6 +1606,24 @@ impl Workbench {
         cx.spawn(async move |_, cx| {
             if answer.await == Ok(0) {
                 cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string(detail)));
+            }
+        })
+        .detach();
+    }
+
+    /// File > Open Recent > Clear Recently Opened..., behind VS Code's warning.
+    fn clear_recent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            "Do you want to clear all recently opened files and workspaces?",
+            Some("This action is irreversible!"),
+            &["Clear", "Cancel"],
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            if answer.await == Ok(0) {
+                this.update(cx, |this, cx| this.palette.clear_opened(cx))
+                    .ok();
             }
         })
         .detach();
@@ -4806,6 +4825,9 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &OpenLaunchJson, window, cx| {
                 this.create_launch_json(window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &ClearRecent, window, cx| this.clear_recent(window, cx)),
+            )
             .on_action(cx.listener(|this, _: &ShowNotifications, _, cx| this.show_center(true, cx)))
             .on_action(cx.listener(|this, _: &HideNotifications, _, cx| {
                 // The toasts stay listed in the center.
@@ -5085,7 +5107,7 @@ fn app_menu(
             .map(|m| chord(m, "Open Folder...", OpenFolder))
             .submenu("Open Recent", window, cx, move |mut m, _, _| {
                 // VS Code's menu shows 10 of each; gone ones are left out.
-                // ponytail: no Reopen Closed Editor or Clear Recently Opened...
+                // ponytail: no Reopen Closed Editor
                 for (folder, list) in [(true, &recent.folders), (false, &recent.files)] {
                     let paths = list.iter().map(PathBuf::from).filter(|p| p.exists());
                     for path in paths.take(10) {
@@ -5102,7 +5124,8 @@ fn app_menu(
                     }
                     m = m.separator();
                 }
-                m.menu("More...", Box::new(Noop))
+                (m.menu("More...", Box::new(Noop)).separator())
+                    .menu("Clear Recently Opened...", Box::new(ClearRecent))
             })
             .separator()
             .menu("Save", Box::new(Save))

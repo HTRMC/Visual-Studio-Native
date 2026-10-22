@@ -58,6 +58,7 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
     vec![
         ("File: Open File...", Box::new(OpenFile)),
         ("File: Open Folder...", Box::new(OpenFolder)),
+        ("File: Clear Recently Opened...", Box::new(ClearRecent)),
         ("File: Save", Box::new(Save)),
         ("File: Save As...", Box::new(SaveAs)),
         ("File: Save All", Box::new(SaveAll)),
@@ -527,6 +528,15 @@ impl Palette {
             list.truncate(RECENTLY_OPENED);
             self.save(cx);
         }
+    }
+
+    /// Clear Recently Opened: Open Recent's lists and, as in VS Code, Quick
+    /// Open's editor history.
+    pub(super) fn clear_opened(&mut self, cx: &App) {
+        self.folders.clear();
+        self.opened.clear();
+        self.editors.clear();
+        self.save(cx);
     }
 
     /// Writes the histories on a background thread. Writes can finish out of
