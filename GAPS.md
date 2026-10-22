@@ -64,8 +64,11 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] A vertical scrollbar over the scrollback (drag, track click, shown
       while the mouse is over the terminal).
 - [x] The scrollbars fade in and out as VS Code's do.
-- [ ] Scrolling doesn't reveal the scrollbars when the mouse is elsewhere
-      (VS Code shows them briefly on any scroll, e.g. Ctrl+Shift+Up).
+- [x] Scrolling (typing back to the bottom, find's jumps, a drag's
+      autoscroll) reveals the scrollbars briefly with the mouse elsewhere.
+- [ ] Keyboard scrolling: Terminal: Scroll Up/Down (Line) Ctrl+Alt+PageUp/
+      PageDown, (Page) Shift+PageUp/PageDown, Scroll to Top/Bottom
+      Ctrl+Home/End, outside full-screen programs.
 - [ ] Find's matches aren't marked on the vertical scrollbar (VS Code's
       overview ruler).
 - [ ] Dragging a tab onto the editor area moves the terminal into an editor.

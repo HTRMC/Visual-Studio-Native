@@ -127,9 +127,20 @@ impl Drop for Terminal {
 }
 
 impl Terminal {
+    /// Shows the scrollbars after a scroll, fading as if the mouse had just
+    /// left, as VS Code does on any scroll.
+    fn reveal(&mut self) {
+        if !matches!(self.over, Some((true, _))) {
+            self.over = Some((false, Instant::now()));
+        }
+    }
+
     fn write(&mut self, bytes: &[u8]) {
         self.selection = None;
-        self.parser.screen_mut().set_scrollback(0);
+        if self.parser.screen().scrollback() > 0 {
+            self.parser.screen_mut().set_scrollback(0);
+            self.reveal();
+        }
         self.writer.write_all(bytes).ok();
         self.writer.flush().ok();
     }
@@ -877,6 +888,7 @@ impl Workbench {
                 let screen = t.parser.screen_mut();
                 let len = screen.scrollback_len();
                 screen.set_scrollback(len.saturating_sub(line.saturating_sub(rows / 2)));
+                t.reveal();
             }
         }
         cx.notify();
@@ -1511,6 +1523,7 @@ impl Workbench {
         }
         let screen = t.parser.screen_mut();
         screen.set_scrollback(screen.scrollback().saturating_add_signed(n));
+        t.reveal();
         t.selection = t.dragged();
         cx.notify();
         true
