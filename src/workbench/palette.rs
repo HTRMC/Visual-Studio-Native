@@ -70,6 +70,22 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
             "Terminal: Kill the Active Terminal Instance",
             Box::new(KillTerminal),
         ),
+        (
+            "Terminal: Focus Next Terminal Group",
+            Box::new(FocusNextTerminalGroup),
+        ),
+        (
+            "Terminal: Focus Previous Terminal Group",
+            Box::new(FocusPreviousTerminalGroup),
+        ),
+        (
+            "Terminal: Focus Next Terminal in Terminal Group",
+            Box::new(FocusNextTerminal),
+        ),
+        (
+            "Terminal: Focus Previous Terminal in Terminal Group",
+            Box::new(FocusPreviousTerminal),
+        ),
         ("Terminal: Focus Find", Box::new(FindInTerminal)),
         (
             "Terminal: Select Default Profile",

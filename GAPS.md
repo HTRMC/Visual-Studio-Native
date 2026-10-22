@@ -42,7 +42,9 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Change a terminal's icon (Terminal: Change Icon..., or on a tab).
 - [ ] Change Icon's picker is a grid of icons, not a list of names.
 - [x] Terminal: Kill the Active Terminal Instance in the palette.
-- [ ] Terminal: Focus Next/Previous Terminal in the palette.
+- [x] Terminal: Focus Next/Previous Terminal Group (Ctrl+PageDown/Up) and
+      Terminal in Terminal Group.
+- [ ] Entering a terminal group returns to the terminal last focused in it.
 - [ ] Terminal: Clear (Ctrl+K in VS Code) empties the buffer and scrollback.
 - [ ] Drag tabs to reorder terminals and move them between splits.
 - [ ] Shell integration: command decorations, run recent command, go to

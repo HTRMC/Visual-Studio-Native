@@ -1110,6 +1110,44 @@ impl Workbench {
         }
     }
 
+    /// VS Code's Focus Next/Previous Terminal Group (`groups`), or Terminal
+    /// in Terminal Group, wrapping around.
+    // ponytail: a group is entered at its first terminal; VS Code returns to
+    // the one last focused in it.
+    pub(super) fn focus_next_terminal(
+        &mut self,
+        groups: bool,
+        back: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let list = &self.terminals.list;
+        let Some(t) = list.get(self.terminals.active) else {
+            return;
+        };
+        let (ids, at) = if groups {
+            let mut ids: Vec<u64> = list.iter().map(|u| u.group).collect();
+            ids.dedup();
+            (ids, t.group)
+        } else {
+            let ids = list
+                .iter()
+                .filter(|u| u.group == t.group)
+                .map(|u| u.id)
+                .collect();
+            (ids, t.id)
+        };
+        let at = ids.iter().position(|&i| i == at).unwrap();
+        let next = ids[(at + if back { ids.len() - 1 } else { 1 }) % ids.len()];
+        let id = list
+            .iter()
+            .find(|u| u.id == next || groups && u.group == next)
+            .unwrap()
+            .id;
+        self.activate_terminal(id, window, cx);
+        self.focus_terminal(window, cx);
+    }
+
     pub(super) fn kill_active_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(t) = self.terminals.list.get(self.terminals.active) {
             self.kill_terminal(t.id, window, cx);

@@ -68,6 +68,10 @@ actions!(
         ChangeTerminalColor,
         ChangeTerminalIcon,
         KillTerminal,
+        FocusNextTerminalGroup,
+        FocusPreviousTerminalGroup,
+        FocusNextTerminal,
+        FocusPreviousTerminal,
         FindInTerminal,
         SelectDefaultProfile,
         NewTextFile,
@@ -115,6 +119,8 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         shifted("ctrl-shift-`", Box::new(NewTerminal), None),
         shifted("ctrl-shift-5", Box::new(SplitTerminal), Some("Terminal")),
         KeyBinding::new("ctrl-f", FindInTerminal, Some("Terminal")),
+        KeyBinding::new("ctrl-pagedown", FocusNextTerminalGroup, Some("Terminal")),
+        KeyBinding::new("ctrl-pageup", FocusPreviousTerminalGroup, Some("Terminal")),
         KeyBinding::new("ctrl-n", NewTextFile, None),
     ]
 }
@@ -1736,6 +1742,20 @@ impl Render for Workbench {
             }))
             .on_action(cx.listener(|this, _: &KillTerminal, window, cx| {
                 this.kill_active_terminal(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FocusNextTerminalGroup, window, cx| {
+                this.focus_next_terminal(true, false, window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &FocusPreviousTerminalGroup, window, cx| {
+                    this.focus_next_terminal(true, true, window, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &FocusNextTerminal, window, cx| {
+                this.focus_next_terminal(false, false, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FocusPreviousTerminal, window, cx| {
+                this.focus_next_terminal(false, true, window, cx)
             }))
             .on_action(
                 cx.listener(|this, _: &FindInTerminal, window, cx| {
