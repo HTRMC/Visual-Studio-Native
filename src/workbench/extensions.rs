@@ -567,6 +567,41 @@ pub(crate) fn snippets(lang: &str) -> Vec<Snippet> {
     out
 }
 
+/// Where a snippet goes: its file and language, the line's indent and the
+/// editor's indent unit.
+pub(crate) struct Place<'a> {
+    pub path: &'a Path,
+    pub lang: &'a str,
+    pub indent: &'a str,
+    pub unit: &'a str,
+}
+
+/// A snippet's text at `at`, with `selected` as TM_SELECTED_TEXT, and where
+/// its first tab stop ends up.
+pub(crate) fn fill(body: &str, at: &Place, selected: &str) -> (String, Option<Range<usize>>) {
+    let path = at.path;
+    let file = |f: fn(&Path) -> Option<&std::ffi::OsStr>| {
+        f(path).map(|s| s.to_string_lossy().into_owned())
+    };
+    let var = |name: &str| -> Option<String> {
+        Some(match name {
+            "TM_FILENAME" => file(Path::file_name)?,
+            "TM_FILENAME_BASE" => file(Path::file_stem)?,
+            "TM_DIRECTORY" => path.parent()?.to_string_lossy().into_owned(),
+            "TM_FILEPATH" => path.to_string_lossy().into_owned(),
+            "TM_SELECTED_TEXT" => selected.to_string(),
+            "LINE_COMMENT" => line_comment(at.lang)?.to_string(),
+            "BLOCK_COMMENT_START" => block_comment(at.lang)?.0.to_string(),
+            "BLOCK_COMMENT_END" => block_comment(at.lang)?.1.to_string(),
+            _ => return None,
+        })
+    };
+    // Each line after the first takes the current line's indent, and tabs
+    // become the editor's indent unit.
+    let body = (body.replace('\t', at.unit)).replace('\n', &format!("\n{}", at.indent));
+    expand(&body, &var)
+}
+
 /// Snippet syntax made plain text: placeholders become their text, choices
 /// their first option and variables their value (`var`, else their name).
 /// Also gives where the first tab stop ($1, else $0) ends up.
@@ -1539,8 +1574,7 @@ impl Workbench {
             true => "\t".to_string(),
             false => " ".repeat(doc.indent.tab_size),
         };
-        let line = line_comment(doc.lang);
-        let block = block_comment(doc.lang);
+        let lang = doc.lang;
         let body = snippet.body.clone();
         self.edit_lines(
             move |text, sel| {
@@ -1549,27 +1583,13 @@ impl Workbench {
                     .chars()
                     .take_while(|c| *c == ' ' || *c == '\t')
                     .collect();
-                let selected = text[sel.clone()].to_string();
-                let file = |f: fn(&Path) -> Option<&std::ffi::OsStr>| {
-                    f(&path).map(|s| s.to_string_lossy().into_owned())
+                let at = Place {
+                    path: &path,
+                    lang,
+                    indent: &indent,
+                    unit: &indent_unit,
                 };
-                let var = |name: &str| -> Option<String> {
-                    Some(match name {
-                        "TM_FILENAME" => file(Path::file_name)?,
-                        "TM_FILENAME_BASE" => file(Path::file_stem)?,
-                        "TM_DIRECTORY" => path.parent()?.to_string_lossy().into_owned(),
-                        "TM_FILEPATH" => path.to_string_lossy().into_owned(),
-                        "TM_SELECTED_TEXT" => selected.clone(),
-                        "LINE_COMMENT" => line?.to_string(),
-                        "BLOCK_COMMENT_START" => block?.0.to_string(),
-                        "BLOCK_COMMENT_END" => block?.1.to_string(),
-                        _ => return None,
-                    })
-                };
-                // Each line after the first takes the current line's indent,
-                // and tabs become the editor's indent unit.
-                let body = (body.replace('\t', &indent_unit)).replace('\n', &format!("\n{indent}"));
-                let (new, stop) = expand(&body, &var);
+                let (new, stop) = fill(&body, &at, &text[sel.clone()]);
                 let at = sel.start;
                 let stop = stop.unwrap_or(new.len()..new.len());
                 Some((sel, new, at + stop.start..at + stop.end))

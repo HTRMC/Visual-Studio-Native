@@ -23,8 +23,9 @@ use futures::channel::oneshot;
 use gpui_kit::base::input::{Diagnostic, DiagnosticSeverity};
 use input::{CodeActionProvider, CompletionProvider, DefinitionProvider, HoverProvider, Rope};
 use lsp_types::{
-    CodeAction, CodeActionOrCommand, CompletionContext, CompletionResponse,
-    DocumentChangeOperation, DocumentChanges, GotoDefinitionResponse, Hover, LocationLink, OneOf,
+    CodeAction, CodeActionOrCommand, CompletionContext, CompletionItem, CompletionItemKind,
+    CompletionResponse, CompletionTextEdit, DocumentChangeOperation, DocumentChanges,
+    GotoDefinitionResponse, Hover, LocationLink, OneOf, TextEdit,
 };
 
 use super::palette::Rename;
@@ -146,6 +147,87 @@ struct Provider {
     path: PathBuf,
     lang: &'static str,
     workbench: WeakEntity<Workbench>,
+    snippets: Option<Snippets>,
+}
+
+/// One editor's snippets as completions: those whose prefix starts with the
+/// word before the cursor, replacing it.
+// ponytail: read when the file opens, so an extension installed since
+// shows its snippets on the next open; the cursor lands after the snippet,
+// not on its first tab stop, as completions take no selection.
+struct Snippets {
+    path: PathBuf,
+    lang: &'static str,
+    unit: String,
+    list: Vec<extensions::Snippet>,
+}
+
+impl Snippets {
+    fn new(doc: &Doc) -> Option<Self> {
+        let list = extensions::snippets(doc.lang);
+        let unit = match doc.indent.hard_tabs {
+            true => "\t".to_string(),
+            false => " ".repeat(doc.indent.tab_size),
+        };
+        (!list.is_empty()).then(|| Snippets {
+            path: doc.path.clone(),
+            lang: doc.lang,
+            unit,
+            list,
+        })
+    }
+
+    fn items(&self, text: &Rope, offset: usize) -> Vec<CompletionItem> {
+        let pos = text.offset_to_position(offset);
+        let line = text
+            .slice(text.line_start_offset(pos.line as usize)..offset)
+            .to_string();
+        let indent = &line[..line.len() - line.trim_start().len()];
+        let word = &line[line
+            .rfind(|c: char| !c.is_alphanumeric() && c != '_')
+            .map_or(0, |i| i + line[i..].chars().next().unwrap().len_utf8())..];
+        if word.is_empty() {
+            return Vec::new();
+        }
+        let at = extensions::Place {
+            path: &self.path,
+            lang: self.lang,
+            indent,
+            unit: &self.unit,
+        };
+        let range = lsp_types::Range::new(text.offset_to_position(offset - word.len()), pos);
+        (self.list.iter())
+            .filter(|s| s.prefix.to_lowercase().starts_with(&word.to_lowercase()))
+            .map(|s| CompletionItem {
+                label: s.prefix.clone(),
+                kind: Some(CompletionItemKind::SNIPPET),
+                detail: Some(s.name.clone()),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
+                    range,
+                    extensions::fill(&s.body, &at, "").0,
+                ))),
+                ..Default::default()
+            })
+            .collect()
+    }
+}
+
+impl CompletionProvider for Snippets {
+    fn completions(
+        &self,
+        text: &Rope,
+        offset: usize,
+        _: CompletionContext,
+        _: &mut Window,
+        _: &mut App,
+    ) -> Task<anyhow::Result<CompletionResponse>> {
+        Task::ready(Ok(CompletionResponse::Array(self.items(text, offset))))
+    }
+
+    fn is_completion_trigger(&self, _: usize, new_text: &str, _: &mut App) -> bool {
+        let mut chars = new_text.chars();
+        matches!((chars.next(), chars.next()), (Some(c), None) if c.is_alphanumeric() || c == '_')
+    }
 }
 
 impl Provider {
@@ -189,12 +271,15 @@ impl CompletionProvider for Provider {
         cx: &mut App,
     ) -> Task<anyhow::Result<CompletionResponse>> {
         let reply = self.ask("textDocument/completion", text, offset, cx);
+        let snippets = (self.snippets.as_ref()).map_or(Vec::new(), |s| s.items(text, offset));
         cx.background_spawn(async move {
-            let reply = reply.await;
-            if reply.is_null() {
-                return Ok(CompletionResponse::Array(vec![]));
-            }
-            Ok(serde_json::from_value(reply)?)
+            let mut items = match serde_json::from_value(reply.await)? {
+                None => vec![],
+                Some(CompletionResponse::Array(items)) => items,
+                Some(CompletionResponse::List(list)) => list.items,
+            };
+            items.extend(snippets);
+            Ok(CompletionResponse::Array(items))
         })
     }
 
@@ -430,11 +515,20 @@ impl Workbench {
         let Some(doc) = self.docs.get(ix).filter(|d| !d.untitled && !d.binary) else {
             return;
         };
+        let snippets = Snippets::new(doc);
         let cmd = match self.lsp.hosted.get(doc.lang) {
             Some(&host) => host,
             None => match SERVERS.iter().find(|(langs, _)| langs.contains(&doc.lang)) {
                 Some(&(_, cmd)) => cmd,
-                None => return,
+                // No server: the editor completes snippets alone.
+                None => {
+                    if let Some(snippets) = snippets {
+                        let snippets: Rc<dyn CompletionProvider> = Rc::new(snippets);
+                        (doc.editor.clone())
+                            .update(cx, |e, _| e.lsp_mut().completion_provider = Some(snippets));
+                    }
+                    return;
+                }
             },
         };
         let (path, lang, editor) = (doc.path.clone(), doc.lang, doc.editor.clone());
@@ -451,6 +545,7 @@ impl Workbench {
             path: path.clone(),
             lang,
             workbench: cx.weak_entity(),
+            snippets,
         });
         let this = cx.weak_entity();
         // A definition in another file opens there; within its own file the
@@ -1325,8 +1420,39 @@ impl Workbench {
 
 #[cfg(test)]
 mod tests {
-    use super::{path_uri, uri_path};
+    use super::{Rope, Snippets, extensions::Snippet, path_uri, uri_path};
     use std::path::Path;
+
+    #[test]
+    fn snippet_completions() {
+        let snippets = Snippets {
+            path: "a.rs".into(),
+            lang: "rust",
+            unit: "  ".into(),
+            list: ["fn", "for", "if"]
+                .map(|p| Snippet {
+                    name: format!("{p} snippet"),
+                    prefix: p.into(),
+                    body: format!("{p} ${{1:x}} {{\n\t$0\n}}"),
+                })
+                .into(),
+        };
+        let text = Rope::from("ok\n    a.F");
+        let items = snippets.items(&text, text.len());
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[1].label, "for");
+        let Some(lsp_types::CompletionTextEdit::Edit(edit)) = &items[1].text_edit else {
+            panic!("no edit");
+        };
+        // The word after the dot goes; the body takes the line's indent.
+        assert_eq!(
+            (edit.range.start.character, edit.range.end.character),
+            (6, 7)
+        );
+        assert_eq!(edit.new_text, "for x {\n      \n    }");
+        assert!(snippets.items(&text, 2).is_empty());
+        assert!(snippets.items(&Rope::from("x."), 2).is_empty());
+    }
 
     #[test]
     #[cfg(windows)]
