@@ -263,7 +263,10 @@ const vscodeCommands = {
     return new Disposable(() => commands.delete(id));
   },
   async executeCommand(id, ...args) {
-    if (id === 'setContext') return undefined; // ponytail: when clauses aren't evaluated
+    if (id === 'setContext') {
+      send({ m: 'setContext', key: args[0], value: args[1] ?? null });
+      return undefined;
+    }
     const fn = commands.get(id);
     if (fn) return fn(...args);
     send({ m: 'execute', command: id, args });

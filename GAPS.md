@@ -480,6 +480,8 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [x] `commandPalette` `when` clauses other than `false` were ignored; they're checked where focus was when the palette opened.
 - [x] Extensions' `editor/context` and `explorer/context` menu items were ignored; they're added, with the file's Uri.
 - [x] Extensions' `editor/title` navigation buttons were ignored; they're in the editor's title bar, with `resource*` keys for their `when`.
+- [x] Extensions' `when` clauses with comparisons, regexes or `in` hid their menu and palette items, and `setContext` was ignored; menus and the palette evaluate VS Code's full grammar.
+- [ ] Extension keybindings' `when` with comparisons, regexes or `setContext` keys are skipped (gpui predicates can't express them).
 - [ ] Extensions' `editor/title` "..." groups, other `menus` and submenus; with extension items, the editor's own menu items are always enabled.
 - [x] Quick pick, input box and message buttons for extensions, in the palette and the notification.
 - [x] `globalState`/`workspaceState` persist (JSON under `~/.vsn/globalStorage` and `workspaceStorage`); `storageUri` is per folder.

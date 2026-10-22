@@ -4,10 +4,10 @@
 //! JSON on stdio. It exits when vsn closes its stdin.
 
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     io::{BufRead as _, BufReader, Write as _},
     process::{Command, Stdio},
-    sync::mpsc,
+    sync::{Mutex, mpsc},
 };
 
 use serde_json::{Value, json};
@@ -177,11 +177,7 @@ pub(super) fn palette_commands(focus: &[KeyContext]) -> Vec<(String, String)> {
             .as_array())
         .into_iter()
         .flatten()
-        .filter(|m| {
-            m["when"]
-                .as_str()
-                .is_some_and(|w| when_predicate(w).is_some_and(|p| p.depth_of(focus).is_none()))
-        })
+        .filter(|m| m["when"].as_str().is_some_and(|w| !when_holds(w, focus)))
         .filter_map(|m| m["command"].as_str())
         .collect();
         for c in e.contributes("commands") {
@@ -226,8 +222,7 @@ pub(super) fn menu_items(menu: &str, focus: &[KeyContext]) -> Vec<MenuItem> {
             let Some(id) = m["command"].as_str() else {
                 continue;
             };
-            let shown = (m["when"].as_str())
-                .is_none_or(|w| when_predicate(w).is_some_and(|p| p.depth_of(focus).is_some()));
+            let shown = m["when"].as_str().is_none_or(|w| when_holds(w, focus));
             let Some(c) = e.contributes("commands").find(|c| c["command"] == id) else {
                 continue;
             };
@@ -266,15 +261,178 @@ pub(super) fn editor_keys(path: &Path, lang: &str) -> KeyContext {
     keys
 }
 
-/// VS Code's `resource*` keys, their values as `when_predicate` spells them.
+/// VS Code's `resource*` keys.
 pub(super) fn resource_keys(keys: &mut KeyContext, path: &Path) {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     let ext = path
         .extension()
         .map(|e| format!(".{}", e.to_string_lossy()));
     keys.set("resourceScheme", "file");
-    keys.set("resourceFilename", mangle(&name));
-    keys.set("resourceExtname", mangle(&ext.unwrap_or_default()));
+    keys.set("resourceFilename", name.to_string());
+    keys.set("resourceExtname", ext.unwrap_or_default());
+    keys.set("resourcePath", path.to_string_lossy().to_string());
+}
+
+/// Context keys extensions set with the `setContext` command.
+pub(super) static SET_CONTEXT: Mutex<BTreeMap<String, Value>> = Mutex::new(BTreeMap::new());
+
+/// A context key's value: the deepest on the focus path that has it, else
+/// the platform's or an extension's, else null.
+fn context_value(key: &str, focus: &[KeyContext]) -> Value {
+    if let Some(cx) = focus.iter().rev().find(|cx| cx.contains(key)) {
+        return cx
+            .get(key)
+            .map_or(Value::Bool(true), |v| v.to_string().into());
+    }
+    let os = match std::env::consts::OS {
+        "macos" => "isMac",
+        "windows" => "isWindows",
+        _ => "isLinux",
+    };
+    match key {
+        "isMac" | "isWindows" | "isLinux" | "isWeb" => (key == os).into(),
+        "true" => true.into(),
+        "false" => false.into(),
+        _ => (SET_CONTEXT.lock().unwrap().get(key).cloned()).unwrap_or_default(),
+    }
+}
+
+/// Whether a VS Code `when` clause holds on the focus path, with all of its
+/// grammar: `!`, `&&`, `||`, parens, `==`, `!=`, `<`, `<=`, `>`, `>=`, `=~`
+/// regexes, `in` and `not in`.
+pub(super) fn when_holds(when: &str, focus: &[KeyContext]) -> bool {
+    When { rest: when, focus }.or()
+}
+
+struct When<'a> {
+    rest: &'a str,
+    focus: &'a [KeyContext],
+}
+
+impl When<'_> {
+    fn eat(&mut self, tok: &str) -> bool {
+        self.rest = self.rest.trim_start();
+        let ate = self.rest.starts_with(tok);
+        if ate {
+            self.rest = &self.rest[tok.len()..];
+        }
+        ate
+    }
+
+    fn or(&mut self) -> bool {
+        let mut holds = self.and();
+        while self.eat("||") {
+            holds |= self.and();
+        }
+        holds
+    }
+
+    fn and(&mut self) -> bool {
+        let mut holds = self.unary();
+        while self.eat("&&") {
+            holds &= self.unary();
+        }
+        holds
+    }
+
+    /// A key or quoted string, up to an operator.
+    fn word(&mut self) -> String {
+        self.rest = self.rest.trim_start();
+        let quote = self.rest.chars().next().filter(|c| *c == '\'' || *c == '"');
+        let (word, rest) = match quote {
+            Some(q) => {
+                let end = self.rest[1..].find(q).map_or(self.rest.len(), |i| i + 2);
+                (self.rest[1..end].trim_end_matches(q), &self.rest[end..])
+            }
+            None => {
+                let end = (self.rest)
+                    .find(|c: char| c.is_whitespace() || "!=<>()&|".contains(c))
+                    .unwrap_or(self.rest.len());
+                self.rest.split_at(end)
+            }
+        };
+        self.rest = rest;
+        word.to_string()
+    }
+
+    fn unary(&mut self) -> bool {
+        if self.eat("!") {
+            return !self.unary();
+        }
+        if self.eat("(") {
+            let holds = self.or();
+            self.eat(")");
+            return holds;
+        }
+        let value = context_value(&self.word(), self.focus);
+        let text = match &value {
+            Value::String(s) => s.clone(),
+            Value::Null => String::new(),
+            v => v.to_string(),
+        };
+        let number = |s: &str| s.trim().parse::<f64>().ok();
+        let cmp = |this: &mut Self, ord: fn(f64, f64) -> bool| {
+            let rhs = this.word();
+            number(&text)
+                .zip(number(&rhs))
+                .is_some_and(|(a, b)| ord(a, b))
+        };
+        if self.eat("=~") {
+            self.rest = self.rest.trim_start();
+            let Some(body) = self.rest.strip_prefix('/') else {
+                return false;
+            };
+            let mut escaped = false;
+            let end = body.char_indices().find(|&(_, c)| {
+                let end = c == '/' && !escaped;
+                escaped = c == '\\' && !escaped;
+                end
+            });
+            let end = end.map_or(body.len(), |(i, _)| i);
+            let flags = body[end..].trim_start_matches('/');
+            let flags_end = flags
+                .find(|c: char| !c.is_alphabetic())
+                .unwrap_or(flags.len());
+            let ci = flags[..flags_end].contains('i');
+            self.rest = &flags[flags_end..];
+            return (regex::RegexBuilder::new(&body[..end])
+                .case_insensitive(ci)
+                .build())
+            .is_ok_and(|re| re.is_match(&text));
+        }
+        if self.eat("==") {
+            self.eat("=");
+            return text == self.word();
+        }
+        if self.eat("!=") {
+            self.eat("=");
+            return text != self.word();
+        }
+        if self.eat("<=") {
+            return cmp(self, |a, b| a <= b);
+        }
+        if self.eat(">=") {
+            return cmp(self, |a, b| a >= b);
+        }
+        if self.eat("<") {
+            return cmp(self, |a, b| a < b);
+        }
+        if self.eat(">") {
+            return cmp(self, |a, b| a > b);
+        }
+        let not = self.eat("not ");
+        if self.eat("in ") {
+            let has = match context_value(&self.word(), self.focus) {
+                Value::Array(a) => a.iter().any(|v| v.as_str() == Some(&text)),
+                Value::Object(o) => o.contains_key(&text),
+                _ => false,
+            };
+            return has != not;
+        }
+        !matches!(value, Value::Null | Value::Bool(false))
+            && text != "0"
+            && !(value.is_string() && text.is_empty())
+    }
 }
 
 /// A `when` clause's word as a gpui identifier.
@@ -312,9 +470,11 @@ pub(super) fn editor_context_menu(menu: NativeMenu, path: &Path, window: &Window
 /// A VS Code `when` clause as a gpui context predicate. vsn's editor,
 /// terminal and explorer set VS Code's focus keys and `editorLangId`; other
 /// keys are unset, so false as in VS Code when nothing sets them.
-// ponytail: all keys of a clause are matched on one element's context, so
-// it's focus keys plus the editor's language; `<`, `=~` and `in` aren't
-// expressible in gpui's and their bindings are skipped.
+// ponytail: keybindings only (menus and the palette use `when_holds`). All
+// keys of a clause are matched on one element's context, so it's focus keys
+// plus the editor's language; `setContext` keys aren't seen, values that
+// aren't identifiers never match, and `<`, `=~` and `in` aren't expressible
+// in gpui's, so their bindings are skipped.
 fn when_predicate(when: &str) -> Option<KeyBindingContextPredicate> {
     if ["<", ">", "=~", " in "].iter().any(|op| when.contains(op)) {
         return None;
@@ -576,6 +736,7 @@ impl Workbench {
     /// Closes the host so a disabled or removed extension stops; the others
     /// activate again in a new one. Keybindings follow the installed set.
     pub(super) fn restart_extension_host(&mut self, cx: &mut Context<Self>) {
+        SET_CONTEXT.lock().unwrap().clear();
         let mapper = cx.keyboard_mapper().clone();
         cx.clear_key_bindings();
         cx.bind_keys(super::key_bindings(mapper.as_ref()));
@@ -822,6 +983,11 @@ impl Workbench {
                     self.settings_error(err, cx);
                 }
             }
+            "setContext" => {
+                let mut keys = SET_CONTEXT.lock().unwrap();
+                keys.insert(text("key"), msg["value"].clone());
+                cx.notify();
+            }
             // VS Code's own commands, run as vsn's actions in the window.
             "execute" => {
                 let command = text("command");
@@ -907,7 +1073,7 @@ impl Workbench {
 
 #[cfg(test)]
 mod tests {
-    use super::{KeyContext, editor_keys};
+    use super::{KeyContext, SET_CONTEXT, editor_keys, json, when_holds};
     use super::{contains, status_label, when_predicate};
     use std::path::Path;
 
@@ -941,10 +1107,32 @@ mod tests {
             when_predicate("editorTextFocus && view == 'x' || resourceExtname =~ /md/").is_none()
         );
         assert!(when_predicate("listFocus && foo > 2").is_none());
-        let rs = editor_keys(Path::new("c:/x/my-file.rs"), "rust");
-        let when = "resourceExtname == .rs && resourceFilename == 'my-file.rs'";
-        assert!(eval(when, &rs));
-        assert!(!eval("resourceExtname == .md", &rs));
+    }
+
+    #[test]
+    fn when_grammar() {
+        let rs = [editor_keys(Path::new("c:/x/my-file.rs"), "rust")];
+        let holds = |when: &str| when_holds(when, &rs);
+        assert!(holds(
+            "resourceExtname == .rs && resourceFilename == 'my-file.rs'"
+        ));
+        assert!(holds(
+            "editorTextFocus && !(editorLangId == markdown || false)"
+        ));
+        assert!(!holds("resourceExtname == .md || unsetKey"));
+        assert!(holds(r"resourceFilename =~ /^MY-.*\.RS$/i && editorFocus"));
+        assert!(!holds(r"resourceExtname =~ /\.md$/"));
+        assert!(holds("editorLangId != 'markdown' && isWindows != isMac"));
+        let values = json!({ "x.count": 3, "x.langs": ["rust", "go"], "x.on": false });
+        SET_CONTEXT
+            .lock()
+            .unwrap()
+            .extend(values.as_object().unwrap().clone());
+        assert!(holds("x.count > 2 && x.count <= 3 && !(x.count < 1)"));
+        assert!(holds(
+            "editorLangId in x.langs && resourceScheme not in x.langs"
+        ));
+        assert!(!holds("x.on || x.count >= 4"));
     }
 
     #[test]
