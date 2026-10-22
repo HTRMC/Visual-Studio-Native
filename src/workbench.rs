@@ -293,8 +293,9 @@ pub struct Workbench {
     search: Entity<InputState>,
     find: search::Find,
     palette: palette::Palette,
-    /// A warning toast over the status bar, and the timer that hides it.
-    toast: Option<(SharedString, Task<()>)>,
+    /// A warning toast over the status bar, whether the mouse is over it,
+    /// and the timer that hides it.
+    toast: Option<(SharedString, bool, Task<()>)>,
     debug: debug::Debug,
     /// Spawned when the Terminal tab first shows; the error if the shell didn't start.
     terminals: terminal::Terminals,
@@ -1722,25 +1723,32 @@ impl Workbench {
 
 impl Workbench {
     /// A warning toast, as VS Code's notifications show it, hidden after
-    /// VS Code's 18 seconds.
+    /// VS Code's 18 seconds, or later while the mouse is over it.
     // ponytail: one toast at a time and no notification center behind the bell.
     fn warn(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
         let hide = cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(std::time::Duration::from_secs(18))
-                .await;
-            this.update(cx, |this, cx| {
-                this.toast = None;
-                cx.notify();
-            })
-            .ok();
+            loop {
+                let wait = std::time::Duration::from_secs(18);
+                cx.background_executor().timer(wait).await;
+                let gone = this.update(cx, |this, cx| {
+                    if this.toast.as_ref().is_some_and(|t| t.1) {
+                        return false;
+                    }
+                    this.toast = None;
+                    cx.notify();
+                    true
+                });
+                if gone.unwrap_or(true) {
+                    break;
+                }
+            }
         });
-        self.toast = Some((message.into(), hide));
+        self.toast = Some((message.into(), false, hide));
         cx.notify();
     }
 
     fn render_toast(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
-        let (message, _) = self.toast.as_ref()?;
+        let (message, ..) = self.toast.as_ref()?;
         Some(
             h_flex()
                 .id("toast")
@@ -1759,6 +1767,11 @@ impl Workbench {
                 .shadow_lg()
                 .text_size(px(13.))
                 .text_color(col::fg())
+                .on_hover(cx.listener(|this, &over, _, _| {
+                    if let Some(t) = &mut this.toast {
+                        t.1 = over;
+                    }
+                }))
                 // notificationsWarningIcon.foreground
                 .child(codicon(icon::WARNING).text_color(c(0xCCA700)))
                 .child(div().flex_1().child(message.clone()))

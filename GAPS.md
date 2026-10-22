@@ -96,5 +96,6 @@ Differences from VS Code still to close, smallest first within each area.
 
 ## Workbench
 
-- [ ] Notifications: several toasts stacked, the bell's notification center,
-      and toasts that stay while the mouse is over them.
+- [x] A toast stays while the mouse is over it.
+- [ ] Notifications: several toasts stacked, and the bell's notification
+      center.
