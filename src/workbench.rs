@@ -2770,6 +2770,21 @@ impl Workbench {
                 ],
             ),
         };
+        // Extensions' `view/title` buttons, for VS Code's view ids.
+        // ponytail: built-in views only; extensions' own views aren't shown.
+        let view_id = match self.view {
+            View::Explorer => "workbench.explorer.fileView",
+            View::Search => "workbench.view.search",
+            View::Scm => "workbench.scm",
+            _ => "",
+        };
+        let mut keys = KeyContext::default();
+        keys.set("view", view_id);
+        let items = match view_id.is_empty() {
+            true => Vec::new(),
+            false => exthost::menu_items("view/title", &[keys]),
+        };
+        let view_buttons = self.ext_buttons("ext-view", items, None, cx);
         let header = h_flex()
             .h(px(35.))
             .flex_none()
@@ -2782,20 +2797,16 @@ impl Workbench {
             .when(self.view == View::Run, |d| {
                 d.children(self.render_run_title(cx))
             })
-            .child(
-                h_flex()
-                    .gap(px(4.))
-                    .children(actions.iter().enumerate().map(|(i, &(ch, text))| {
-                        match (self.view, text == MORE.1) {
-                            (View::Extensions, true) => {
-                                extensions::more_button().into_any_element()
-                            }
-                            _ => action_button(("sb-act", i), ch)
-                                .tooltip(tip(text))
-                                .into_any_element(),
-                        }
-                    })),
-            );
+            .child(h_flex().gap(px(4.)).children(view_buttons).children(
+                actions.iter().enumerate().map(|(i, &(ch, text))| {
+                    match (self.view, text == MORE.1) {
+                        (View::Extensions, true) => extensions::more_button().into_any_element(),
+                        _ => action_button(("sb-act", i), ch)
+                            .tooltip(tip(text))
+                            .into_any_element(),
+                    }
+                }),
+            ));
 
         let body = match self.view {
             View::Explorer => self.render_explorer(cx).into_any_element(),
@@ -3476,10 +3487,15 @@ impl Workbench {
         (items, Some(doc.path.clone()))
     }
 
-    /// Extensions' `editor/title` buttons for the active editor, run with
-    /// its Uri: the "navigation" group's (the others are in "...").
-    fn editor_title_buttons(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let (items, path) = self.editor_title_items();
+    /// Extensions' title buttons, run with `path`'s Uri: the "navigation"
+    /// group's (VS Code puts the others in "...").
+    fn ext_buttons(
+        &self,
+        id: &'static str,
+        items: Vec<exthost::MenuItem>,
+        path: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
         let items = items.into_iter().filter(|i| i.navigation).enumerate();
         items
             .map(|(ix, item)| {
@@ -3487,9 +3503,9 @@ impl Workbench {
                 let path = path.clone();
                 let action = exthost::RunExtensionCommand { id: item.id, path };
                 let button = match item.icon {
-                    Some(ch) => action_button(("ext-title", ix), ch),
+                    Some(ch) => action_button((id, ix), ch),
                     None => div()
-                        .id(("ext-title", ix))
+                        .id((id, ix))
                         .px(px(4.))
                         .rounded(px(5.))
                         .cursor_pointer()
@@ -3645,7 +3661,8 @@ impl Workbench {
                 .context_menu({
                     let (wb, editor) = (wb.clone(), doc.editor.clone());
                     let last = ix + 1 == self.docs.len();
-                    move |menu, _, _| editor_tab_menu(menu, &wb, &editor, last)
+                    let (path, lang) = (doc.path.clone(), doc.lang);
+                    move |menu, _, _| editor_tab_menu(menu, &wb, &editor, last, &path, lang)
                 })
         });
 
@@ -3736,7 +3753,10 @@ impl Workbench {
                             .border_b_1()
                             .border_color(col::border())
                             .text_color(col::fg())
-                            .children(self.editor_title_buttons(cx))
+                            .children({
+                                let (items, path) = self.editor_title_items();
+                                self.ext_buttons("ext-title", items, path, cx)
+                            })
                             .child(
                                 action_button("split-editor", icon::SPLIT_HORIZONTAL)
                                     .tooltip(tip("Split Editor Right")),
@@ -5763,6 +5783,8 @@ fn editor_tab_menu(
     wb: &WeakEntity<Workbench>,
     editor: &Entity<EditorState>,
     last: bool,
+    path: &Path,
+    lang: &str,
 ) -> PopupMenu {
     type Act = fn(&mut Workbench, usize, &mut Window, &mut Context<Workbench>);
     let item = |label: &'static str, action: Option<Box<dyn Action>>, act: Act| {
@@ -5776,51 +5798,57 @@ fn editor_tab_menu(
             .ok();
         })
     };
-    menu.item(item(
-        "Close",
-        Some(Box::new(CloseEditor)),
-        |this, ix, w, cx| this.close(ix, w, cx),
-    ))
-    .item(item("Close Others", None, |this, ix, w, cx| {
-        this.close_editors(|i, _| i != ix, w, cx)
-    }))
-    .item(
-        item("Close to the Right", None, |this, ix, w, cx| {
-            this.close_editors(|i, _| i > ix, w, cx)
-        })
-        .disabled(last),
-    )
-    .item(item(
-        "Close Saved",
-        Some(Box::new(CloseSavedEditors)),
-        |this, _, w, cx| this.remove_where(|d| !d.dirty, w, cx),
-    ))
-    .item(item(
-        "Close All",
-        Some(Box::new(CloseAllEditors)),
-        |this, _, w, cx| this.close_editors(|_, _| true, w, cx),
-    ))
-    .separator()
-    .item(item(
-        "Copy Path",
-        Some(Box::new(CopyPath)),
-        |this, ix, _, cx| this.copy_path(ix, false, cx),
-    ))
-    .item(item(
-        "Copy Relative Path",
-        Some(Box::new(CopyRelativePath)),
-        |this, ix, _, cx| this.copy_path(ix, true, cx),
-    ))
-    .separator()
-    .item(item(
-        "Reveal in File Explorer",
-        Some(Box::new(RevealInFileExplorer)),
-        |this, ix, _, _| this.reveal_in_os(ix),
-    ))
-    .item(item("Reveal in Explorer View", None, |this, ix, w, cx| {
-        this.activate(ix, w, cx);
-        this.reveal_in_tree(&this.docs[ix].path.clone(), true, cx)
-    }))
+    let menu = menu
+        .item(item(
+            "Close",
+            Some(Box::new(CloseEditor)),
+            |this, ix, w, cx| this.close(ix, w, cx),
+        ))
+        .item(item("Close Others", None, |this, ix, w, cx| {
+            this.close_editors(|i, _| i != ix, w, cx)
+        }))
+        .item(
+            item("Close to the Right", None, |this, ix, w, cx| {
+                this.close_editors(|i, _| i > ix, w, cx)
+            })
+            .disabled(last),
+        )
+        .item(item(
+            "Close Saved",
+            Some(Box::new(CloseSavedEditors)),
+            |this, _, w, cx| this.remove_where(|d| !d.dirty, w, cx),
+        ))
+        .item(item(
+            "Close All",
+            Some(Box::new(CloseAllEditors)),
+            |this, _, w, cx| this.close_editors(|_, _| true, w, cx),
+        ))
+        .separator()
+        .item(item(
+            "Copy Path",
+            Some(Box::new(CopyPath)),
+            |this, ix, _, cx| this.copy_path(ix, false, cx),
+        ))
+        .item(item(
+            "Copy Relative Path",
+            Some(Box::new(CopyRelativePath)),
+            |this, ix, _, cx| this.copy_path(ix, true, cx),
+        ))
+        .separator()
+        .item(item(
+            "Reveal in File Explorer",
+            Some(Box::new(RevealInFileExplorer)),
+            |this, ix, _, _| this.reveal_in_os(ix),
+        ))
+        .item(item("Reveal in Explorer View", None, |this, ix, w, cx| {
+            this.activate(ix, w, cx);
+            this.reveal_in_tree(&this.docs[ix].path.clone(), true, cx)
+        }));
+    let mut focus = KeyContext::default();
+    focus.set("resourceLangId", lang);
+    exthost::resource_keys(&mut focus, path);
+    let items = exthost::menu_items("editor/title/context", &[focus]);
+    ext_menu_items(menu, wb, &items, Some(path))
 }
 
 /// An editor tab being dragged: its index, and its name to draw under the mouse.
