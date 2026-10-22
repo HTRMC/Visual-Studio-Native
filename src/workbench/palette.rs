@@ -46,8 +46,8 @@ const LABEL: i32 = 1 << 16;
 const EDITOR_HISTORY: usize = 200;
 const COMMAND_HISTORY: usize = 50;
 
-/// Change Icon's grid columns, about 32px each at the palette's full width.
-const ICON_COLS: usize = 18;
+/// Change Icon's grid columns: VS Code's 486px box less 30px, in 36px cells.
+const ICON_COLS: usize = 12;
 
 /// What the palette offers, VS Code's titles. Only commands that do something.
 fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
@@ -131,8 +131,8 @@ enum Pick {
     Profile(usize, Vec<usize>),
     /// Index into the terminal colors, or None to reset, and the matched offsets.
     Color(Option<usize>, Vec<usize>),
-    /// A row of Change Icon's grid: codicon names and glyphs.
-    Icons(Vec<(&'static str, char)>),
+    /// A row of Change Icon's grid: codicon names, glyphs and matched offsets.
+    Icons(Vec<(&'static str, char, Vec<usize>)>),
 }
 
 /// A definition in the active editor, for `@`.
@@ -1427,7 +1427,7 @@ impl Row {
 /// A row of Change Icon's grid, the icon at `at` highlighted. Pressing one
 /// highlights it, so the list's click confirms that icon.
 fn icon_row(
-    icons: &[(&str, char)],
+    icons: &[(&str, char, Vec<usize>)],
     at: Option<usize>,
     row: usize,
     this: WeakEntity<Workbench>,
@@ -1436,7 +1436,7 @@ fn icon_row(
         let this = this.clone();
         div()
             .flex_1()
-            .h(px(28.))
+            .h(px(36.))
             .flex()
             .items_center()
             .justify_center()
@@ -1458,9 +1458,8 @@ fn icon_row(
         .mx(rems(-0.5))
         .my(rems(-0.375))
         .px(rems(0.25))
-        .py(px(2.))
         .bg(c(0x202122))
-        .children(icons.iter().enumerate().map(|(i, &(_, ch))| cell(i, ch)))
+        .children(icons.iter().enumerate().map(|(i, &(_, ch, _))| cell(i, ch)))
         .children((icons.len()..ICON_COLS).map(|_| div().flex_1()))
 }
 
@@ -1683,7 +1682,7 @@ impl Workbench {
         }
         if p.iconing.is_some() {
             let icons: Vec<_> = codicons()
-                .filter(|(name, _)| command_matches(query.trim(), name).is_some())
+                .filter_map(|(name, ch)| Some((name, ch, command_matches(query.trim(), name)?)))
                 .collect();
             let shown = icons.chunks(ICON_COLS).map(|r| Pick::Icons(r.to_vec()));
             p.col = 0;
@@ -1886,7 +1885,7 @@ impl Workbench {
                 (None, None)
             }
             Some(Pick::Icons(icons)) => {
-                if let (Some(id), Some(&(_, ch))) = (p.iconing, icons.get(p.col)) {
+                if let (Some(id), Some(&(_, ch, _))) = (p.iconing, icons.get(p.col)) {
                     self.set_terminal_icon(id, ch, cx);
                 }
                 (None, None)
@@ -1941,7 +1940,7 @@ impl Workbench {
         } else if p.renaming.is_some() {
             "Enter terminal name"
         } else if p.iconing.is_some() {
-            "Select an icon for the terminal"
+            "Search icons"
         } else if p.coloring.is_some() {
             "Choose a color for the terminal"
         } else if p.query.starts_with('>') {
@@ -1952,14 +1951,18 @@ impl Workbench {
         let empty = p.empty.clone();
         // VS Code names the highlighted icon under the grid.
         let icon_name = p.iconing.and_then(|_| match p.shown.get(p.selected) {
-            Some(Pick::Icons(icons)) => icons.get(p.col).map(|i| i.0),
+            Some(Pick::Icons(icons)) => icons.get(p.col).map(|i| (i.0, i.2.clone())),
             _ => None,
         });
         // VS Code's quickInput sizing: 62% wide up to 600px, list 40% of the
         // window in whole 44px steps, at most 20 rows of 22px.
         let viewport = window.viewport_size();
-        let width = (viewport.width.as_f32() * 0.62).min(600.);
-        let list_h = ((viewport.height.as_f32() * 0.4 / 44.).floor() * 44. + 6.).min(440.);
+        let mut width = (viewport.width.as_f32() * 0.62).min(600.);
+        let mut list_h = ((viewport.height.as_f32() * 0.4 / 44.).floor() * 44. + 6.).min(440.);
+        // Change Icon's box is VS Code's 486x260: input, five rows, the name.
+        if p.iconing.is_some() {
+            (width, list_h) = (486., 180.);
+        }
 
         let mut list = Command::new(&p.state)
             .bordered(false)
@@ -2115,13 +2118,16 @@ impl Workbench {
                             .update(cx, |this, cx| this.palette_confirm(ix.row, window, cx))
                             .ok();
                     })
-                    .when_some(icon_name, |list, name| {
+                    .when_some(icon_name, |list, (name, hits)| {
                         list.footer(move |_, _, _| {
                             div()
                                 .px(px(10.))
                                 .py(px(6.))
                                 .text_color(col::fg_muted())
-                                .child(name)
+                                .child(
+                                    StyledText::new(name)
+                                        .with_highlights(highlights(name, &hits, false)),
+                                )
                         })
                     })
                     .empty(move |_, _, _| {
