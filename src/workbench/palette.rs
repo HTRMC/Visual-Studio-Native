@@ -95,6 +95,18 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
             "Terminal: Toggle Size to Content Width",
             Box::new(ToggleSizeToContentWidth),
         ),
+        ("Terminal: Scroll Up (Line)", Box::new(ScrollTerminalUp)),
+        ("Terminal: Scroll Down (Line)", Box::new(ScrollTerminalDown)),
+        ("Terminal: Scroll Up (Page)", Box::new(ScrollTerminalUpPage)),
+        (
+            "Terminal: Scroll Down (Page)",
+            Box::new(ScrollTerminalDownPage),
+        ),
+        ("Terminal: Scroll to Top", Box::new(ScrollTerminalToTop)),
+        (
+            "Terminal: Scroll to Bottom",
+            Box::new(ScrollTerminalToBottom),
+        ),
         (
             "Terminal: Select Default Profile",
             Box::new(SelectDefaultProfile),

@@ -66,7 +66,7 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] The scrollbars fade in and out as VS Code's do.
 - [x] Scrolling (typing back to the bottom, find's jumps, a drag's
       autoscroll) reveals the scrollbars briefly with the mouse elsewhere.
-- [ ] Keyboard scrolling: Terminal: Scroll Up/Down (Line) Ctrl+Alt+PageUp/
+- [x] Keyboard scrolling: Terminal: Scroll Up/Down (Line) Ctrl+Alt+PageUp/
       PageDown, (Page) Shift+PageUp/PageDown, Scroll to Top/Bottom
       Ctrl+Home/End, outside full-screen programs.
 - [ ] Find's matches aren't marked on the vertical scrollbar (VS Code's

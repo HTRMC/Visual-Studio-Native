@@ -1267,6 +1267,21 @@ impl Workbench {
         cx.notify();
     }
 
+    /// VS Code's Terminal: Scroll Up/Down by lines or pages (a page keeps one
+    /// line in view), saturating to the top or bottom.
+    pub(super) fn scroll_terminal(&mut self, lines: isize, pages: isize, cx: &mut Context<Self>) {
+        let ts = &mut self.terminals;
+        let Some(t) = ts.list.get_mut(ts.active) else {
+            return;
+        };
+        let screen = t.parser.screen_mut();
+        let page = screen.size().0.get() as isize - 1;
+        let by = lines.saturating_add(pages.saturating_mul(page));
+        screen.set_scrollback(screen.scrollback().saturating_add_signed(by));
+        t.reveal();
+        cx.notify();
+    }
+
     /// VS Code's Unsplit Terminal: the active terminal leaves its split group
     /// for a group of its own at the end of the list.
     pub(super) fn unsplit_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1911,6 +1926,8 @@ impl Workbench {
         let (selecting, drag) = (t.selecting, wb.clone());
         let thumb_axis = t.thumb.map(|(axis, _)| axis);
         let thumbing = thumb_axis.is_some();
+        // Full-screen programs get the scroll keys.
+        let alt = t.parser.screen().alternate_screen();
         // VS Code's scrollbars fade in over 100ms, and out over 800ms
         // starting 500ms after the mouse leaves.
         let shown = match t.over {
@@ -1936,7 +1953,10 @@ impl Workbench {
                 }
             }))
             .track_focus(&t.focus)
-            .key_context("Terminal")
+            .key_context(match alt {
+                true => "Terminal altBuffer",
+                false => "Terminal",
+            })
             .map(|d| match hover {
                 Some(_) => d.cursor_pointer(),
                 None => d.cursor_text(),

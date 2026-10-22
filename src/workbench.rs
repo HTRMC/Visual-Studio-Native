@@ -75,6 +75,12 @@ actions!(
         FocusPreviousTerminal,
         FindInTerminal,
         ToggleSizeToContentWidth,
+        ScrollTerminalUp,
+        ScrollTerminalDown,
+        ScrollTerminalUpPage,
+        ScrollTerminalDownPage,
+        ScrollTerminalToTop,
+        ScrollTerminalToBottom,
         SelectDefaultProfile,
         NewTextFile,
         Noop,
@@ -122,6 +128,36 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         shifted("ctrl-shift-5", Box::new(SplitTerminal), Some("Terminal")),
         KeyBinding::new("ctrl-f", FindInTerminal, Some("Terminal")),
         KeyBinding::new("alt-z", ToggleSizeToContentWidth, Some("Terminal")),
+        KeyBinding::new(
+            "ctrl-alt-pageup",
+            ScrollTerminalUp,
+            Some("Terminal && !altBuffer"),
+        ),
+        KeyBinding::new(
+            "ctrl-alt-pagedown",
+            ScrollTerminalDown,
+            Some("Terminal && !altBuffer"),
+        ),
+        KeyBinding::new(
+            "shift-pageup",
+            ScrollTerminalUpPage,
+            Some("Terminal && !altBuffer"),
+        ),
+        KeyBinding::new(
+            "shift-pagedown",
+            ScrollTerminalDownPage,
+            Some("Terminal && !altBuffer"),
+        ),
+        KeyBinding::new(
+            "ctrl-home",
+            ScrollTerminalToTop,
+            Some("Terminal && !altBuffer"),
+        ),
+        KeyBinding::new(
+            "ctrl-end",
+            ScrollTerminalToBottom,
+            Some("Terminal && !altBuffer"),
+        ),
         KeyBinding::new("ctrl-pagedown", FocusNextTerminalGroup, Some("Terminal")),
         KeyBinding::new("ctrl-pageup", FocusPreviousTerminalGroup, Some("Terminal")),
         KeyBinding::new("ctrl-n", NewTextFile, None),
@@ -1770,6 +1806,24 @@ impl Render for Workbench {
             )
             .on_action(cx.listener(|this, _: &ToggleSizeToContentWidth, _, cx| {
                 this.toggle_size_to_content_width(cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &ScrollTerminalUp, _, cx| this.scroll_terminal(1, 0, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ScrollTerminalDown, _, cx| this.scroll_terminal(-1, 0, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ScrollTerminalUpPage, _, cx| this.scroll_terminal(0, 1, cx)),
+            )
+            .on_action(cx.listener(|this, _: &ScrollTerminalDownPage, _, cx| {
+                this.scroll_terminal(0, -1, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ScrollTerminalToTop, _, cx| {
+                this.scroll_terminal(isize::MAX, 0, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ScrollTerminalToBottom, _, cx| {
+                this.scroll_terminal(isize::MIN, 0, cx)
             }))
             .on_action(cx.listener(|this, _: &SelectDefaultProfile, window, cx| {
                 this.select_default_profile(window, cx)
