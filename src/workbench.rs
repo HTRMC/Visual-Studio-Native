@@ -16,6 +16,7 @@ use ignore::overrides::Override;
 use notify::{EventKind, RecursiveMode, Watcher as _, event::ModifyKind};
 
 use gpui_kit::component::{
+    Sizable as _,
     button::{Button, ButtonVariants as _},
     h_resizable,
     input::{self, Editor, EditorState, Input, InputEvent, InputState, RopeExt as _, TabSize},
@@ -463,7 +464,8 @@ pub struct Workbench {
     /// and the timer that hides it.
     toast: Option<(SharedString, bool, Task<()>)>,
     /// Every notification, newest first, as the bell's center lists them.
-    notes: Vec<SharedString>,
+    /// Notifications, newest first, each with whether it offers Open Settings.
+    notes: Vec<(SharedString, bool)>,
     /// The breadcrumb row, scrolled to show the file name.
     crumbs: ScrollHandle,
     /// The file and row width the breadcrumb and the tab strip were last
@@ -3148,9 +3150,17 @@ impl Workbench {
     /// later while the mouse is over it. A repeat replaces the old one.
     // ponytail: one toast at a time, and warnings only.
     fn warn(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
-        let message = message.into();
+        self.note(message.into(), false, cx);
+    }
+
+    /// A warning with VS Code's "Open Settings" button, for settings.json errors.
+    fn warn_settings(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.note(message.into(), true, cx);
+    }
+
+    fn note(&mut self, message: SharedString, settings: bool, cx: &mut Context<Self>) {
         self.clear_note(&message, cx);
-        self.notes.insert(0, message.clone());
+        self.notes.insert(0, (message.clone(), settings));
         if self.center {
             return;
         }
@@ -3244,7 +3254,7 @@ impl Workbench {
     /// Clears a notification, from the center and its toast.
     fn clear_note(&mut self, message: &SharedString, cx: &mut Context<Self>) {
         let count = self.notes.len();
-        self.notes.retain(|n| n != message);
+        self.notes.retain(|n| &n.0 != message);
         if self.notes.len() < count && !self.center {
             self.unseen = self.unseen.saturating_sub(1);
         }
@@ -3254,16 +3264,19 @@ impl Workbench {
         cx.notify();
     }
 
-    /// One notification's warning icon, message and close button.
+    /// One notification's warning icon, message, close button and, below
+    /// them, its Open Settings button.
     fn note_row(
         &self,
         id: impl Into<ElementId>,
-        message: &SharedString,
+        (message, settings): &(SharedString, bool),
         cx: &mut Context<Self>,
     ) -> Div {
+        let id = id.into();
         let gone = message.clone();
+        let open = message.clone();
         // Icon and close button stay on a wrapped message's first line, as VS Code's do.
-        h_flex()
+        let row = h_flex()
             .items_start()
             .min_h(px(42.))
             .px(px(8.))
@@ -3279,13 +3292,26 @@ impl Workbench {
                     .py(px(4.))
                     .child(message.clone()),
             )
-            .child(
-                action_button(id, icon::CLOSE).on_click(cx.listener(move |this, _, _, cx| {
+            .child(action_button(id.clone(), icon::CLOSE).on_click(cx.listener(
+                move |this, _, _, cx| {
                     this.clear_note(&gone, cx);
                     // The center closes once it's empty, as VS Code's does.
                     this.center &= !this.notes.is_empty();
-                })),
-            )
+                },
+            )));
+        v_flex().child(row).when(*settings, |d| {
+            // An action closes its notification, as in VS Code.
+            let button = Button::new((id, "open-settings"))
+                .primary()
+                .small()
+                .label("Open Settings")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.clear_note(&open, cx);
+                    this.center &= !this.notes.is_empty();
+                    this.open_settings(window, cx);
+                }));
+            d.child(h_flex().justify_end().px(px(8.)).pb(px(8.)).child(button))
+        })
     }
 
     /// VS Code's notification center, opened from the bell.
@@ -3356,8 +3382,9 @@ impl Workbench {
 
     fn render_toast(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
         let (message, ..) = self.toast.as_ref()?;
+        let note = self.notes.iter().find(|n| &n.0 == message)?;
         Some(
-            self.note_row("toast-close", message, cx)
+            self.note_row("toast-close", note, cx)
                 .id("toast")
                 .absolute()
                 .right(px(11.))

@@ -2428,7 +2428,7 @@ impl Workbench {
             }
             Some(&Pick::Profile(ix, _)) => {
                 if let Err(err) = set_default_profile(&p.profiles.as_ref().unwrap()[ix].name) {
-                    self.warn(err, cx);
+                    self.warn_settings(err, cx);
                 }
                 (None, None)
             }

@@ -138,8 +138,12 @@ Differences from VS Code still to close, smallest first within each area.
       JSON, dropping its comments (VS Code edits the one property in place).
 - [x] Writing the default terminal profile into a settings.json that doesn't
       parse failed silently (VS Code: "Unable to write into user settings...").
-- [ ] That notification lacks VS Code's "Open Settings" button and error
-      severity (toasts are warnings only, without actions).
+- [x] That notification lacked VS Code's "Open Settings" button; it now has
+      one, which closes the notification and opens settings.json.
+- [ ] It's still a warning; VS Code shows it as an error (red icon, and it
+      toasts through Do Not Disturb).
+- [ ] Notification buttons use gpui-component's primary colour, not
+      button.background (#0078D4).
 - [x] A long notification ran past the toast's edge, pushing its close
       button out of view; it now wraps.
 - [x] A notification's icon and close button centred on a wrapped message;
