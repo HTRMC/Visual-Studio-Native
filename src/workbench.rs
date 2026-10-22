@@ -98,6 +98,7 @@ actions!(
         SelectDefaultProfile,
         ChangeEol,
         ChangeLanguageMode,
+        ChangeEncoding,
         IndentUsingSpaces,
         IndentUsingTabs,
         ChangeTabDisplaySize,
@@ -310,6 +311,20 @@ fn with_eol(text: &str, crlf: bool) -> String {
 }
 
 impl Encoding {
+    // ponytail: VS Code lists ~50 encodings (Windows 1252, Shift JIS, ...);
+    // these 4 are the ones std can read and write without encoding_rs.
+    const ALL: [Self; 4] = [Self::Utf8, Self::Utf8Bom, Self::Utf16Le, Self::Utf16Be];
+
+    /// VS Code's `files.encoding` id, shown beside the label in its picker.
+    fn id(self) -> &'static str {
+        match self {
+            Self::Utf8 => "utf8",
+            Self::Utf8Bom => "utf8bom",
+            Self::Utf16Le => "utf16le",
+            Self::Utf16Be => "utf16be",
+        }
+    }
+
     fn label(self) -> &'static str {
         match self {
             Self::Utf8 => "UTF-8",
@@ -324,7 +339,26 @@ impl Encoding {
     /// NUL, else UTF-8 (invalid sequences become U+FFFD, as in VS Code).
     /// `None` means binary.
     fn decode(bytes: &[u8]) -> Option<(String, Self)> {
-        let utf16 = |bytes: &[u8], be: bool| {
+        let head = &bytes[..bytes.len().min(512)];
+        // ASCII as UTF-16 LE has its zero bytes at exactly the odd indexes, BE at the even ones.
+        let zeros_at_odd =
+            |odd: bool| (head.iter().enumerate()).all(|(i, &b)| (b == 0) == ((i % 2 == 1) == odd));
+        let encoding = match bytes {
+            [0xEF, 0xBB, 0xBF, ..] => Self::Utf8Bom,
+            [0xFF, 0xFE, ..] => Self::Utf16Le,
+            [0xFE, 0xFF, ..] => Self::Utf16Be,
+            _ if !head.contains(&0) => Self::Utf8,
+            _ if zeros_at_odd(true) => Self::Utf16Le,
+            _ if zeros_at_odd(false) => Self::Utf16Be,
+            _ => return None,
+        };
+        Some((encoding.decode_as(bytes), encoding))
+    }
+
+    /// `bytes` read as this encoding, less a BOM of its own.
+    fn decode_as(self, bytes: &[u8]) -> String {
+        let utf16 = |bom: [u8; 2], be: bool| {
+            let bytes = bytes.strip_prefix(&bom).unwrap_or(bytes);
             let units: Vec<u16> = bytes
                 .as_chunks::<2>()
                 .0
@@ -336,26 +370,13 @@ impl Encoding {
                 .collect();
             String::from_utf16_lossy(&units)
         };
-        let utf8 = |bytes| String::from_utf8_lossy(bytes).into_owned();
-        match bytes {
-            [0xEF, 0xBB, 0xBF, rest @ ..] => return Some((utf8(rest), Self::Utf8Bom)),
-            [0xFF, 0xFE, rest @ ..] => return Some((utf16(rest, false), Self::Utf16Le)),
-            [0xFE, 0xFF, rest @ ..] => return Some((utf16(rest, true), Self::Utf16Be)),
-            _ => {}
-        }
-        let head = &bytes[..bytes.len().min(512)];
-        if !head.contains(&0) {
-            return Some((utf8(bytes), Self::Utf8));
-        }
-        // ASCII as UTF-16 LE has its zero bytes at exactly the odd indexes, BE at the even ones.
-        let zeros_at_odd =
-            |odd: bool| (head.iter().enumerate()).all(|(i, &b)| (b == 0) == ((i % 2 == 1) == odd));
-        if zeros_at_odd(true) {
-            Some((utf16(bytes, false), Self::Utf16Le))
-        } else if zeros_at_odd(false) {
-            Some((utf16(bytes, true), Self::Utf16Be))
-        } else {
-            None
+        match self {
+            Self::Utf8 | Self::Utf8Bom => {
+                let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
+                String::from_utf8_lossy(bytes).into_owned()
+            }
+            Self::Utf16Le => utf16([0xFF, 0xFE], false),
+            Self::Utf16Be => utf16([0xFE, 0xFF], true),
         }
     }
 
@@ -565,19 +586,46 @@ impl Workbench {
         self.push_doc(path, String::new(), Encoding::Utf8, false, true, window, cx);
     }
 
-    /// The binary placeholder's Open Anyway: the file as UTF-8, whatever it holds.
-    fn open_anyway(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+    /// Reads editor `ix`'s file again as `encoding`, dropping its changes:
+    /// Reopen with Encoding, and the binary placeholder's Open Anyway (UTF-8,
+    /// whatever the file holds).
+    fn reopen(
+        &mut self,
+        ix: usize,
+        encoding: Encoding,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(bytes) = self.docs.get(ix).and_then(|d| fs::read(&d.path).ok()) else {
             return;
         };
-        let text = String::from_utf8_lossy(&bytes).into_owned();
-        let (path, lang) = (self.docs[ix].path.clone(), self.docs[ix].lang);
+        // VS Code keeps a file's UTF-8 BOM when it's reopened as UTF-8.
+        let encoding = match (encoding, &bytes[..]) {
+            (Encoding::Utf8, [0xEF, 0xBB, 0xBF, ..]) => Encoding::Utf8Bom,
+            _ => encoding,
+        };
+        let text = encoding.decode_as(&bytes);
+        let doc = &self.docs[ix];
+        let (path, lang) = (doc.path.clone(), doc.lang);
+        let old = doc.editor.read(cx);
+        let (pos, scroll) = (old.cursor_position(), old.scroll_offset());
+        let crlf = match text.contains('\n') {
+            true => text.contains("\r\n"),
+            false => doc.crlf,
+        };
         let indent = detect_indent(&text);
         let editor = self.new_editor(&path, lang, text, indent, window, cx);
+        editor.update(cx, |e, cx| {
+            e.set_cursor_position(pos, window, cx);
+            e.set_scroll_offset(scroll, cx);
+        });
         let doc = &mut self.docs[ix];
         doc.indent = indent;
         doc.saved = text_hash(&editor, cx);
         doc.editor = editor;
+        doc.encoding = encoding;
+        doc.crlf = crlf;
+        doc.dirty = false;
         doc.binary = false;
         self.activate(ix, window, cx);
     }
@@ -748,8 +796,9 @@ impl Workbench {
                 let Some(ix) = this.docs.iter().position(|d| d.editor == editor) else {
                     return;
                 };
-                let text = with_eol(&editor.read(cx).value(), this.docs[ix].crlf);
-                if let Err(err) = fs::write(&path, &text) {
+                let doc = &this.docs[ix];
+                let text = with_eol(&editor.read(cx).value(), doc.crlf);
+                if let Err(err) = fs::write(&path, doc.encoding.encode(&text)) {
                     eprintln!("save {}: {err}", path.display());
                     return;
                 }
@@ -1803,7 +1852,7 @@ impl Workbench {
                                     .px(px(10.))
                                     .m(px(4.))
                                     .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.open_anyway(ix, window, cx)
+                                        this.reopen(ix, Encoding::Utf8, window, cx)
                                     })),
                             ),
                     )
@@ -1989,6 +2038,7 @@ impl Workbench {
                     })
                     .into_any_element(),
                 item("sb-enc", "Select Encoding")
+                    .on_click(cx.listener(|this, _, window, cx| this.change_encoding(window, cx)))
                     .child(doc.encoding.label())
                     .into_any_element(),
                 item("sb-eol", "Select End of Line Sequence")
@@ -2452,6 +2502,11 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &ChangeLanguageMode, window, cx| {
                 this.change_language(window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &ChangeEncoding, window, cx| {
+                    this.change_encoding(window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &SelectDefaultProfile, window, cx| {
                 this.select_default_profile(window, cx)
             }))
@@ -2824,6 +2879,13 @@ mod tests {
             Some(("hi".into(), Encoding::Utf8Bom))
         );
         assert_eq!(Encoding::Utf8Bom.encode("hi"), bom);
+        // Reopen with Encoding strips only a BOM of the encoding's own.
+        assert_eq!(Encoding::Utf8.decode_as(bom), "hi");
+        assert_eq!(Encoding::Utf16Le.decode_as(b"\xFF\xFEa\0b\0"), "ab");
+        assert_eq!(
+            Encoding::Utf16Be.decode_as(b"\xFF\xFEa\0"),
+            "\u{FFFE}\u{6100}"
+        );
         assert_eq!(Encoding::decode(b"h\xE9").unwrap().1, Encoding::Utf8);
     }
 }

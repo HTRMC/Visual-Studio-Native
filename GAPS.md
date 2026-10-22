@@ -125,11 +125,13 @@ Differences from VS Code still to close, smallest first within each area.
       language.
 - [x] Indentation detected per file on open (`editor.detectIndentation`): status bar reads "Spaces: N" or "Tab Size: N".
 - [x] Clicking Spaces opens Select Action (Indent Using Spaces/Tabs, Change Tab Display Size, Detect Indentation, Convert Indentation, Trim Trailing Whitespace) and Select Tab Size for Current File.
-- [ ] Clicking the encoding opens Reopen/Save with Encoding.
+- [x] Clicking the encoding (or Change File Encoding) opens Reopen/Save with Encoding; Save As keeps the file's encoding.
+- [ ] Reopen/Save with Encoding offer only UTF-8, UTF-8 with BOM and UTF-16 LE/BE; VS Code's other ~45 (Windows 1252, Shift JIS, ...) need encoding_rs, a new dependency.
+- [ ] No `files.encoding` / `files.autoGuessEncoding` settings: new files are always UTF-8 and a BOM-less file is only told apart as UTF-8 or UTF-16.
 - [x] Indentation actions are in the command palette; Trim Trailing Whitespace is Ctrl+K Ctrl+X.
 - [ ] Reindent Lines / Reindent Selected Lines (need the language's indent rules).
 - [ ] Changing indentation rebuilds the editor, dropping undo history (Convert/Trim can't be undone).
-- [ ] Tab characters render zero-width: gpui-base shapes `	` as text instead of advancing to the next tab stop.
+- [ ] Tab characters render zero-width: gpui-base shapes `\t` as text instead of advancing to the next tab stop.
 - [x] Status bar Col and Go to Line columns use the file's detected tab size.
 - [ ] Change Language Mode rebuilds the editor (gpui-base's set_highlighter
       doesn't re-highlight a shown one), so undo history is lost.

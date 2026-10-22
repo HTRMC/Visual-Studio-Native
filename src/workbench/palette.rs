@@ -129,6 +129,7 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ),
         ("Change End of Line Sequence", Box::new(ChangeEol)),
         ("Change Language Mode", Box::new(ChangeLanguageMode)),
+        ("Change File Encoding", Box::new(ChangeEncoding)),
         (INDENT_ACTIONS[0], Box::new(IndentUsingSpaces)),
         (INDENT_ACTIONS[1], Box::new(IndentUsingTabs)),
         (INDENT_ACTIONS[2], Box::new(ChangeTabDisplaySize)),
@@ -184,6 +185,10 @@ enum Pick {
     /// Select Indentation's action (an index into `INDENT_ACTIONS`) or tab
     /// size, and the matched offsets.
     Indent(usize, Vec<usize>),
+    /// Change File Encoding's action: Reopen (0) or Save (1) with Encoding.
+    EncodingAction(usize, Vec<usize>),
+    /// An encoding to reopen or save with, its description, matched offsets.
+    Encoding(Encoding, &'static str, Vec<usize>),
 }
 
 /// VS Code's Select Indentation actions: "change view" ones, then "convert file" ones.
@@ -196,6 +201,20 @@ const INDENT_ACTIONS: [&str; 7] = [
     "Convert Indentation to Tabs",
     "Trim Trailing Whitespace",
 ];
+
+const ENCODING_ACTIONS: [&str; 2] = ["Reopen with Encoding", "Save with Encoding"];
+
+/// Which list Change File Encoding shows.
+#[derive(Clone, Copy, PartialEq)]
+enum EncodingStep {
+    Action,
+    /// The encodings to reopen (or save) with, and the one the file's
+    /// bytes look like.
+    List {
+        reopen: bool,
+        guessed: Option<Encoding>,
+    },
+}
 
 /// Which list Select Indentation shows.
 #[derive(Clone, Copy, PartialEq)]
@@ -254,6 +273,8 @@ pub(super) struct Palette {
     lang: bool,
     /// Set while the palette is one of Select Indentation's pick lists.
     indent: Option<IndentStep>,
+    /// Set while the palette is one of Change File Encoding's pick lists.
+    encoding: Option<EncodingStep>,
     /// 0-based line and column from a `file:line:col` query.
     goto: Option<(u32, u32)>,
     shown: Vec<Pick>,
@@ -305,6 +326,7 @@ impl Palette {
             eol: false,
             lang: false,
             indent: None,
+            encoding: None,
             goto: None,
             shown: Vec::new(),
             groups: Vec::new(),
@@ -1604,6 +1626,7 @@ impl Workbench {
         p.eol = false;
         p.lang = false;
         p.indent = None;
+        p.encoding = None;
         p.parse = None;
         p.state
             .update(cx, |s, cx| s.set_query(query.to_string(), window, cx));
@@ -1686,6 +1709,79 @@ impl Workbench {
         self.open_palette("", window, cx);
         self.palette.lang = true;
         self.palette_query(String::new(), cx);
+    }
+
+    /// VS Code's Change File Encoding (the status bar's encoding): the palette
+    /// lists Reopen and Save with Encoding.
+    pub(super) fn change_encoding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.docs.get(self.active).is_some_and(|d| !d.binary) {
+            return;
+        }
+        self.open_palette("", window, cx);
+        self.palette.encoding = Some(EncodingStep::Action);
+        self.palette_query(String::new(), cx);
+    }
+
+    /// Runs Change File Encoding's action `ix`, or reopens or saves with the
+    /// encoding it picked.
+    fn set_encoding(
+        &mut self,
+        step: EncodingStep,
+        pick: Option<Encoding>,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let doc = &mut self.docs[self.active];
+        match (step, pick) {
+            (EncodingStep::Action, _) => {
+                let guessed =
+                    (fs::read(&doc.path).ok()).and_then(|b| Some(Encoding::decode(&b)?.1));
+                // The list opens once this one has closed.
+                cx.defer_in(window, move |this, window, cx| {
+                    this.open_palette("", window, cx);
+                    let reopen = ix == 0;
+                    this.palette.encoding = Some(EncodingStep::List { reopen, guessed });
+                    this.palette_query(String::new(), cx);
+                });
+            }
+            (EncodingStep::List { reopen: false, .. }, Some(encoding)) => {
+                doc.encoding = encoding;
+                // VS Code saves right away, except an untitled file, which keeps
+                // the encoding for its Save As.
+                if !doc.untitled {
+                    self.write(self.active, window, cx);
+                }
+                cx.notify();
+            }
+            (EncodingStep::List { .. }, Some(encoding)) if !doc.dirty => {
+                self.reopen(self.active, encoding, window, cx)
+            }
+            (EncodingStep::List { .. }, Some(encoding)) => {
+                let answer = window.prompt(
+                    PromptLevel::Warning,
+                    "Do you want to revert the active text editor and reopen with a different encoding?",
+                    Some("This will discard any unsaved changes."),
+                    &["Discard Changes and Reopen", "Cancel"],
+                    cx,
+                );
+                let editor = doc.editor.clone();
+                cx.spawn_in(window, async move |this, cx| {
+                    if answer.await != Ok(0) {
+                        return;
+                    }
+                    this.update_in(cx, |this, window, cx| {
+                        // The tab may have moved or closed while the dialog was open.
+                        if let Some(ix) = this.docs.iter().position(|d| d.editor == editor) {
+                            this.reopen(ix, encoding, window, cx);
+                        }
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+            _ => {}
+        }
     }
 
     /// VS Code's Select Indentation (the status bar's Spaces/Tab Size): the
@@ -1901,6 +1997,7 @@ impl Workbench {
         p.eol = false;
         p.lang = false;
         p.indent = None;
+        p.encoding = None;
         // A command may have moved focus (Show Search); only restore it when it is still ours.
         if p.focus.contains_focused(window, cx) {
             match p.restore.take() {
@@ -1959,6 +2056,49 @@ impl Workbench {
                 .position(|p| matches!(p, Pick::Lang(id, ..) if *id == current))
                 .unwrap_or(0);
             p.show(shown, Vec::new(), preselect);
+            return;
+        }
+        if let Some(step) = p.encoding {
+            let q = query.trim();
+            let (shown, groups, select) = match step {
+                EncodingStep::Action => {
+                    // An untitled file has nothing to reopen.
+                    let first = active.is_some_and(|d| d.untitled) as usize;
+                    let shown = (first..2)
+                        .filter_map(|ix| {
+                            let hits = command_matches(q, ENCODING_ACTIONS[ix])?;
+                            Some(Pick::EncodingAction(ix, hits))
+                        })
+                        .collect();
+                    (shown, Vec::new(), 0)
+                }
+                EncodingStep::List { reopen, guessed } => {
+                    // VS Code lists the guessed encoding first when it isn't the
+                    // configured UTF-8, and hides save-only UTF-8 with BOM from Reopen.
+                    let guessed = guessed.filter(|&g| g != Encoding::Utf8);
+                    let rows = (guessed.map(|g| (g, "Guessed from content")).into_iter()).chain(
+                        (Encoding::ALL.into_iter())
+                            .filter(|&e| Some(e) != guessed && !(reopen && e == Encoding::Utf8Bom))
+                            .map(|e| (e, e.id())),
+                    );
+                    let shown: Vec<_> = rows
+                        .filter_map(|(e, desc)| {
+                            Some(Pick::Encoding(e, desc, command_matches(q, e.label())?))
+                        })
+                        .collect();
+                    let current = active.map(|d| d.encoding);
+                    let select = shown.iter().position(
+                        |p| matches!(p, Pick::Encoding(e, desc, _) if Some(*e) == current && *desc == e.id()),
+                    );
+                    let guess_shown = matches!(shown.first(), Some(Pick::Encoding(e, _, _)) if Some(*e) == guessed);
+                    let groups = match guess_shown && shown.len() > 1 {
+                        true => vec![(1, SharedString::default())],
+                        false => Vec::new(),
+                    };
+                    (shown, groups, select.unwrap_or(0))
+                }
+            };
+            p.show(shown, groups, select);
             return;
         }
         if let Some(step) = p.indent {
@@ -2261,6 +2401,15 @@ impl Workbench {
                 self.set_indent(step, ix, window, cx);
                 (None, None)
             }
+            Some(&Pick::EncodingAction(ix, _)) => {
+                self.set_encoding(EncodingStep::Action, None, ix, window, cx);
+                (None, None)
+            }
+            Some(&Pick::Encoding(encoding, ..)) => {
+                let step = p.encoding.unwrap_or(EncodingStep::Action);
+                self.set_encoding(step, Some(encoding), 0, window, cx);
+                (None, None)
+            }
             Some(&Pick::Color(color, _)) => {
                 if let Some(id) = p.coloring {
                     self.set_terminal_color(id, color, cx);
@@ -2320,8 +2469,13 @@ impl Workbench {
             "Select End of Line Sequence"
         } else if p.lang {
             "Select Language Mode"
-        } else if p.indent == Some(IndentStep::Action) {
+        } else if p.indent == Some(IndentStep::Action) || p.encoding == Some(EncodingStep::Action) {
             "Select Action"
+        } else if let Some(EncodingStep::List { reopen, .. }) = p.encoding {
+            match reopen {
+                true => "Select File Encoding to Reopen File",
+                false => "Select File Encoding to Save with",
+            }
         } else if p.indent.is_some() {
             "Select Tab Size for Current File"
         } else if p.query.starts_with('>') {
@@ -2395,6 +2549,14 @@ impl Workbench {
                 Pick::Indent(ix, hits) if p.indent == Some(IndentStep::Action) => {
                     row(RowIcon::None, INDENT_ACTIONS[*ix], hits).item()
                 }
+                Pick::EncodingAction(ix, hits) => {
+                    row(RowIcon::None, ENCODING_ACTIONS[*ix], hits).item()
+                }
+                Pick::Encoding(e, desc, hits) => Row {
+                    desc: (*desc).into(),
+                    ..row(RowIcon::None, e.label(), hits)
+                }
+                .item(),
                 Pick::Indent(n, hits) => {
                     // The default editor.tabSize is VS Code's configured one.
                     let current = self.docs.get(self.active).map(|d| d.indent.tab_size);
