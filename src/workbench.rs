@@ -115,6 +115,7 @@ actions!(
         MoveLinesUp,
         MoveLinesDown,
         ToggleLineComment,
+        ToggleBlockComment,
         ScrollTerminalUp,
         ScrollTerminalDown,
         ScrollTerminalUpPage,
@@ -238,6 +239,11 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("alt-up", MoveLinesUp, Some("Input && mode == editor")),
         KeyBinding::new("alt-down", MoveLinesDown, Some("Input && mode == editor")),
         KeyBinding::new("ctrl-/", ToggleLineComment, Some("Input && mode == editor")),
+        KeyBinding::new(
+            "shift-alt-a",
+            ToggleBlockComment,
+            Some("Input && mode == editor"),
+        ),
         KeyBinding::new(
             "ctrl-alt-pageup",
             ScrollTerminalUp,
@@ -438,8 +444,6 @@ fn selected_lines(text: &str, sel: &Range<usize>) -> Range<usize> {
 
 /// Language `lang`'s line comment token, from VS Code's language
 /// configurations.
-// ponytail: None for languages with only block comments (CSS, HTML, XML,
-// Markdown), where VS Code's Toggle Line Comment adds a block comment.
 fn line_comment(lang: &str) -> Option<&'static str> {
     Some(match lang {
         "rust" | "typescript" | "typescriptreact" | "javascript" | "javascriptreact" | "json"
@@ -451,6 +455,67 @@ fn line_comment(lang: &str) -> Option<&'static str> {
         "bat" => "@REM",
         _ => return None,
     })
+}
+
+/// Language `lang`'s block comment start and end, from VS Code's language
+/// configurations.
+fn block_comment(lang: &str) -> Option<(&'static str, &'static str)> {
+    Some(match lang {
+        "rust" | "typescript" | "typescriptreact" | "javascript" | "javascriptreact" | "json"
+        | "jsonc" | "c" | "cpp" | "csharp" | "go" | "java" | "kotlin" | "php" | "swift" | "css"
+        | "scss" | "sql" => ("/*", "*/"),
+        "html" | "xml" | "markdown" => ("<!--", "-->"),
+        "python" => ("\"\"\"", "\"\"\""),
+        "lua" => ("--[[", "]]"),
+        "powershell" => ("<#", "#>"),
+        "ruby" => ("=begin", "=end"),
+        _ => return None,
+    })
+}
+
+/// The edit for Toggle Block Comment with `(open, close)` on `sel` in
+/// `text`, as for [`lines_moved`]: unwraps a comment just around or just
+/// inside the selection (with a space next to each token), else wraps the
+/// selection in "open " and " close" and keeps the selection on it.
+fn block_toggled(
+    text: &str,
+    sel: Range<usize>,
+    (open, close): (&str, &str),
+) -> Option<(Range<usize>, String, Range<usize>)> {
+    let inner = &text[sel.clone()];
+    let before = &text[..sel.start];
+    let before = (before
+        .strip_suffix(' ')
+        .unwrap_or(before)
+        .strip_suffix(open))
+    .map(|b| sel.start - b.len());
+    let after = &text[sel.end..];
+    let after = (after.strip_prefix(' ').unwrap_or(after).strip_prefix(close))
+        .map(|a| after.len() - a.len());
+    if let (Some(before), Some(after)) = (before, after) {
+        let start = sel.start - before;
+        return Some((
+            start..sel.end + after,
+            inner.into(),
+            start..start + inner.len(),
+        ));
+    }
+    let body = inner.trim();
+    if body.len() >= open.len() + close.len() && body.starts_with(open) && body.ends_with(close) {
+        let lead = inner.len() - inner.trim_start().len();
+        let mid = &body[open.len()..body.len() - close.len()];
+        let mid = mid.strip_prefix(' ').unwrap_or(mid);
+        let mid = mid.strip_suffix(' ').unwrap_or(mid);
+        let new = format!("{}{mid}{}", &inner[..lead], &inner[lead + body.len()..]);
+        let end = sel.start + new.len();
+        return Some((sel.clone(), new, sel.start..end));
+    }
+    let at = sel.start + open.len() + 1;
+    Some((
+        sel.clone(),
+        format!("{open} {inner} {close}"),
+        at..at + inner.len(),
+    ))
 }
 
 /// The edit for Toggle Line Comment with `token` on the lines `sel` touches
@@ -4206,9 +4271,31 @@ impl Render for Workbench {
                 this.line_op(false, false, window, cx)
             }))
             .on_action(cx.listener(|this, _: &ToggleLineComment, window, cx| {
-                let token = (this.docs.get(this.active)).and_then(|d| line_comment(d.lang));
-                if let Some(token) = token {
-                    this.edit_lines(|text, sel| comment_toggled(text, sel, token), window, cx)
+                let Some(lang) = this.docs.get(this.active).map(|d| d.lang) else {
+                    return;
+                };
+                match (line_comment(lang), block_comment(lang)) {
+                    (Some(token), _) => {
+                        this.edit_lines(|text, sel| comment_toggled(text, sel, token), window, cx)
+                    }
+                    // Without line comments, VS Code block-comments the lines.
+                    (None, Some(tokens)) => this.edit_lines(
+                        |text, sel| {
+                            let lines = selected_lines(text, &sel);
+                            let line = &text[lines.clone()];
+                            let start = lines.start + line.len() - line.trim_start().len();
+                            block_toggled(text, start..lines.end, tokens)
+                        },
+                        window,
+                        cx,
+                    ),
+                    (None, None) => {}
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ToggleBlockComment, window, cx| {
+                let lang = this.docs.get(this.active).map(|d| d.lang);
+                if let Some(tokens) = lang.and_then(block_comment) {
+                    this.edit_lines(|text, sel| block_toggled(text, sel, tokens), window, cx)
                 }
             }))
             .on_action(cx.listener(|this, _: &ToggleSizeToContentWidth, _, cx| {
@@ -4504,7 +4591,7 @@ fn app_menu(
             .menu("Replace in Files", Box::new(ReplaceInFiles))
             .separator()
             .menu("Toggle Line Comment", Box::new(ToggleLineComment))
-            .menu("Toggle Block Comment", noop()),
+            .menu("Toggle Block Comment", Box::new(ToggleBlockComment)),
         "Selection" => menu
             .menu("Select All", Box::new(input::SelectAll))
             .menu("Expand Selection", noop())
@@ -4599,8 +4686,27 @@ fn app_menu(
 #[cfg(test)]
 mod tests {
     use super::{
-        Encoding, comment_toggled, copy_all, copy_target, detect_indent, lines_moved, with_eol,
+        Encoding, block_toggled, comment_toggled, copy_all, copy_target, detect_indent,
+        lines_moved, with_eol,
     };
+
+    #[test]
+    fn toggle_block_comment() {
+        let toggle = |text: &str, sel| {
+            let (range, new, sel) = block_toggled(text, sel, ("/*", "*/")).unwrap();
+            let mut out = text.to_string();
+            out.replace_range(range, &new);
+            (out, sel)
+        };
+        // Wraps, keeps the selection on the text, and unwraps around it.
+        let (wrapped, sel) = toggle("a bc d", 2..4);
+        assert_eq!((wrapped.as_str(), sel.clone()), ("a /* bc */ d", 5..7));
+        assert_eq!(toggle(&wrapped, sel), ("a bc d".into(), 2..4));
+        // Unwraps a selected comment.
+        assert_eq!(toggle("a /*bc*/ d", 2..8), ("a bc d".into(), 2..4));
+        // Empty selection: the cursor goes between the tokens.
+        assert_eq!(toggle("x", 1..1), ("x/*  */".into(), 4..4));
+    }
 
     #[test]
     fn toggle_line_comment() {
