@@ -2134,7 +2134,29 @@ impl Workbench {
                         .rounded(px(4.))
                         .hover(|s| s.bg(col::toolbar_hover()))
                         .map(|d| match (doc.dirty, active) {
-                            (true, _) => d.child(codicon(icon::CIRCLE_FILLED).text_size(px(10.))),
+                            // The dot turns into the X while hovered.
+                            (true, _) => {
+                                let hover = SharedString::from(format!("tab-close-{ix}"));
+                                let x = if active { col::fg() } else { col::fg_muted() };
+                                d.relative()
+                                    .group(hover.clone())
+                                    .child(
+                                        codicon(icon::CIRCLE_FILLED)
+                                            .text_size(px(10.))
+                                            .group_hover(hover.clone(), |s| s.invisible()),
+                                    )
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .inset_0()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .invisible()
+                                            .group_hover(hover, move |s| s.visible().text_color(x))
+                                            .child(codicon(icon::CLOSE)),
+                                    )
+                            }
                             (false, true) => d.child(codicon(icon::CLOSE)),
                             (false, false) => d.child(
                                 codicon(icon::CLOSE)
