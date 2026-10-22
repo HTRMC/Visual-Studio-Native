@@ -517,22 +517,33 @@ fn word_around(text: &str, at: usize) -> Option<Range<usize>> {
 }
 
 /// Where `needle` occurs in `text`: as a whole word, case-sensitively, or
-/// anywhere in any case.
-// ponytail: ASCII case folding only, so "É" doesn't match "é".
-fn occurrences(text: &str, needle: &str, whole: bool) -> Vec<usize> {
+/// anywhere in any case, which can make a match longer or shorter than it.
+fn occurrences(text: &str, needle: &str, whole: bool) -> Vec<Range<usize>> {
     if whole {
-        let word = |&at: &usize| word_around(text, at) == Some(at..at + needle.len());
         return text
             .match_indices(needle)
-            .map(|(at, _)| at)
-            .filter(word)
+            .map(|(at, _)| at..at + needle.len())
+            .filter(|r| word_around(text, r.start).as_ref() == Some(r))
             .collect();
     }
-    let lower = text.to_ascii_lowercase();
-    lower
-        .match_indices(&needle.to_ascii_lowercase())
-        .map(|(at, _)| at)
-        .collect()
+    let same = |a: char, b: char| {
+        a == b || a.to_lowercase().eq(b.to_lowercase()) || a.to_uppercase().eq(b.to_uppercase())
+    };
+    let mut found: Vec<Range<usize>> = Vec::new();
+    for (at, _) in text.char_indices() {
+        if found.last().is_some_and(|r| at < r.end) {
+            continue;
+        }
+        let mut rest = text[at..].char_indices();
+        let end = needle.chars().try_fold(at, |_, n| match rest.next() {
+            Some((i, c)) if same(c, n) => Some(at + i + c.len_utf8()),
+            _ => None,
+        });
+        if let Some(end) = end.filter(|&end| end > at) {
+            found.push(at..end);
+        }
+    }
+    found
 }
 
 /// The smallest range around `sel` that's bigger than it: the word, the
@@ -2123,51 +2134,52 @@ impl Workbench {
                     return Some(m);
                 }
             }
-            let len = sel.len();
             let found = occurrences(&text, &text[sel.clone()], m.whole);
             if op == Occurrence::All {
-                for at in found {
-                    e.add_selection(at..at + len, cx);
+                for r in found {
+                    e.add_selection(r, cx);
                 }
                 return None;
             }
             let moved = (op == Occurrence::MoveLast).then(|| m.added.pop());
             // Matches not selected already.
-            let free: Vec<usize> = (found.into_iter())
-                .filter(|&at| at != sel.start && m.added.iter().all(|r| r.start != at))
+            let free: Vec<Range<usize>> = (found.into_iter())
+                .filter(|r| r.start != sel.start && m.added.iter().all(|a| a.start != r.start))
                 .collect();
             let next = |from| {
                 free.iter()
-                    .find(|&&at| at >= from)
+                    .find(|r| r.start >= from)
                     .or(free.first())
-                    .copied()
+                    .cloned()
             };
-            let at = match moved {
+            let r = match moved {
                 None if op == Occurrence::Next => next(m.after)?,
-                None => *(free.iter().rfind(|&&at| at + len <= m.before)).or(free.last())?,
+                None => (free.iter().rfind(|r| r.end <= m.before))
+                    .or(free.last())
+                    .cloned()?,
                 Some(moved) => match moved {
                     // The only selection moves.
                     None => {
-                        let at = next(sel.end)?;
-                        e.set_selected_range(at..at + len, cx);
-                        (m.sel, m.after, m.before) = (at..at + len, at + len, at);
+                        let r = next(sel.end)?;
+                        e.set_selected_range(r.clone(), cx);
+                        (m.sel, m.after, m.before) = (r.clone(), r.end, r.start);
                         return Some(m);
                     }
                     Some(last) => {
-                        let at = next(last.end)?;
+                        let r = next(last.end)?;
                         e.set_selected_range(sel.clone(), cx);
-                        for r in &m.added {
-                            e.add_selection(r.clone(), cx);
+                        for a in &m.added {
+                            e.add_selection(a.clone(), cx);
                         }
-                        at
+                        r
                     }
                 },
             };
-            e.add_selection(at..at + len, cx);
-            m.added.push(at..at + len);
+            e.add_selection(r.clone(), cx);
+            m.added.push(r.clone());
             match op {
-                Occurrence::Previous => m.before = at,
-                _ => m.after = at + len,
+                Occurrence::Previous => m.before = r.start,
+                _ => m.after = r.end,
             }
             Some(m)
         });
@@ -5171,8 +5183,16 @@ mod tests {
 
     #[test]
     fn find_occurrences() {
-        assert_eq!(occurrences("a ab a_ A a", "a", true), [0, 10]);
-        assert_eq!(occurrences("a ab a_ A a", "a", false), [0, 2, 5, 8, 10]);
+        let starts =
+            |found: Vec<std::ops::Range<usize>>| found.iter().map(|r| r.start).collect::<Vec<_>>();
+        assert_eq!(starts(occurrences("a ab a_ A a", "a", true)), [0, 10]);
+        assert_eq!(
+            starts(occurrences("a ab a_ A a", "a", false)),
+            [0, 2, 5, 8, 10]
+        );
+        // Folding past ASCII, and a fold that changes a match's length.
+        assert_eq!(occurrences("Été été", "été", false), [0..5, 6..11]);
+        assert_eq!(occurrences("\u{212A}m km", "km", false), [0..4, 5..7]);
     }
 
     #[test]

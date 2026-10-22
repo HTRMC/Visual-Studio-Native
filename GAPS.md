@@ -291,8 +291,8 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Ctrl+D matched case-sensitive substrings; now a word it picked from
       the cursor matches whole words, case-sensitively, and a selection
       matches anywhere in any case, as in VS Code.
-- [ ] Ctrl+D folds ASCII case only, and ignores the find widget's Match
-      Case / Whole Word toggles.
+- [x] Ctrl+D folded ASCII case only; "été" now finds "Été" and "ÉTÉ" too.
+- [ ] Ctrl+D ignores the find widget's Match Case / Whole Word toggles.
 - [x] Ctrl+K Ctrl+D (Move Last Selection to Next Find Match) was missing;
       it's in the palette too, and Ctrl+D skips matches already selected.
 - [ ] The occurrence commands only know the selections they added; ones
