@@ -8,7 +8,8 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Select All covers the scrollback, not only the visible screen.
 - [x] Double-click selects a word, triple-click a line.
 - [ ] Dragging after a double or triple click extends by whole words or lines.
-- [ ] Shift+click extends the selection.
+- [x] Shift+click extends the selection.
+- [ ] Alt+drag selects a column block.
 - [ ] Dragging past the top or bottom edge scrolls while selecting.
 - [ ] Links wrapped onto the next row are cut at the row end.
 - [ ] Wheel scrollback is lost when a shell sets application cursor mode

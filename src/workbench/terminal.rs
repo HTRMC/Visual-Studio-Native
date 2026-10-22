@@ -1234,8 +1234,11 @@ impl Workbench {
                     // ponytail: dragging after a double or triple click
                     // keeps the word or line; extend by whole units if missed.
                     t.selecting = ev.click_count < 2;
+                    let end = t.selection_end(ev.position);
                     t.selection = Some(match ev.click_count {
-                        0 | 1 => (t.selection_end(ev.position), t.selection_end(ev.position)),
+                        // Shift+click extends from the selection's anchor.
+                        0 | 1 if ev.modifiers.shift => (t.selection.map_or(end, |(a, _)| a), end),
+                        0 | 1 => (end, end),
                         n => t.unit_at(ev.position, n > 2),
                     });
                     this.activate_terminal(id, window, cx);
