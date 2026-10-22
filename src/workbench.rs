@@ -948,6 +948,8 @@ pub struct Workbench {
     nav_at: usize,
     /// Where the last edit happened, for Go to Last Edit Location.
     last_edit: Option<(PathBuf, input::Position)>,
+    /// The snippet whose tab stops Tab moves between.
+    snippet: Option<extensions::Stops>,
     /// files.autoSave "afterDelay": the pending save of dirty editors.
     autosave: Option<Task<()>>,
     /// editor.wordWrap, for editors that Alt+Z hasn't set on their own.
@@ -1019,6 +1021,7 @@ impl Workbench {
             nav: Vec::new(),
             nav_at: 0,
             last_edit: None,
+            snippet: None,
             autosave: None,
             word_wrap: word_wrap(&terminal::settings()),
             menu_focus: None,
@@ -1274,6 +1277,7 @@ impl Workbench {
                     this.refresh_search_file(&path, cx);
                     this.breakpoints_moved(&path, editor, cx);
                     if let Some(ix) = this.docs.iter().position(|d| &d.editor == editor) {
+                        this.snippet_completed(ix, cx);
                         this.lsp_change(ix, cx);
                         this.signature_on_change(cx);
                     }
@@ -4766,6 +4770,17 @@ impl Render for Workbench {
                     this.hide_signature(cx);
                 }
             }))
+            .capture_action(cx.listener(|this, _: &input::IndentInline, _, cx| {
+                if this.snippet_tab(false, cx) {
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &input::OutdentInline, _, cx| {
+                if this.snippet_tab(true, cx) {
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &input::Escape, _, _| this.snippet = None))
             .on_action(cx.listener(Self::open_file))
             .on_action(cx.listener(|this, _: &GoBack, window, cx| this.navigate(true, window, cx)))
             .on_action(cx.listener(|this, _: &NextEditor, window, cx| this.cycle(1, window, cx)))

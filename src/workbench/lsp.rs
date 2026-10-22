@@ -153,8 +153,7 @@ struct Provider {
 /// One editor's snippets as completions: those whose prefix starts with the
 /// word before the cursor, replacing it.
 // ponytail: read when the file opens, so an extension installed since
-// shows its snippets on the next open; the cursor lands after the snippet,
-// not on its first tab stop, as completions take no selection.
+// shows its snippets on the next open.
 struct Snippets {
     path: PathBuf,
     lang: &'static str,
@@ -195,20 +194,24 @@ impl Snippets {
             indent,
             unit: &self.unit,
         };
-        let range = lsp_types::Range::new(text.offset_to_position(offset - word.len()), pos);
-        (self.list.iter())
+        let start = offset - word.len();
+        let range = lsp_types::Range::new(text.offset_to_position(start), pos);
+        let offered: Vec<_> = (self.list.iter())
             .filter(|s| s.prefix.to_lowercase().starts_with(&word.to_lowercase()))
-            .map(|s| CompletionItem {
+            .map(|s| (s, extensions::fill(&s.body, &at, "")))
+            .collect();
+        let items = (offered.iter())
+            .map(|(s, (new, _))| CompletionItem {
                 label: s.prefix.clone(),
                 kind: Some(CompletionItemKind::SNIPPET),
                 detail: Some(s.name.clone()),
-                text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
-                    range,
-                    extensions::fill(&s.body, &at, "").0,
-                ))),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(range, new.clone()))),
                 ..Default::default()
             })
-            .collect()
+            .collect();
+        let offered = offered.into_iter().map(|(_, filled)| filled).collect();
+        extensions::OFFERED.set(Some((self.path.clone(), start, offered)));
+        items
     }
 }
 

@@ -464,7 +464,8 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [x] The terminal's text followed no theme; it takes `terminal.foreground`.
 - [ ] Toasts, menus and other hard-coded `c(0x..)` colors stay dark under a light theme.
 - [ ] The theme picker doesn't preview as the selection moves.
-- [ ] Snippets: only the first tab stop is selected; no Tab to the next, no completion by prefix.
+- [x] Snippets: Tab and Shift+Tab move between tab stops, inserted or completed by prefix.
+- [ ] Snippets: a repeated tab stop isn't mirrored; edits away from the current stop put the later ones off.
 - [ ] Extension details page (README, changelog) when clicking a row.
 - [x] Open VSX search and install: typing in the Extensions view searches open-vsx.org; `@installed` filters the Installed list.
 - [ ] Open VSX results have no icons, ratings or download counts, no paging past 30, no update checks, and no `@` filters besides `@installed`.

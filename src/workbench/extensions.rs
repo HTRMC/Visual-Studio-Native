@@ -567,6 +567,23 @@ pub(crate) fn snippets(lang: &str) -> Vec<Snippet> {
     out
 }
 
+thread_local! {
+    /// The snippets the completion menu last offered: their file, where
+    /// they'd start, and each one's text and tab stops.
+    pub(crate) static OFFERED: std::cell::RefCell<Option<Offered>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) type Offered = (PathBuf, usize, Vec<(String, Vec<Range<usize>>)>);
+
+/// A snippet just inserted, while Tab moves between its tab stops: its
+/// editor, the stops, the one selected and the text's length then.
+pub(crate) struct Stops {
+    editor: EntityId,
+    stops: Vec<Range<usize>>,
+    at: usize,
+    len: usize,
+}
+
 /// Where a snippet goes: its file and language, the line's indent and the
 /// editor's indent unit.
 pub(crate) struct Place<'a> {
@@ -577,8 +594,8 @@ pub(crate) struct Place<'a> {
 }
 
 /// A snippet's text at `at`, with `selected` as TM_SELECTED_TEXT, and where
-/// its first tab stop ends up.
-pub(crate) fn fill(body: &str, at: &Place, selected: &str) -> (String, Option<Range<usize>>) {
+/// its tab stops end up.
+pub(crate) fn fill(body: &str, at: &Place, selected: &str) -> (String, Vec<Range<usize>>) {
     let path = at.path;
     let file = |f: fn(&Path) -> Option<&std::ffi::OsStr>| {
         f(path).map(|s| s.to_string_lossy().into_owned())
@@ -604,12 +621,13 @@ pub(crate) fn fill(body: &str, at: &Place, selected: &str) -> (String, Option<Ra
 
 /// Snippet syntax made plain text: placeholders become their text, choices
 /// their first option and variables their value (`var`, else their name).
-/// Also gives where the first tab stop ($1, else $0) ends up.
-// ponytail: inserts once; no tabbing between stops, no linked mirrors.
+/// Also gives where the tab stops end up, in tabbing order: $1, $2, … then
+/// $0, or the end when there's no $0.
+// ponytail: a stop repeated takes its first place only; no linked mirrors.
 pub(crate) fn expand(
     body: &str,
     var: &dyn Fn(&str) -> Option<String>,
-) -> (String, Option<Range<usize>>) {
+) -> (String, Vec<Range<usize>>) {
     struct E<'a> {
         s: Vec<char>,
         i: usize,
@@ -737,10 +755,16 @@ pub(crate) fn expand(
         var,
     };
     e.any(None);
-    let first = (e.stops.iter().filter(|s| s.0 > 0).min_by_key(|s| s.0))
-        .or_else(|| e.stops.iter().find(|s| s.0 == 0))
-        .map(|s| s.1.clone());
-    (e.out, first)
+    let end = e.out.len();
+    // Stable, so a repeated stop keeps its first place first.
+    e.stops.sort_by_key(|s| s.0.wrapping_sub(1));
+    e.stops.dedup_by_key(|s| s.0);
+    let zero = e.stops.last().is_some_and(|s| s.0 == 0);
+    let mut stops: Vec<_> = e.stops.into_iter().map(|s| s.1).collect();
+    if !zero {
+        stops.push(end..end);
+    }
+    (e.out, stops)
 }
 
 // ---- color themes ----------------------------------------------------------
@@ -1576,6 +1600,8 @@ impl Workbench {
         };
         let lang = doc.lang;
         let body = snippet.body.clone();
+        let mut placed = Vec::new();
+        let out = &mut placed;
         self.edit_lines(
             move |text, sel| {
                 let start = text[..sel.start].rfind('\n').map_or(0, |i| i + 1);
@@ -1589,14 +1615,113 @@ impl Workbench {
                     indent: &indent,
                     unit: &indent_unit,
                 };
-                let (new, stop) = fill(&body, &at, &text[sel.clone()]);
-                let at = sel.start;
-                let stop = stop.unwrap_or(new.len()..new.len());
-                Some((sel, new, at + stop.start..at + stop.end))
+                let (new, mut stops) = fill(&body, &at, &text[sel.clone()]);
+                for stop in &mut stops {
+                    *stop = sel.start + stop.start..sel.start + stop.end;
+                }
+                let first = stops[0].clone();
+                *out = stops;
+                Some((sel, new, first))
             },
             window,
             cx,
         );
+        if !placed.is_empty() {
+            let editor = self.docs[self.active].editor.clone();
+            self.tab_stops(&editor, placed, cx);
+        }
+    }
+
+    /// Selects a snippet's first tab stop and, when it has more, lets Tab
+    /// move between them.
+    fn tab_stops(
+        &mut self,
+        editor: &Entity<EditorState>,
+        stops: Vec<Range<usize>>,
+        cx: &mut Context<Self>,
+    ) {
+        let len = editor.update(cx, |e, cx| {
+            e.set_selected_range(stops[0].clone(), cx);
+            e.value().len()
+        });
+        self.snippet = (stops.len() > 1).then(|| Stops {
+            editor: editor.entity_id(),
+            stops,
+            at: 0,
+            len,
+        });
+    }
+
+    /// After doc `ix` changed: when the change was a snippet the completion
+    /// menu offered, its first tab stop is selected and Tab moves on.
+    // ponytail: told apart by its text ending at the cursor; typing a
+    // snippet's whole text out by hand while it's offered counts too.
+    pub(crate) fn snippet_completed(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.get(ix) else {
+            return;
+        };
+        let editor = doc.editor.clone();
+        let (value, cursor) = editor.read_with(cx, |e, _| (e.value(), e.selected_range().end));
+        let found = OFFERED.with_borrow(|offered| {
+            let (_, start, list) = offered.as_ref().filter(|o| o.0 == doc.path)?;
+            let (_, stops) =
+                (list.iter()).find(|(new, _)| value.get(*start..cursor) == Some(new.as_str()))?;
+            Some(
+                stops
+                    .iter()
+                    .map(|r| start + r.start..start + r.end)
+                    .collect(),
+            )
+        });
+        if let Some(stops) = found {
+            OFFERED.set(None);
+            self.tab_stops(&editor, stops, cx);
+        }
+    }
+
+    /// Tab (or Shift+Tab, `back`) in a snippet just inserted: selects its
+    /// next (or previous) tab stop. False when there's none to go to, or the
+    /// cursor has left the current one, so Tab indents as usual.
+    // ponytail: edits are assumed to be at the current stop; one made
+    // elsewhere while it lasts puts the later stops off by its length.
+    pub(crate) fn snippet_tab(&mut self, back: bool, cx: &mut Context<Self>) -> bool {
+        let Some(s) = self.snippet.as_mut() else {
+            return false;
+        };
+        let Some(doc) = (self.docs.get(self.active)).filter(|d| d.editor.entity_id() == s.editor)
+        else {
+            self.snippet = None;
+            return false;
+        };
+        let (len, sel) = doc
+            .editor
+            .read_with(cx, |e, _| (e.value().len(), e.selected_range()));
+        let delta = len as isize - s.len as isize;
+        let cur = s.stops[s.at].clone();
+        for (i, r) in s.stops.iter_mut().enumerate() {
+            if i != s.at && r.start >= cur.end {
+                r.start = r.start.saturating_add_signed(delta);
+            }
+            if i == s.at || r.end >= cur.end {
+                r.end = r.end.saturating_add_signed(delta);
+            }
+        }
+        if sel.start < cur.start || sel.end > s.stops[s.at].end {
+            self.snippet = None;
+            return false;
+        }
+        s.len = len;
+        s.at = match back {
+            true => s.at.saturating_sub(1),
+            false => s.at + 1,
+        };
+        let next = s.stops[s.at].clone();
+        if s.at + 1 == s.stops.len() {
+            self.snippet = None;
+        }
+        doc.editor
+            .update(cx, |e, cx| e.set_selected_range(next, cx));
+        true
     }
 }
 
@@ -1647,19 +1772,20 @@ mod tests {
         let var = |name: &str| (name == "TM_FILENAME").then(|| "a.rs".to_string());
         assert_eq!(
             expand("fn ${1:name}() {\n\t$0\n}", &var),
-            ("fn name() {\n\t\n}".into(), Some(3..7))
+            ("fn name() {\n\t\n}".into(), vec![3..7, 13..13])
         );
         assert_eq!(
-            expand("$TM_FILENAME ${2:b} $1", &var),
-            ("a.rs b ".into(), Some(7..7))
+            expand("$TM_FILENAME ${2:b} $1 ${2:c}", &var),
+            ("a.rs b  c".into(), vec![7..7, 5..6, 9..9])
         );
+        assert_eq!(expand("plain", &var).1, vec![5..5]);
         assert_eq!(
             expand("${1|one,two|} \\$x ${UNKNOWN} ${TM_FILENAME:z}", &var).0,
             "one $x UNKNOWN a.rs"
         );
         assert_eq!(
             expand("${1:outer ${2:inner}}", &var),
-            ("outer inner".into(), Some(0..11))
+            ("outer inner".into(), vec![0..11, 6..11, 11..11])
         );
         assert_eq!(
             expand("${TM_FILENAME/(.*)/${1:/upcase}/}!", &var).0,
