@@ -474,7 +474,8 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [ ] A trapped WASM plugin stays unloaded until the extensions restart, and a stuck call blocks the other plugins' calls until its fuel runs out.
 - [ ] Icon themes, brackets and indent rules from extensions.
 - [x] JS extensions run in a Node (or Bun) host: commands in the palette and keys, messages, status bar items, configuration defaults, activation events, restart on crash.
-- [ ] Extension keybindings take effect only after a restart; ones with a `when` clause are skipped.
+- [x] Extension keybindings took effect only after a restart; they're rebound on install, uninstall and enable.
+- [ ] Extension keybindings with a `when` clause are skipped.
 - [ ] `when` clauses and `menus` (editor title, context menus) for extension commands.
 - [x] Quick pick, input box and message buttons for extensions, in the palette and the notification.
 - [x] `globalState`/`workspaceState` persist (JSON under `~/.vsn/globalStorage` and `workspaceStorage`); `storageUri` is per folder.

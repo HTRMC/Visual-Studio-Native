@@ -186,8 +186,7 @@ pub(super) fn palette_commands() -> Vec<(String, String)> {
 
 /// Extensions' keybindings, VS Code's "ctrl+shift+h" as gpui's "ctrl-shift-h".
 // ponytail: a binding with a `when` clause is skipped, as vsn doesn't
-// evaluate those yet; and bindings are read at startup, so a newly
-// installed extension's keys work after a restart.
+// evaluate those yet.
 pub(super) fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
     let platform = match std::env::consts::OS {
         "macos" => "mac",
@@ -401,8 +400,11 @@ impl Workbench {
     }
 
     /// Closes the host so a disabled or removed extension stops; the others
-    /// activate again in a new one.
+    /// activate again in a new one. Keybindings follow the installed set.
     pub(super) fn restart_extension_host(&mut self, cx: &mut Context<Self>) {
+        let mapper = cx.keyboard_mapper().clone();
+        cx.clear_key_bindings();
+        cx.bind_keys(super::key_bindings(mapper.as_ref()));
         let js = self.ext.out.take().is_some();
         let wasm = self.ext.wasm.take().is_some();
         if js || wasm {
