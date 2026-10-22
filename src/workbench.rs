@@ -3187,9 +3187,8 @@ impl Workbench {
     /// A warning notification: listed in the bell's center, and shown as a
     /// toast (unless the center is open) until VS Code's 18 seconds pass, or
     /// later while the mouse is over it. A repeat replaces the old one, and
-    /// up to 3 toasts stack, newest at the bottom.
-    // ponytail: a 4th toast drops the oldest (it stays in the center); VS Code
-    // keeps it queued and shows it once one closes.
+    /// the newest 3 toasts stack, newest at the bottom; an older one waits,
+    /// its timer paused, until one of them closes.
     fn warn(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.note(message.into(), Severity::Warning, cx);
     }
@@ -3222,7 +3221,9 @@ impl Workbench {
                 let wait = std::time::Duration::from_secs(18);
                 cx.background_executor().timer(wait).await;
                 let gone = this.update(cx, |this, cx| {
-                    if this.toasts.iter().any(|t| t.0 == m && t.1) {
+                    let shown = this.toasts.len().saturating_sub(3);
+                    let toast = this.toasts.iter().position(|t| t.0 == m);
+                    if toast.is_some_and(|i| i < shown || this.toasts[i].1) {
                         return false;
                     }
                     this.toasts.retain(|t| t.0 != m);
@@ -3235,9 +3236,6 @@ impl Workbench {
             }
         });
         self.toasts.push((message, false, hide));
-        if self.toasts.len() > 3 {
-            drop(self.toasts.remove(0));
-        }
     }
 
     /// Opens or closes the bell's center; opening it hides the toast and
@@ -3443,10 +3441,12 @@ impl Workbench {
     }
 
     fn render_toasts(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let shown = self.toasts.len().saturating_sub(3);
         let toasts = self
             .toasts
             .iter()
             .enumerate()
+            .skip(shown)
             .filter_map(|(i, (message, ..))| {
                 let note = self.notes.iter().find(|n| &n.0 == message)?;
                 let m = message.clone();
