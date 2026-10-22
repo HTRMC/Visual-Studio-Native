@@ -466,7 +466,7 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [ ] The theme picker doesn't preview as the selection moves.
 - [x] Snippets: Tab and Shift+Tab move between tab stops, inserted or completed by prefix.
 - [ ] Snippets: a repeated tab stop isn't mirrored; edits away from the current stop put the later ones off.
-- [ ] Extension details page (README, changelog) when clicking a row.
+- [x] Extension details page (README, changelog) when clicking a row.
 - [x] Open VSX search and install: typing in the Extensions view searches open-vsx.org; `@installed` filters the Installed list.
 - [ ] Open VSX results have no icons, ratings or download counts, no paging past 30, no update checks, and no `@` filters besides `@installed`.
 - [ ] Ctrl+Shift+X opens the Extensions view without focusing its search box.
@@ -523,8 +523,8 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
       show in the Output panel, picked from its channel dropdown.
 - [ ] Output: `append` always starts a new line, `show()`/`clear()`/`replace()`
       do nothing, no filter, no word-wrap toggle, channels aren't sorted.
-- [ ] VS Code's own commands (`vscode.open`, `workbench.action.*`) called by extensions do nothing.
-- [ ] `globalState`/`workspaceState` are in memory only; `activeTextEditor` doesn't reach the host.
+- [x] VS Code's own commands (`vscode.open`, `workbench.action.*`) called by extensions do nothing.
+- [x] `globalState`/`workspaceState` are in memory only; `activeTextEditor` doesn't reach the host.
 - [x] Documents reach the host (open, change, save, close).
 - [x] `workspaceContains:` matches globs (`**/*.zig`) as well as paths.
 - [ ] `workspaceContains:` globs walk the folder on the UI thread, capped at 10,000 entries; VS Code searches in the background.
