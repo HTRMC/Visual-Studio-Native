@@ -479,7 +479,8 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [ ] Extension keybindings' `when` with `<`, `>`, `=~` or `in` are skipped, and context keys beyond focus and language are unset.
 - [x] `commandPalette` `when` clauses other than `false` were ignored; they're checked where focus was when the palette opened.
 - [x] Extensions' `editor/context` and `explorer/context` menu items were ignored; they're added, with the file's Uri.
-- [ ] Extensions' `editor/title` buttons, other `menus` and submenus; with extension items, the editor's own menu items are always enabled.
+- [x] Extensions' `editor/title` navigation buttons were ignored; they're in the editor's title bar, with `resource*` keys for their `when`.
+- [ ] Extensions' `editor/title` "..." groups, other `menus` and submenus; with extension items, the editor's own menu items are always enabled.
 - [x] Quick pick, input box and message buttons for extensions, in the palette and the notification.
 - [x] `globalState`/`workspaceState` persist (JSON under `~/.vsn/globalStorage` and `workspaceStorage`); `storageUri` is per folder.
 - [x] `executeCommand` runs ~35 of VS Code's built-in commands (`vscode.open`, saves, views, panels, formatting, ...) as vsn's actions.

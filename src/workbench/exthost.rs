@@ -204,11 +204,21 @@ pub(super) fn has_menu(menu: &str) -> bool {
     (installed().iter()).any(|e| e.enabled && e.manifest["contributes"]["menus"][menu].is_array())
 }
 
-/// Extensions' items in one of VS Code's `menus` (`editor/context`, ...):
-/// title and command id, those whose `when` holds on `focus`, by group.
+/// An extension's item in one of VS Code's `menus`.
+pub(super) struct MenuItem {
+    pub title: String,
+    pub id: String,
+    /// Its command's `$(codicon)` icon.
+    pub icon: Option<char>,
+    /// In the "navigation" group, which `editor/title` shows as buttons.
+    pub navigation: bool,
+}
+
+/// Extensions' items in one of VS Code's `menus` (`editor/context`, ...)
+/// whose `when` holds on `focus`, by group.
 // ponytail: groups only order the items (navigation first, then by name),
 // with no separators or `@order`; `submenu`s and `alt` commands are skipped.
-pub(super) fn menu_items(menu: &str, focus: &[KeyContext]) -> Vec<(String, String)> {
+pub(super) fn menu_items(menu: &str, focus: &[KeyContext]) -> Vec<MenuItem> {
     let mut list = Vec::new();
     for e in installed().iter().filter(|e| e.enabled) {
         let items = e.manifest["contributes"]["menus"][menu].as_array();
@@ -224,13 +234,52 @@ pub(super) fn menu_items(menu: &str, focus: &[KeyContext]) -> Vec<(String, Strin
             if shown {
                 let group = m["group"].as_str().unwrap_or("");
                 let group = group.split('@').next().unwrap_or("");
-                let key = (group != "navigation", group.to_string());
-                list.push((key, e.localize(&c["title"]), id.to_string()));
+                let icon = (c["icon"].as_str())
+                    .and_then(|i| i.strip_prefix("$(")?.strip_suffix(')'))
+                    .and_then(|name| codicons().find(|(n, _)| *n == name))
+                    .map(|(_, ch)| ch);
+                list.push((
+                    group.to_string(),
+                    MenuItem {
+                        title: e.localize(&c["title"]),
+                        id: id.to_string(),
+                        icon,
+                        navigation: group == "navigation",
+                    },
+                ));
             }
         }
     }
-    list.sort_by(|a, b| a.0.cmp(&b.0));
-    list.into_iter().map(|(_, title, id)| (title, id)).collect()
+    list.sort_by(|a, b| (!a.1.navigation, &a.0).cmp(&(!b.1.navigation, &b.0)));
+    list.into_iter().map(|(_, item)| item).collect()
+}
+
+/// VS Code's context keys for a file's editor, for `when` clauses.
+pub(super) fn editor_keys(path: &Path, lang: &str) -> KeyContext {
+    let mut keys = KeyContext::default();
+    for key in ["editorFocus", "editorTextFocus", "textInputFocus"] {
+        keys.add(key);
+    }
+    keys.set("editorLangId", lang);
+    keys.set("resourceLangId", lang);
+    resource_keys(&mut keys, path);
+    keys
+}
+
+/// VS Code's `resource*` keys, their values as `when_predicate` spells them.
+pub(super) fn resource_keys(keys: &mut KeyContext, path: &Path) {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let ext = path
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()));
+    keys.set("resourceScheme", "file");
+    keys.set("resourceFilename", mangle(&name));
+    keys.set("resourceExtname", mangle(&ext.unwrap_or_default()));
+}
+
+/// A `when` clause's word as a gpui identifier.
+fn mangle(word: &str) -> String {
+    word.replace(|c: char| !c.is_alphanumeric() && c != '-', "_")
 }
 
 /// The editor's right-click menu with extensions' `editor/context` items:
@@ -253,9 +302,10 @@ pub(super) fn editor_context_menu(menu: NativeMenu, path: &Path, window: &Window
     } else {
         menu.separator()
     };
-    items.into_iter().fold(menu, |menu, (title, id)| {
+    items.into_iter().fold(menu, |menu, item| {
         let path = Some(path.to_path_buf());
-        menu.menu(title, Box::new(RunExtensionCommand { id, path }))
+        let id = item.id;
+        menu.menu(item.title, Box::new(RunExtensionCommand { id, path }))
     })
 }
 
@@ -280,7 +330,7 @@ fn when_predicate(when: &str) -> Option<KeyBindingContextPredicate> {
             "true" => "!false_".into(),
             "isMac" | "isWindows" | "isLinux" | "isWeb" if w == os => "!false_".into(),
             "false" | "isMac" | "isWindows" | "isLinux" | "isWeb" => "false_".into(),
-            _ => w.replace(|c: char| !c.is_alphanumeric() && c != '-', "_"),
+            _ => mangle(w),
         }
     };
     let mut out = String::new();
@@ -857,8 +907,9 @@ impl Workbench {
 
 #[cfg(test)]
 mod tests {
-    use super::KeyContext;
+    use super::{KeyContext, editor_keys};
     use super::{contains, status_label, when_predicate};
+    use std::path::Path;
 
     #[test]
     fn when_clauses() {
@@ -890,6 +941,10 @@ mod tests {
             when_predicate("editorTextFocus && view == 'x' || resourceExtname =~ /md/").is_none()
         );
         assert!(when_predicate("listFocus && foo > 2").is_none());
+        let rs = editor_keys(Path::new("c:/x/my-file.rs"), "rust");
+        let when = "resourceExtname == .rs && resourceFilename == 'my-file.rs'";
+        assert!(eval(when, &rs));
+        assert!(!eval("resourceExtname == .md", &rs));
     }
 
     #[test]

@@ -3466,6 +3466,44 @@ impl Workbench {
 
     // ---- editor group ------------------------------------------------------
 
+    /// Extensions' `editor/title` buttons for the active editor, run with
+    /// its Uri.
+    // ponytail: only the "navigation" group's; the others belong in the
+    // "..." menu.
+    fn editor_title_buttons(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let Some(doc) = self.docs.get(self.active) else {
+            return Vec::new();
+        };
+        let keys = [exthost::editor_keys(&doc.path, doc.lang)];
+        let items = exthost::menu_items("editor/title", &keys);
+        let items = items.into_iter().filter(|i| i.navigation).enumerate();
+        items
+            .map(|(ix, item)| {
+                let title = SharedString::from(item.title);
+                let path = Some(doc.path.clone());
+                let action = exthost::RunExtensionCommand { id: item.id, path };
+                let button = match item.icon {
+                    Some(ch) => action_button(("ext-title", ix), ch),
+                    None => div()
+                        .id(("ext-title", ix))
+                        .px(px(4.))
+                        .rounded(px(5.))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(col::toolbar_hover()))
+                        .child(title.clone()),
+                };
+                button
+                    .tooltip(move |window, cx| {
+                        component::tooltip::Tooltip::new(title.clone()).build(window, cx)
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.run_extension_command(action.id.clone(), action.args(), cx)
+                    }))
+                    .into_any_element()
+            })
+            .collect()
+    }
+
     fn render_editor_group(&mut self, cx: &mut Context<Self>) -> AnyElement {
         if self.docs.is_empty() {
             return watermark().into_any_element();
@@ -3691,6 +3729,7 @@ impl Workbench {
                             .border_b_1()
                             .border_color(col::border())
                             .text_color(col::fg())
+                            .children(self.editor_title_buttons(cx))
                             .child(
                                 action_button("split-editor", icon::SPLIT_HORIZONTAL)
                                     .tooltip(tip("Split Editor Right")),
@@ -3735,13 +3774,7 @@ impl Workbench {
             .child(
                 div().flex_1().min_h_0().map(|d| {
                     if !doc.binary {
-                        // VS Code's context keys, for extensions' `when` clauses.
-                        let mut keys = KeyContext::default();
-                        for key in ["editorFocus", "editorTextFocus", "textInputFocus"] {
-                            keys.add(key);
-                        }
-                        keys.set("editorLangId", doc.lang);
-                        keys.set("resourceLangId", doc.lang);
+                        let keys = exthost::editor_keys(&doc.path, doc.lang);
                         return d.key_context(keys).child(self.render_code(self.active, cx));
                     }
                     // VS Code's binary editor placeholder.
@@ -4613,16 +4646,17 @@ fn explorer_menu(
     if is_dir {
         focus.add("explorerResourceIsFolder");
     }
+    exthost::resource_keys(&mut focus, path);
     let items = exthost::menu_items("explorer/context", &[focus]);
     let menu = if items.is_empty() {
         menu
     } else {
         menu.separator()
     };
-    items.into_iter().fold(menu, |menu, (title, id)| {
+    items.into_iter().fold(menu, |menu, item| {
         let (wb, path) = (wb.clone(), Some(path.to_path_buf()));
-        let action = exthost::RunExtensionCommand { id, path };
-        menu.item(PopupMenuItem::new(title).on_click(move |_, _, cx| {
+        let action = exthost::RunExtensionCommand { id: item.id, path };
+        menu.item(PopupMenuItem::new(item.title).on_click(move |_, _, cx| {
             wb.update(cx, |this, cx| {
                 this.run_extension_command(action.id.clone(), action.args(), cx)
             })
