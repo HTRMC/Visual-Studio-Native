@@ -31,7 +31,7 @@ use gpui_kit::component::{
 
 use super::terminal::{ANSI, COLORS, Profile, profiles, set_default_profile};
 use super::*;
-use crate::theme::{c, ca, codicons, col, file_icon, icon};
+use crate::theme::{LANGUAGES, c, ca, codicons, col, file_icon, icon, language_label};
 
 /// Workspace files shown at once; the best matches win.
 const SHOWN: usize = 50;
@@ -129,6 +129,7 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
             Box::new(SelectDefaultProfile),
         ),
         ("Change End of Line Sequence", Box::new(ChangeEol)),
+        ("Change Language Mode", Box::new(ChangeLanguageMode)),
         ("View: Show Explorer", Box::new(ShowExplorer)),
         ("View: Show Search", Box::new(ShowSearch)),
         ("View: Show Source Control", Box::new(ShowScm)),
@@ -172,6 +173,8 @@ enum Pick {
     Join(u64, String, char, Hsla, Vec<usize>),
     /// CRLF (or LF) for Change End of Line Sequence, and the matched offsets.
     Eol(bool, Vec<usize>),
+    /// A language id for Change Language Mode, its "Name (id)" row, matched offsets.
+    Lang(&'static str, String, Vec<usize>),
 }
 
 /// A definition in the active editor, for `@`.
@@ -218,6 +221,8 @@ pub(super) struct Palette {
     joining: bool,
     /// Set while the palette is Change End of Line Sequence's pick list.
     eol: bool,
+    /// Set while the palette is Change Language Mode's pick list.
+    lang: bool,
     /// 0-based line and column from a `file:line:col` query.
     goto: Option<(u32, u32)>,
     shown: Vec<Pick>,
@@ -267,6 +272,7 @@ impl Palette {
             iconing: None,
             joining: false,
             eol: false,
+            lang: false,
             goto: None,
             shown: Vec::new(),
             groups: Vec::new(),
@@ -331,6 +337,8 @@ impl Palette {
     }
 
     fn show(&mut self, shown: Vec<Pick>, groups: Groups, select: usize) {
+        // A query can filter the preselected row out.
+        let select = if select < shown.len() { select } else { 0 };
         self.shown = shown;
         self.groups = groups;
         self.selected = select;
@@ -1532,6 +1540,7 @@ impl Workbench {
         p.iconing = None;
         p.joining = false;
         p.eol = false;
+        p.lang = false;
         p.parse = None;
         p.state
             .update(cx, |s, cx| s.set_query(query.to_string(), window, cx));
@@ -1603,6 +1612,42 @@ impl Workbench {
         self.open_palette("", window, cx);
         self.palette.eol = true;
         self.palette_query(String::new(), cx);
+    }
+
+    /// VS Code's Change Language Mode: the palette lists every language, the
+    /// active editor's highlighted.
+    pub(super) fn change_language(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.docs.get(self.active).is_some_and(|d| !d.binary) {
+            return;
+        }
+        self.open_palette("", window, cx);
+        self.palette.lang = true;
+        self.palette_query(String::new(), cx);
+    }
+
+    /// Highlights the active editor as `id`, and the status bar names it.
+    fn set_language(&mut self, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.get(self.active) else {
+            return;
+        };
+        let path = doc.path.clone();
+        let old = doc.editor.read(cx);
+        let (text, pos, scroll) = (
+            old.value().to_string(),
+            old.cursor_position(),
+            old.scroll_offset(),
+        );
+        // ponytail: gpui-base's set_highlighter doesn't re-highlight a shown
+        // editor, so it's rebuilt (as Save As does), dropping undo history.
+        let editor = self.new_editor(&path, id, text, window, cx);
+        editor.update(cx, |e, cx| {
+            e.set_cursor_position(pos, window, cx);
+            e.set_scroll_offset(scroll, cx);
+        });
+        let doc = &mut self.docs[self.active];
+        doc.lang = id;
+        doc.editor = editor;
+        self.activate(self.active, window, cx);
     }
 
     /// Rewrites every line ending in the active editor, undoably, keeping
@@ -1722,6 +1767,7 @@ impl Workbench {
         p.iconing = None;
         p.joining = false;
         p.eol = false;
+        p.lang = false;
         // A command may have moved focus (Show Search); only restore it when it is still ours.
         if p.focus.contains_focused(window, cx) {
             match p.restore.take() {
@@ -1762,6 +1808,24 @@ impl Workbench {
                 })
                 .collect();
             p.show(shown, Vec::new(), 0);
+            return;
+        }
+        if p.lang {
+            let current = active.map_or("", |d| d.lang);
+            let mut langs: Vec<_> = (LANGUAGES.iter())
+                .map(|&id| (id, format!("{} ({id})", language_label(id))))
+                .collect();
+            langs.sort_by_key(|l| l.1.to_lowercase());
+            let shown: Vec<_> = (langs.into_iter())
+                .filter_map(|(id, label)| {
+                    let hits = command_matches(query.trim(), &label)?;
+                    Some(Pick::Lang(id, label, hits))
+                })
+                .collect();
+            let preselect = (shown.iter())
+                .position(|p| matches!(p, Pick::Lang(id, ..) if *id == current))
+                .unwrap_or(0);
+            p.show(shown, Vec::new(), preselect);
             return;
         }
         if p.eol {
@@ -1846,7 +1910,7 @@ impl Workbench {
             let Some(defs) = &p.defs else {
                 // A big file takes a while to parse; the list fills when it is done.
                 if p.parse.is_none() {
-                    let lang = editor_language(&doc.path);
+                    let lang = editor_language(doc.lang);
                     let text = editor.value().to_string();
                     p.parse = Some(cx.spawn(async move |this, cx| {
                         let defs = cx.background_spawn(async move { defs(&lang, &text) }).await;
@@ -2016,6 +2080,10 @@ impl Workbench {
                 self.set_eol(crlf, window, cx);
                 (None, None)
             }
+            Some(&Pick::Lang(id, ..)) => {
+                self.set_language(id, window, cx);
+                (None, None)
+            }
             Some(&Pick::Color(color, _)) => {
                 if let Some(id) = p.coloring {
                     self.set_terminal_color(id, color, cx);
@@ -2073,6 +2141,8 @@ impl Workbench {
             "Select a terminal to join"
         } else if p.eol {
             "Select End of Line Sequence"
+        } else if p.lang {
+            "Select Language Mode"
         } else if p.query.starts_with('>') {
             ""
         } else {
@@ -2140,6 +2210,7 @@ impl Workbench {
                     row(RowIcon::Symbol(*ch, *color), name, hits).item()
                 }
                 Pick::Eol(crlf, hits) => row(RowIcon::None, eol(*crlf), hits).item(),
+                Pick::Lang(_, label, hits) => row(RowIcon::None, label, hits).item(),
                 Pick::Command(cmd, hits) => {
                     let (label, action) = &commands[*cmd];
                     Row {

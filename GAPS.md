@@ -112,7 +112,13 @@ Differences from VS Code still to close, smallest first within each area.
       terminal both keys still reach the shell, as in VS Code.
 - [x] Clicking LF/CRLF (or Change End of Line Sequence) picks the line
       endings; undo brings the old ones back.
-- [ ] Clicking Spaces/encoding/language opens their pickers.
+- [x] Clicking the language (or Change Language Mode) picks the editor's
+      language.
+- [ ] Clicking Spaces/encoding opens their pickers.
+- [ ] Change Language Mode rebuilds the editor (gpui-base's set_highlighter
+      doesn't re-highlight a shown one), so undo history is lost.
+- [ ] Change Language Mode lacks VS Code's "Auto Detect" and "Configure
+      File Association" rows.
 - [x] Undoing back to the saved text leaves the tab dirty (VS Code clears
       the dot).
 - [ ] A file changed on disk while open isn't noticed (VS Code reloads a

@@ -90,6 +90,7 @@ actions!(
         ScrollTerminalToBottom,
         SelectDefaultProfile,
         ChangeEol,
+        ChangeLanguageMode,
         NewTextFile,
         ShowNotifications,
         HideNotifications,
@@ -211,6 +212,8 @@ struct Doc {
     /// clears `dirty`, as undoing to the saved text does in VS Code.
     saved: u64,
     crlf: bool,
+    /// VS Code's language id: the file's, or Change Language Mode's pick.
+    lang: &'static str,
     /// Opened without line breaks, so `crlf` is VS Code's files.eol "auto"
     /// (CRLF on Windows) and Enter's bare LFs don't overrule it.
     eol_default: bool,
@@ -437,8 +440,9 @@ impl Workbench {
         } else {
             text.contains("\r\n")
         };
-        let editor = self.new_editor(&path, text, window, cx);
+        let editor = self.new_editor(&path, language_id(&path), text, window, cx);
         self.docs.push(Doc {
+            lang: language_id(&path),
             path,
             saved: text_hash(&editor, cx),
             editor,
@@ -473,8 +477,8 @@ impl Workbench {
             return;
         };
         let text = String::from_utf8_lossy(&bytes).into_owned();
-        let path = self.docs[ix].path.clone();
-        let editor = self.new_editor(&path, text, window, cx);
+        let (path, lang) = (self.docs[ix].path.clone(), self.docs[ix].lang);
+        let editor = self.new_editor(&path, lang, text, window, cx);
         let doc = &mut self.docs[ix];
         doc.saved = text_hash(&editor, cx);
         doc.editor = editor;
@@ -482,14 +486,16 @@ impl Workbench {
         self.activate(ix, window, cx);
     }
 
+    /// An editor for `path`'s text, highlighted as language id `lang`.
     fn new_editor(
         &mut self,
         path: &Path,
+        lang: &str,
         text: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<EditorState> {
-        let lang = editor_language(path);
+        let lang = editor_language(lang);
         let editor = cx.new(|cx| {
             EditorState::new(window, cx)
                 .language(lang)
@@ -591,9 +597,10 @@ impl Workbench {
                     eprintln!("save {}: {err}", path.display());
                     return;
                 }
-                let editor = this.new_editor(&path, text, window, cx);
+                let editor = this.new_editor(&path, language_id(&path), text, window, cx);
                 let doc = &mut this.docs[ix];
                 doc.saved = text_hash(&editor, cx);
+                doc.lang = language_id(&path);
                 doc.editor = editor;
                 doc.path = path;
                 doc.untitled = false;
@@ -1727,7 +1734,7 @@ impl Workbench {
             let pos = editor.cursor_position();
             let line = editor.text().slice_line(pos.line as usize).to_string();
             let col = palette::status_column(&line, pos.character as usize);
-            let lang = language_label(language_id(&doc.path));
+            let lang = language_label(doc.lang);
             right.extend([
                 item("sb-pos", "Go to Line/Column")
                     .on_click(cx.listener(|this, _, window, cx| this.open_palette(":", window, cx)))
@@ -1744,6 +1751,7 @@ impl Workbench {
                     .child(palette::eol(doc.crlf))
                     .into_any_element(),
                 item("sb-lang", "Select Language Mode")
+                    .on_click(cx.listener(|this, _, window, cx| this.change_language(window, cx)))
                     .child(codicon(icon::CODE).text_size(px(14.)))
                     .child(lang)
                     .into_any_element(),
@@ -2147,6 +2155,9 @@ impl Render for Workbench {
                 this.scroll_terminal(isize::MIN, 0, cx)
             }))
             .on_action(cx.listener(|this, _: &ChangeEol, window, cx| this.change_eol(window, cx)))
+            .on_action(cx.listener(|this, _: &ChangeLanguageMode, window, cx| {
+                this.change_language(window, cx)
+            }))
             .on_action(cx.listener(|this, _: &SelectDefaultProfile, window, cx| {
                 this.select_default_profile(window, cx)
             }))
@@ -2223,8 +2234,8 @@ fn ca_white(alpha: u8) -> Hsla {
 }
 
 /// Highlighter language names gpui-component accepts.
-fn editor_language(path: &Path) -> String {
-    match language_id(path) {
+fn editor_language(id: &str) -> String {
+    match id {
         "typescriptreact" => "tsx".into(),
         "javascriptreact" | "javascript" => "javascript".into(),
         "shellscript" => "bash".into(),

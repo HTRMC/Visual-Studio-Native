@@ -302,6 +302,44 @@ pub fn language_id(path: &Path) -> &'static str {
     }
 }
 
+/// Every language id [`language_id`] gives, for Change Language Mode.
+pub const LANGUAGES: &[&str] = &[
+    "bat",
+    "c",
+    "cpp",
+    "csharp",
+    "css",
+    "dockerfile",
+    "go",
+    "html",
+    "ignore",
+    "java",
+    "javascript",
+    "javascriptreact",
+    "json",
+    "jsonc",
+    "kotlin",
+    "lua",
+    "makefile",
+    "markdown",
+    "php",
+    "plaintext",
+    "powershell",
+    "python",
+    "ruby",
+    "rust",
+    "scss",
+    "shellscript",
+    "sql",
+    "swift",
+    "toml",
+    "typescript",
+    "typescriptreact",
+    "xml",
+    "yaml",
+    "zig",
+];
+
 /// Display name for the status bar language indicator.
 pub fn language_label(id: &str) -> &'static str {
     match id {
