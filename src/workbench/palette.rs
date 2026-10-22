@@ -2039,12 +2039,15 @@ impl Workbench {
             let mut batch = Vec::new();
             let mut sent = Instant::now();
             let excluded = search::overrides(&root, "", "", &search::exclude_globs(true));
+            let siblings = search::sibling_rules(&super::terminal::settings(), &root, true);
             let walk = ignore::WalkBuilder::new(&root)
                 .hidden(false)
                 .overrides(excluded.unwrap_or_else(|_| Override::empty()))
                 .build();
             for e in walk.flatten() {
-                if !e.file_type().is_some_and(|t| t.is_file()) {
+                if !e.file_type().is_some_and(|t| t.is_file())
+                    || search::sibling_hidden(&siblings, e.path(), false)
+                {
                     continue;
                 }
                 if let Ok(rel) = e.path().strip_prefix(&root) {

@@ -98,33 +98,90 @@ const FILES_EXCLUDE: [&str; 5] = [
 /// VS Code's default `search.exclude`, on top of `files.exclude`.
 const SEARCH_EXCLUDE: [&str; 3] = ["**/node_modules", "**/bower_components", "**/*.code-search"];
 
+/// A VS Code glob map setting: `defaults` (on), overlaid by `settings[key]`
+/// for each of `keys`.
+fn glob_entries(
+    settings: &serde_json::Value,
+    keys: &[&str],
+    defaults: &[&str],
+) -> BTreeMap<String, serde_json::Value> {
+    let mut map: BTreeMap<_, _> = defaults
+        .iter()
+        .map(|g| (g.to_string(), true.into()))
+        .collect();
+    for key in keys {
+        for (g, v) in settings[key].as_object().into_iter().flatten() {
+            map.insert(g.clone(), v.clone());
+        }
+    }
+    map
+}
+
+/// The globs a glob map turns on (`true`); `false` or a `when` condition
+/// (see `sibling_rules`) leaves one out.
+fn on_globs(map: BTreeMap<String, serde_json::Value>) -> Vec<String> {
+    map.into_iter()
+        .filter(|(_, v)| *v == true)
+        .map(|(g, _)| g)
+        .collect()
+}
+
 /// The globs a VS Code glob map setting turns on: `defaults`, overlaid by
 /// `settings[key]` for each of `keys`, where `false` turns one off.
-// ponytail: a `{"when": ...}` sibling condition counts as off.
 pub(super) fn glob_map(
     settings: &serde_json::Value,
     keys: &[&str],
     defaults: &[&str],
 ) -> Vec<String> {
-    let mut on: BTreeMap<String, bool> = defaults.iter().map(|g| (g.to_string(), true)).collect();
-    for key in keys {
-        for (g, v) in settings[key].as_object().into_iter().flatten() {
-            on.insert(g.clone(), v == true);
-        }
-    }
-    on.into_iter().filter(|(_, v)| *v).map(|(g, _)| g).collect()
+    on_globs(glob_entries(settings, keys, defaults))
 }
 
-/// The `files.exclude` (and, for `search`, also `search.exclude`) globs in force.
-fn exclude_set(settings: &serde_json::Value, search: bool) -> Vec<String> {
+/// `files.exclude` (and, for `search`, also `search.exclude`) over VS Code's defaults.
+fn exclude_entries(
+    settings: &serde_json::Value,
+    search: bool,
+) -> BTreeMap<String, serde_json::Value> {
     match search {
-        false => glob_map(settings, &["files.exclude"], &FILES_EXCLUDE),
-        true => glob_map(
+        false => glob_entries(settings, &["files.exclude"], &FILES_EXCLUDE),
+        true => glob_entries(
             settings,
             &["files.exclude", "search.exclude"],
             &[&FILES_EXCLUDE[..], &SEARCH_EXCLUDE].concat(),
         ),
     }
+}
+
+/// The `files.exclude` (and, for `search`, also `search.exclude`) globs in force.
+fn exclude_set(settings: &serde_json::Value, search: bool) -> Vec<String> {
+    on_globs(exclude_entries(settings, search))
+}
+
+/// The exclude globs that hide a path only beside a sibling, as
+/// `"**/*.js": {"when": "$(basename).ts"}` does: each glob's matcher and the
+/// sibling's name.
+pub(super) fn sibling_rules(
+    settings: &serde_json::Value,
+    root: &Path,
+    search: bool,
+) -> Vec<(Override, String)> {
+    (exclude_entries(settings, search).into_iter())
+        .filter_map(|(g, v)| {
+            let when = v["when"].as_str()?.to_string();
+            Some((overrides(root, "", "", &[g]).ok()?, when))
+        })
+        .collect()
+}
+
+/// Whether a sibling rule hides `path`: its glob matches and the sibling it
+/// names exists, `$(basename)` being `path`'s name without its extension.
+pub(super) fn sibling_hidden(rules: &[(Override, String)], path: &Path, is_dir: bool) -> bool {
+    rules.iter().any(|(o, when)| {
+        let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+        o.matched(path, is_dir).is_ignore()
+            && path
+                .with_file_name(when.replace("$(basename)", &stem))
+                .exists()
+    })
 }
 
 /// The language `files.associations` gives a file: the first glob (in key
@@ -333,11 +390,18 @@ fn walk(
     use_ignore: bool,
     filter: impl Fn(&ignore::DirEntry) -> bool + Send + Sync + 'static,
 ) -> ignore::Walk {
+    let siblings = match use_ignore {
+        true => sibling_rules(&super::terminal::settings(), root, true),
+        false => Vec::new(),
+    };
     ignore::WalkBuilder::new(root)
         .standard_filters(use_ignore)
         .hidden(false)
         .overrides(overrides)
-        .filter_entry(move |e| e.file_name() != ".git" && filter(e))
+        .filter_entry(move |e| {
+            let dir = e.file_type().is_some_and(|t| t.is_dir());
+            e.file_name() != ".git" && !sibling_hidden(&siblings, e.path(), dir) && filter(e)
+        })
         .build()
 }
 
@@ -1132,7 +1196,7 @@ mod tests {
 
     use super::{
         associated_language, build_regex, exclude_set, overrides, replace_text, search_text,
-        summary, walks_to,
+        sibling_hidden, sibling_rules, summary, walks_to,
     };
 
     #[test]
@@ -1150,6 +1214,23 @@ mod tests {
             associated_language(&serde_json::json!({}), root, Path::new("/w/a.txt")),
             None
         );
+    }
+
+    #[test]
+    fn when_hides_beside_a_sibling() {
+        let dir = std::env::temp_dir().join("vsn-when-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in ["a.ts", "a.js", "b.js"] {
+            std::fs::write(dir.join(f), "").unwrap();
+        }
+        let settings = serde_json::json!({
+            "files.exclude": { "**/*.js": { "when": "$(basename).ts" } }
+        });
+        let rules = sibling_rules(&settings, &dir, false);
+        assert!(sibling_hidden(&rules, &dir.join("a.js"), false));
+        assert!(!sibling_hidden(&rules, &dir.join("b.js"), false));
+        assert!(!sibling_hidden(&rules, &dir.join("a.ts"), false));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

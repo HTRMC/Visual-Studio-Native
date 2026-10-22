@@ -303,8 +303,11 @@ Differences from VS Code still to close, smallest first within each area.
       Ignore Files" toggle (the search always honours .gitignore).
 - [x] Search and the explorer ignore the `files.exclude` and `search.exclude`
       settings (VS Code hides `.git` etc. and skips `node_modules` by default).
-- [ ] `files.exclude` ignores `{"when": ...}` sibling conditions, and an edit
-      to settings.json shows in the explorer only after a refresh (no watcher).
+- [x] `files.exclude` ignores `{"when": ...}` sibling conditions.
+- [ ] An edit to settings.json shows in the explorer only after a refresh (no
+      watcher).
+- [ ] A `when` sibling is checked with a stat per matching entry on every
+      explorer render and walk; no cache of the folder's names.
 - [x] A right-click in the explorer's empty area doesn't move the focus
       outline off the last row the way VS Code clears it.
 - [ ] The explorer handles one item at a time: no Ctrl/Shift+click

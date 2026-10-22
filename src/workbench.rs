@@ -2346,12 +2346,16 @@ impl Workbench {
                 let root = self.root.as_deref().unwrap_or(dir);
                 let excluded = search::overrides(root, "", "", &search::exclude_globs(false))
                     .unwrap_or_else(|_| Override::empty());
+                let siblings = search::sibling_rules(&terminal::settings(), root, false);
                 let mut entries: Vec<_> = fs::read_dir(dir)
                     .into_iter()
                     .flatten()
                     .flatten()
                     .map(|e| (e.path(), e.file_type().is_ok_and(|t| t.is_dir())))
-                    .filter(|(p, is_dir)| !excluded.matched(p, *is_dir).is_ignore())
+                    .filter(|(p, is_dir)| {
+                        !excluded.matched(p, *is_dir).is_ignore()
+                            && !search::sibling_hidden(&siblings, p, *is_dir)
+                    })
                     .collect();
                 // VS Code's default explorer sort: folders first, then case-insensitive name.
                 entries.sort_by_cached_key(|(p, is_dir)| {
