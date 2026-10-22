@@ -52,8 +52,11 @@ pub(super) struct Terminal {
     /// Where the grid was last laid out, to size the pty and hit-test the mouse.
     bounds: Rc<Cell<Bounds<Pixels>>>,
     cell_w: f32,
-    /// Drag start and end as cell boundaries (row, col) on the visible screen.
-    selection: Option<((u16, u16), (u16, u16))>,
+    /// Drag start and end as cell boundaries (line, col), lines counted from
+    /// the oldest in the scrollback, so a selection scrolls with its text.
+    // ponytail: once the scrollback is full, output trims its oldest lines
+    // and shifts a standing selection up; count trimmed lines if that bites.
+    selection: Option<((usize, u16), (usize, u16))>,
     selecting: bool,
     /// The link under the mouse: row and column range.
     hover: Option<(u16, u16, u16)>,
@@ -89,6 +92,18 @@ impl Terminal {
             (row.max(0.) as u16).min(rows.get() - 1),
             (col.max(0.) as u16).min(cols.get() - !round as u16),
         )
+    }
+
+    /// The line shown on the screen's top row.
+    fn top(&self) -> usize {
+        let screen = self.parser.screen();
+        screen.scrollback_len() - screen.scrollback()
+    }
+
+    /// The cell boundary nearest the mouse, as a selection end.
+    fn selection_end(&self, position: Point<Pixels>) -> (usize, u16) {
+        let (row, col) = self.cell(position, true);
+        (self.top() + row as usize, col)
     }
 
     /// The link under the mouse, if any. Paths resolve against the shell's
@@ -754,10 +769,10 @@ impl Workbench {
         let Some(t) = self.terminal(id) else {
             return false;
         };
-        let Some(((r0, c0), (r1, c1))) = t.selection.filter(|(a, b)| a != b).map(sorted) else {
+        let Some((a, b)) = t.selection.filter(|(a, b)| a != b).map(sorted) else {
             return false;
         };
-        let text = t.parser.screen().contents_between(r0, c0, r1, c1);
+        let text = text_between(t.parser.screen_mut(), a, b);
         t.selection = None;
         cx.write_to_clipboard(ClipboardItem::new_string(text));
         cx.notify();
@@ -782,11 +797,13 @@ impl Workbench {
         cx.notify();
     }
 
-    // ponytail: the visible screen only, not the scrollback.
+    /// The scrollback and the screen.
     fn select_all_terminal(&mut self, id: u64, cx: &mut Context<Self>) {
         if let Some(t) = self.terminal(id) {
-            let (rows, cols) = t.parser.screen().size();
-            t.selection = Some(((0, 0), (rows.get() - 1, cols.get())));
+            let screen = t.parser.screen();
+            let (rows, cols) = screen.size();
+            let last = screen.scrollback_len() + rows.get() as usize - 1;
+            t.selection = Some(((0, 0), (last, cols.get())));
             cx.notify();
         }
     }
@@ -1064,6 +1081,7 @@ impl Workbench {
         let (rows, cols) = screen.size();
         let (fg0, bg0) = (c(0xCCCCCC), col::bg());
         let selection = t.selection.map(sorted);
+        let top = t.top();
         let hover = t.hover;
         let lines = (0..rows.get()).map(|row| {
             let mut text = String::new();
@@ -1090,7 +1108,8 @@ impl Workbench {
                 if cell.dim() {
                     fg = fg.opacity(0.5);
                 }
-                if selection.is_some_and(|(a, b)| a <= (row, col) && (row, col) < b) {
+                let at = (top + row as usize, col);
+                if selection.is_some_and(|(a, b)| a <= at && at < b) {
                     bg = Some(c(0x264F78));
                 }
                 let link = hover.is_some_and(|(r, a, b)| r == row && (a..b).contains(&col));
@@ -1184,7 +1203,7 @@ impl Workbench {
                         t.report(0, false, ev.position);
                         return this.activate_terminal(id, window, cx);
                     }
-                    t.selection = Some(t.cell(ev.position, true)).map(|c| (c, c));
+                    t.selection = Some(t.selection_end(ev.position)).map(|c| (c, c));
                     t.selecting = true;
                     this.activate_terminal(id, window, cx);
                 }),
@@ -1209,7 +1228,7 @@ impl Workbench {
                     && let Some((a, _)) = t.selection
                 {
                     t.selecting = ev.pressed_button == Some(MouseButton::Left);
-                    t.selection = Some((a, t.cell(ev.position, true)));
+                    t.selection = Some((a, t.selection_end(ev.position)));
                     cx.notify();
                 } else if ev.pressed_button.is_none() {
                     let hover = t
@@ -1289,6 +1308,35 @@ impl Workbench {
     }
 }
 
+/// The text between two selection ends, a screenful of scrollback at a time.
+fn text_between(
+    screen: &mut vt100::Screen,
+    (l0, c0): (usize, u16),
+    (l1, c1): (usize, u16),
+) -> String {
+    let (saved, len) = (screen.scrollback(), screen.scrollback_len());
+    let (rows, cols) = (screen.size().0.get() as usize, screen.size().1.get());
+    let l1 = l1.min(len + rows - 1);
+    let mut text = String::new();
+    let mut line = l0;
+    while line <= l1 {
+        // `line` on the top row, or as near as the scrollback goes.
+        screen.set_scrollback(len.saturating_sub(line));
+        let top = len - screen.scrollback();
+        let last = l1.min(top + rows - 1);
+        let (a, b) = ((line - top) as u16, (last - top) as u16);
+        let start = if line == l0 { c0 } else { 0 };
+        let end = if last == l1 { c1 } else { cols };
+        text += &screen.contents_between(a, start, b, end);
+        if last < l1 && !screen.row_wrapped(b) {
+            text.push('\n');
+        }
+        line = last + 1;
+    }
+    screen.set_scrollback(saved);
+    text
+}
+
 fn sorted<T: Ord>((a, b): (T, T)) -> (T, T) {
     if a <= b { (a, b) } else { (b, a) }
 }
@@ -1316,8 +1364,6 @@ fn word_at(line: &[char], col: usize) -> Option<(usize, usize)> {
 }
 
 /// A URL, or an existing file with an optional `:line:col`.
-// ponytail: relative paths resolve against the workspace root, not the
-// shell's cwd; track the cwd via shell integration (OSC 633) when it matters.
 fn link(word: &str, root: Option<&Path>) -> Option<Link> {
     if word.starts_with("https://") || word.starts_with("http://") {
         return Some(Link::Url(word.into()));
@@ -1472,7 +1518,7 @@ mod tests {
 
     use gpui_kit::Keystroke;
 
-    use super::{Link, key_bytes, link, mouse_bytes, reflow, word_at};
+    use super::{Link, key_bytes, link, mouse_bytes, reflow, text_between, word_at};
 
     #[test]
     fn keys() {
@@ -1545,5 +1591,20 @@ mod tests {
         assert_eq!(p.screen().cursor_position(), (0, 2));
         p.screen_mut().set_scrollback(100);
         assert!(p.screen().contents().starts_with("old"));
+    }
+
+    #[test]
+    fn selects_through_scrollback() {
+        let mut p = vt100::Parser::new(2.try_into().unwrap(), 4.try_into().unwrap(), 100);
+        // Lines "l0", "l1", "l2", "abcdef" wrapped as "abcd", "ef", "end".
+        p.process(b"l0\r\nl1\r\nl2\r\nabcdef\r\nend");
+        let screen = p.screen_mut();
+        screen.set_scrollback(1);
+        assert_eq!(
+            text_between(screen, (0, 0), (6, 4)),
+            "l0\nl1\nl2\nabcdef\nend"
+        );
+        assert_eq!(text_between(screen, (1, 1), (4, 1)), "1\nl2\nabcde");
+        assert_eq!(screen.scrollback(), 1);
     }
 }
