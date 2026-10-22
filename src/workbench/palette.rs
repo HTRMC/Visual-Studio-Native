@@ -208,6 +208,10 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
             Box::new(AddPreviousOccurrence),
         ),
         (
+            "Move Last Selection To Next Find Match",
+            Box::new(MoveSelectionToNextFindMatch),
+        ),
+        (
             "Select All Occurrences of Find Match",
             Box::new(SelectAllOccurrences),
         ),

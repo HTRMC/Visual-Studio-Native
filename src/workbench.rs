@@ -117,6 +117,7 @@ actions!(
         ToggleLineComment,
         AddNextOccurrence,
         AddPreviousOccurrence,
+        MoveSelectionToNextFindMatch,
         ExpandSelection,
         ShrinkSelection,
         SelectAllOccurrences,
@@ -263,6 +264,11 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
             Some("Input && mode == editor"),
         ),
         KeyBinding::new(
+            "ctrl-k ctrl-d",
+            MoveSelectionToNextFindMatch,
+            Some("Input && mode == editor"),
+        ),
+        KeyBinding::new(
             "ctrl-k ctrl-c",
             AddLineComment,
             Some("Input && mode == editor"),
@@ -361,6 +367,28 @@ fn detect_indent(text: &str) -> TabSize {
         },
         hard_tabs: tabs > spaces,
     }
+}
+
+/// After Ctrl+D, as selections other than the first aren't readable.
+struct NextMatch {
+    editor: EntityId,
+    /// The first selection then.
+    sel: Range<usize>,
+    /// The matches added since, in order.
+    added: Vec<Range<usize>>,
+    /// Where the next Add Next / Previous Occurrence searches from.
+    after: usize,
+    before: usize,
+    whole: bool,
+}
+
+/// Which of the Selection menu's occurrence commands runs.
+#[derive(PartialEq)]
+enum Occurrence {
+    Next,
+    Previous,
+    All,
+    MoveLast,
 }
 
 struct Doc {
@@ -876,10 +904,7 @@ pub struct Workbench {
     /// What had focus when a menu bar menu was opened, so its Edit and
     /// Selection entries reach that editor rather than the menu's own path.
     menu_focus: Option<FocusHandle>,
-    /// After Ctrl+D: the editor, its selection then, where the last match it
-    /// added ends and the first starts, so the next Add Next / Previous
-    /// Occurrence searches on from there, and whether it matches whole words.
-    next_match: Option<(EntityId, Range<usize>, usize, usize, bool)>,
+    next_match: Option<NextMatch>,
     /// The editor Expand Selection last ran in and its selections, the
     /// current last, for Shrink Selection to step back through.
     expand_history: Option<(EntityId, Vec<Range<usize>>)>,
@@ -2029,13 +2054,13 @@ impl Workbench {
         self.expand_history = Some((id, history));
     }
 
-    /// Selection > Add Next Occurrence (Ctrl+D) with `next` true, Add Previous
-    /// Occurrence with false, or with None Select All Occurrences
-    /// (Ctrl+Shift+L), of the active editor's selected text; an
+    /// Selection > Add Next Occurrence (Ctrl+D), Add Previous Occurrence,
+    /// Select All Occurrences (Ctrl+Shift+L) or Move Last Selection to Next
+    /// Find Match (Ctrl+K Ctrl+D), of the active editor's selected text; an
     /// empty selection first selects the word around the cursor, and then
     /// matches whole words only, case-sensitively; otherwise any match, in any
     /// case, as VS Code's find defaults.
-    fn add_occurrences(&mut self, next: Option<bool>, cx: &mut Context<Self>) {
+    fn add_occurrences(&mut self, op: Occurrence, cx: &mut Context<Self>) {
         let Some(doc) = self.docs.get(self.active).filter(|d| !d.binary) else {
             return;
         };
@@ -2044,39 +2069,72 @@ impl Workbench {
         self.next_match = doc.editor.update(cx, |e, cx| {
             let text = e.value();
             let mut sel = e.selected_range();
-            // Selections other than the first aren't readable, so remember the last.
-            let (after, before, mut whole) = match last {
-                Some((i, s, after, before, whole)) if i == id && s == sel => (after, before, whole),
-                _ => (sel.end, sel.start, false),
+            let mut m = match last {
+                Some(m) if m.editor == id && m.sel == sel => m,
+                _ => NextMatch {
+                    editor: id,
+                    sel: sel.clone(),
+                    added: Vec::new(),
+                    after: sel.end,
+                    before: sel.start,
+                    whole: false,
+                },
             };
             if sel.is_empty() {
                 sel = word_around(&text, sel.start)?;
                 e.set_selected_range(sel.clone(), cx);
-                if next.is_some() {
-                    return Some((id, sel.clone(), sel.end, sel.start, true));
+                (m.sel, m.after, m.before, m.whole) = (sel.clone(), sel.end, sel.start, true);
+                if op != Occurrence::All {
+                    return Some(m);
                 }
-                whole = true;
             }
             let len = sel.len();
-            let found = occurrences(&text, &text[sel.clone()], whole);
-            let Some(next) = next else {
+            let found = occurrences(&text, &text[sel.clone()], m.whole);
+            if op == Occurrence::All {
                 for at in found {
                     e.add_selection(at..at + len, cx);
                 }
                 return None;
+            }
+            let moved = (op == Occurrence::MoveLast).then(|| m.added.pop());
+            // Matches not selected already.
+            let free: Vec<usize> = (found.into_iter())
+                .filter(|&at| at != sel.start && m.added.iter().all(|r| r.start != at))
+                .collect();
+            let next = |from| {
+                free.iter()
+                    .find(|&&at| at >= from)
+                    .or(free.first())
+                    .copied()
             };
-            let (at, after, before) = match next {
-                true => {
-                    let at = *found.iter().find(|&&at| at >= after).or(found.first())?;
-                    (at, at + len, before)
-                }
-                false => {
-                    let at = *(found.iter().rfind(|&&at| at + len <= before)).or(found.last())?;
-                    (at, after, at)
-                }
+            let at = match moved {
+                None if op == Occurrence::Next => next(m.after)?,
+                None => *(free.iter().rfind(|&&at| at + len <= m.before)).or(free.last())?,
+                Some(moved) => match moved {
+                    // The only selection moves.
+                    None => {
+                        let at = next(sel.end)?;
+                        e.set_selected_range(at..at + len, cx);
+                        (m.sel, m.after, m.before) = (at..at + len, at + len, at);
+                        return Some(m);
+                    }
+                    Some(last) => {
+                        let at = next(last.end)?;
+                        e.set_selected_range(sel.clone(), cx);
+                        for r in &m.added {
+                            e.add_selection(r.clone(), cx);
+                        }
+                        at
+                    }
+                },
             };
             e.add_selection(at..at + len, cx);
-            Some((id, sel, after, before, whole))
+            m.added.push(at..at + len);
+            match op {
+                Occurrence::Previous => m.before = at,
+                _ => m.after = at + len,
+            }
+            Some(m)
         });
     }
 
@@ -4526,14 +4584,19 @@ impl Render for Workbench {
                 this.line_op(false, false, window, cx)
             }))
             .on_action(cx.listener(|this, _: &AddNextOccurrence, _, cx| {
-                this.add_occurrences(Some(true), cx)
+                this.add_occurrences(Occurrence::Next, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SelectAllOccurrences, _, cx| {
+                this.add_occurrences(Occurrence::All, cx)
+            }))
+            .on_action(cx.listener(|this, _: &AddPreviousOccurrence, _, cx| {
+                this.add_occurrences(Occurrence::Previous, cx)
             }))
             .on_action(
-                cx.listener(|this, _: &SelectAllOccurrences, _, cx| this.add_occurrences(None, cx)),
+                cx.listener(|this, _: &MoveSelectionToNextFindMatch, _, cx| {
+                    this.add_occurrences(Occurrence::MoveLast, cx)
+                }),
             )
-            .on_action(cx.listener(|this, _: &AddPreviousOccurrence, _, cx| {
-                this.add_occurrences(Some(false), cx)
-            }))
             .on_action(
                 cx.listener(|this, _: &ExpandSelection, _, cx| this.expand_selection(true, cx)),
             )
