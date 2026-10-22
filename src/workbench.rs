@@ -450,6 +450,9 @@ pub struct Workbench {
     notes: Vec<SharedString>,
     /// The breadcrumb row, scrolled to show the file name.
     crumbs: ScrollHandle,
+    /// The file and row width the breadcrumb was last scrolled for, so it
+    /// can be scrolled back by hand in between.
+    crumbs_at: (PathBuf, Pixels),
     /// Notifications added since the center was last open: the bell's dot.
     unseen: usize,
     /// Whether the bell's notification center is open.
@@ -508,6 +511,7 @@ impl Workbench {
             toast: None,
             notes: Vec::new(),
             crumbs: ScrollHandle::new(),
+            crumbs_at: Default::default(),
             unseen: 0,
             center: false,
             act_hover: None,
@@ -2115,9 +2119,11 @@ impl Workbench {
             }
             crumbs.push(div().px(px(2.)).child(part.clone()).into_any_element());
         }
-        // ponytail: revealed on every render, so the row can't be scrolled
-        // back by hand; reveal only on a new file or resize if that matters.
-        self.crumbs.scroll_to_item(crumbs.len().saturating_sub(1));
+        let at = (doc.path.clone(), self.crumbs.bounds().size.width);
+        if self.crumbs_at != at {
+            self.crumbs_at = at;
+            self.crumbs.scroll_to_item(crumbs.len().saturating_sub(1));
+        }
 
         v_flex()
             .size_full()
