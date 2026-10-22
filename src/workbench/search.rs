@@ -819,6 +819,8 @@ impl Workbench {
             h_flex()
                 .id(id)
                 .group("search-row")
+                .relative()
+                .w_full()
                 .h(px(22.))
                 .pr(px(12.))
                 .whitespace_nowrap()
@@ -831,11 +833,15 @@ impl Workbench {
                        fi: usize,
                        li: Option<usize>,
                        cx: &mut Context<Self>| {
+            // Over the row's end, not in its flow: a display that group_hover
+            // flips can differ between prepaint and paint, which panics.
             h_flex()
-                .flex_none()
-                .ml(px(4.))
-                .hidden()
-                .group_hover("search-row", |s| s.flex())
+                .absolute()
+                .right(px(12.))
+                .h_full()
+                .bg(col::hover())
+                .invisible()
+                .group_hover("search-row", |s| s.visible())
                 .when_some(replace, |d, (ch, li)| {
                     d.child(action_button("replace", ch).on_click(cx.listener(
                         move |this, _, window, cx| {
@@ -904,7 +910,7 @@ impl Workbench {
                             .line_height(px(18.))
                             .text_center()
                             .text_color(white())
-                            .group_hover("search-row", |s| s.hidden())
+                            .group_hover("search-row", |s| s.invisible())
                             .child(count.to_string()),
                     )
                     .child(actions(

@@ -44,11 +44,24 @@ impl PartialEq for RunExtensionCommand {
 
 impl RunExtensionCommand {
     pub(super) fn args(&self) -> Vec<Value> {
-        (self.path.iter())
-            .map(|p| json!({ "$uri": super::lsp::path_uri(p) }))
-            .collect()
+        uri_args(self.path.as_deref())
     }
 }
+
+/// A menu command's arguments for a file: its Uri.
+pub(super) fn uri_args(path: Option<&Path>) -> Vec<Value> {
+    (path.iter())
+        .map(|p| json!({ "$uri": super::lsp::path_uri(p) }))
+        .collect()
+}
+
+/// The SourceControl, resource group or resource state at `handle`, `group`
+/// and `resource`, as a menu command's argument.
+fn scm_args(at: &[u64]) -> Vec<Value> {
+    vec![json!({ "$scm": at })]
+}
+
+const COMMIT_PLACEHOLDER: &str = "Message (Ctrl+Enter to commit)";
 
 /// A status bar entry an extension shows.
 pub(super) struct StatusItem {
@@ -80,6 +93,9 @@ pub(super) struct Host {
     /// The WASM host, started with the first WASM plugin.
     wasm: Option<wasmhost::WasmHost>,
     wasm_generation: usize,
+    /// Extensions' source controls, as exthost.js's `scm` messages last sent
+    /// them.
+    scm: Vec<Value>,
 }
 
 impl Host {
@@ -235,6 +251,9 @@ pub(super) struct MenuItem {
     pub icon: Option<char>,
     /// In the "navigation" group, which `editor/title` shows as buttons.
     pub navigation: bool,
+    /// In the "inline" group, which `scm/resourceState/context` shows as
+    /// buttons on the row.
+    pub inline: bool,
 }
 
 /// Extensions' items in one of VS Code's `menus` (`editor/context`, ...)
@@ -253,7 +272,7 @@ pub(super) fn menu_items(menu: &str, focus: &[KeyContext]) -> Vec<MenuItem> {
             }
             let group = m["group"].as_str().unwrap_or("");
             let group = group.split('@').next().unwrap_or("").to_string();
-            let navigation = group == "navigation";
+            let (navigation, inline) = (group == "navigation", group == "inline");
             if let Some(sub) = m["submenu"].as_str().filter(|sub| *sub != menu) {
                 let label = (e.contributes("submenus").find(|s| s["id"] == sub))
                     .map_or(sub.to_string(), |s| e.localize(&s["label"]));
@@ -264,6 +283,7 @@ pub(super) fn menu_items(menu: &str, focus: &[KeyContext]) -> Vec<MenuItem> {
                         MenuItem {
                             title,
                             navigation,
+                            inline,
                             ..item
                         },
                     ));
@@ -289,6 +309,7 @@ pub(super) fn menu_items(menu: &str, focus: &[KeyContext]) -> Vec<MenuItem> {
                     id,
                     icon,
                     navigation,
+                    inline,
                 },
             ));
         }
@@ -788,6 +809,8 @@ impl Workbench {
     fn reactivate(&mut self, cx: &mut Context<Self>) {
         let wasm_alive = self.ext.wasm.is_some();
         self.ext.status.retain(|i| i.wasm && wasm_alive);
+        self.ext.scm.clear();
+        self.sync_commit_input(cx);
         let ids = std::mem::take(&mut self.ext.activated);
         let (kept, exts): (Vec<_>, Vec<_>) = (installed().iter())
             .filter(|e| e.enabled && ids.contains(&e.id))
@@ -1025,6 +1048,17 @@ impl Workbench {
                     self.settings_error(err, cx);
                 }
             }
+            "scm" => {
+                let at = (self.ext.scm.iter()).position(|s| s["handle"] == msg["handle"]);
+                match (at, msg["gone"] == true) {
+                    (Some(at), true) => drop(self.ext.scm.remove(at)),
+                    (Some(at), false) => self.ext.scm[at] = msg.clone(),
+                    (None, false) => self.ext.scm.push(msg.clone()),
+                    (None, true) => {}
+                }
+                self.sync_commit_input(cx);
+                cx.notify();
+            }
             "setContext" => {
                 let mut keys = SET_CONTEXT.lock().unwrap();
                 keys.insert(text("key"), msg["value"].clone());
@@ -1073,12 +1107,275 @@ impl Workbench {
                 cx,
             );
             self.ext.status.retain(|i| i.wasm);
+            self.ext.scm.clear();
+            self.sync_commit_input(cx);
             self.lsp_host_gone(super::lsp::HOSTED, cx);
             return cx.notify();
         }
         self.ext.crashes += 1;
         self.error("Extension host terminated unexpectedly. Restarting...", cx);
         self.reactivate(cx);
+    }
+
+    /// The commit message box shows the first source control's input and
+    /// placeholder, VS Code's `{0}` as the key that accepts it.
+    // ponytail: one box, the first provider's; VS Code has one per repository.
+    fn sync_commit_input(&self, cx: &mut Context<Self>) {
+        let (value, placeholder) = match self.ext.scm.first() {
+            Some(s) => (
+                s["input"].as_str().map(str::to_string),
+                (s["placeholder"].as_str())
+                    .filter(|p| !p.is_empty())
+                    .map_or(String::new(), |p| p.replace("{0}", "Ctrl+Enter")),
+            ),
+            None => (None, COMMIT_PLACEHOLDER.to_string()),
+        };
+        let (Some(window), commit) = (self.ext.window, self.commit.clone()) else {
+            return;
+        };
+        // A host message comes without the window an input needs.
+        cx.defer(move |cx| {
+            (window.update(cx, |_, window, cx| {
+                commit.update(cx, |input, cx| {
+                    input.set_placeholder(placeholder, window, cx);
+                    if let Some(value) = value.filter(|v| *v != input.value().as_ref()) {
+                        input.set_value(value, window, cx);
+                    }
+                })
+            }))
+            .ok();
+        });
+    }
+
+    /// The commit message box changed: the first source control's input
+    /// box follows it.
+    pub(super) fn scm_input(&self, cx: &App) {
+        if let Some(s) = self.ext.scm.first() {
+            let value = self.commit.read(cx).value().to_string();
+            (self.ext).send(json!({ "m": "scmInput", "handle": s["handle"], "value": value }));
+        }
+    }
+
+    /// Ctrl+Enter in the commit message box: the first source control's
+    /// `acceptInputCommand`.
+    pub(super) fn scm_accept(&self) {
+        if let Some(s) = self.ext.scm.first() {
+            (self.ext).send(json!({ "m": "scmAccept", "handle": s["handle"] }));
+        }
+    }
+
+    /// Extensions' `scm/title` items for the first source control, and the
+    /// arguments they run with.
+    pub(super) fn scm_title_items(&self) -> (Vec<MenuItem>, Vec<Value>) {
+        let Some(s) = self.ext.scm.first() else {
+            return (Vec::new(), Vec::new());
+        };
+        let mut keys = KeyContext::default();
+        keys.set("view", "workbench.scm");
+        keys.set(
+            "scmProvider",
+            s["id"].as_str().unwrap_or_default().to_string(),
+        );
+        let handle = s["handle"].as_u64().unwrap_or_default();
+        (menu_items("scm/title", &[keys]), scm_args(&[handle]))
+    }
+
+    /// The Source Control view's "..." menu: extensions' `scm/title` items
+    /// outside "navigation".
+    pub(super) fn scm_more(&self, cx: &mut Context<Self>) -> AnyElement {
+        let (mut items, args) = self.scm_title_items();
+        items.retain(|i| !i.navigation);
+        let wb = cx.weak_entity();
+        Button::new("scm-more")
+            .ghost()
+            .compact()
+            .size(px(22.))
+            .text_color(col::fg())
+            .child(codicon(icon::ELLIPSIS))
+            .tooltip("Views and More Actions...")
+            .dropdown_menu(move |menu, _, _| ext_menu_items(menu, &wb, &items, args.clone()))
+            .into_any_element()
+    }
+
+    /// The Source Control view: the commit message box, then each source
+    /// control's resource groups and their files, with extensions'
+    /// `scm/resourceGroup/context` and `scm/resourceState/context` menus.
+    // ponytail: groups don't collapse, rows have no status letter or
+    // multi-select, and with several source controls each gets a plain
+    // header without VS Code's per-repository buttons.
+    pub(super) fn render_scm(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let commit = (v_flex().px(px(12.)).pt(px(4.)).pb(px(6.)).gap(px(6.)))
+            .child(search_box(&self.commit));
+        if self.ext.scm.is_empty() {
+            return v_flex()
+                .child(section_header("scm-repos", "Changes", true))
+                .child(commit.child(primary_button("commit", "Commit", Some(icon::CHECK))))
+                .into_any_element();
+        }
+        let many = self.ext.scm.len() > 1;
+        let mut rows = Vec::new();
+        for s in self.ext.scm.clone() {
+            let handle = s["handle"].as_u64().unwrap_or_default();
+            let mut keys = KeyContext::default();
+            keys.set("view", "workbench.scm");
+            keys.set(
+                "scmProvider",
+                s["id"].as_str().unwrap_or_default().to_string(),
+            );
+            if many {
+                let label = s["label"].as_str().unwrap_or_default().to_string();
+                let header = div().pl(px(8.)).font_weight(FontWeight::BOLD).child(label);
+                rows.push(self.scm_row(rows.len(), header, Vec::new(), Vec::new(), None, cx));
+            }
+            let root = s["root"].as_str().map(PathBuf::from);
+            for (gi, g) in s["groups"].as_array().into_iter().flatten().enumerate() {
+                let resources = g["resources"].as_array().cloned().unwrap_or_default();
+                if resources.is_empty() && g["hideWhenEmpty"] == true {
+                    continue;
+                }
+                let mut keys = keys.clone();
+                keys.set(
+                    "scmResourceGroup",
+                    g["id"].as_str().unwrap_or_default().to_string(),
+                );
+                let items = menu_items("scm/resourceGroup/context", std::slice::from_ref(&keys));
+                let header = h_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .child(codicon(icon::CHEVRON_DOWN).w(px(20.)))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_ellipsis()
+                            .child(g["label"].as_str().unwrap_or_default().to_string()),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .ml(px(6.))
+                            .px(px(5.))
+                            .min_w(px(18.))
+                            .rounded(px(9.))
+                            .bg(c(0x616161))
+                            .text_size(px(11.))
+                            .line_height(px(18.))
+                            .text_center()
+                            .text_color(white())
+                            .group_hover("scm-row", |s| s.invisible())
+                            .child(resources.len().to_string()),
+                    );
+                let args = scm_args(&[handle, gi as u64]);
+                rows.push(self.scm_row(rows.len(), header, items, args, None, cx));
+                for (ri, r) in resources.iter().enumerate() {
+                    let mut keys = keys.clone();
+                    keys.set(
+                        "scmResourceState",
+                        r["context"].as_str().unwrap_or_default().to_string(),
+                    );
+                    let items = menu_items("scm/resourceState/context", &[keys]);
+                    let path = PathBuf::from(r["path"].as_str().unwrap_or_default());
+                    let name = path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
+                    let dir = (root.as_ref())
+                        .and_then(|root| path.parent()?.strip_prefix(root).ok())
+                        .map(|d| d.display().to_string())
+                        .unwrap_or_default();
+                    let tip =
+                        SharedString::from(r["tooltip"].as_str().unwrap_or_default().to_string());
+                    let at = [handle, gi as u64, ri as u64];
+                    let row = h_flex()
+                        .id("scm-resource")
+                        .flex_1()
+                        .min_w_0()
+                        .pl(px(20.))
+                        .when(r["faded"] == true, |d| d.opacity(0.6))
+                        .child(div().mr(px(6.)).child(file_icon(&path)))
+                        .child(
+                            div()
+                                .flex_none()
+                                .when(r["strike"] == true, |d| d.line_through())
+                                .child(name),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .ml(px(6.))
+                                .text_size(px(12.))
+                                .text_color(col::fg_muted())
+                                .text_ellipsis()
+                                .child(dir),
+                        )
+                        .when(!tip.is_empty(), |d| {
+                            d.tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                        });
+                    rows.push(self.scm_row(rows.len(), row, items, scm_args(&at), Some(at), cx));
+                }
+            }
+        }
+        v_flex()
+            .size_full()
+            .child(commit)
+            .child(
+                v_flex()
+                    .id("scm-list")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .children(rows),
+            )
+            .into_any_element()
+    }
+
+    /// A row of the Source Control view: its `inline` menu items as buttons
+    /// on hover and the others on right-click; clicking a resource's opens it.
+    fn scm_row(
+        &self,
+        ix: usize,
+        content: impl IntoElement,
+        items: Vec<MenuItem>,
+        args: Vec<Value>,
+        open: Option<[u64; 3]>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (inline, menu): (Vec<_>, Vec<_>) = items.into_iter().partition(|i| i.inline);
+        let row = h_flex()
+            .id(("scm-row", ix))
+            .group("scm-row")
+            .relative()
+            .h(px(22.))
+            .pr(px(8.))
+            .whitespace_nowrap()
+            .overflow_hidden()
+            .cursor_pointer()
+            .hover(|s| s.bg(col::hover()))
+            .child(content)
+            .child(
+                // Over the row's end, so the count badge it hides keeps its place.
+                h_flex()
+                    .absolute()
+                    .right(px(8.))
+                    .h_full()
+                    .bg(col::hover())
+                    .invisible()
+                    .group_hover("scm-row", |s| s.visible())
+                    .children(self.ext_buttons("scm-inline", inline, args.clone(), cx)),
+            )
+            .when_some(open, |d, at| {
+                d.on_click(cx.listener(move |this, _, _, _| {
+                    this.ext.send(json!({ "m": "scmOpen", "ref": at }))
+                }))
+            });
+        if menu.is_empty() {
+            return row.into_any_element();
+        }
+        let wb = cx.weak_entity();
+        (row.context_menu(move |m, _, _| ext_menu_items(m, &wb, &menu, args.clone())))
+            .into_any_element()
     }
 
     /// Extensions' status bar entries on one side, highest priority leftmost.

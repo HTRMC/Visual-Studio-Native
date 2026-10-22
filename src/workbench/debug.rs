@@ -1560,8 +1560,8 @@ impl Workbench {
                     )
                     .child(
                         action_button(("dbg-watch-rm", ix), icon::CLOSE)
-                            .hidden()
-                            .group_hover("dbg-watch-row", |s| s.flex())
+                            .invisible()
+                            .group_hover("dbg-watch-row", |s| s.visible())
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 cx.stop_propagation();
                                 this.remove_watch(Some(ix), cx);

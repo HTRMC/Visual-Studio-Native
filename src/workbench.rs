@@ -1045,6 +1045,14 @@ impl Workbench {
             }
         })
         .detach();
+        cx.subscribe(&this.commit, |this, _, ev: &InputEvent, cx| match ev {
+            InputEvent::Change => this.scm_input(cx),
+            InputEvent::PressEnter {
+                secondary: true, ..
+            } => this.scm_accept(),
+            _ => {}
+        })
+        .detach();
         this.watch_root(cx);
         this.activate_extensions("*", cx);
         // The title bar's close button (and Alt+F4) land here.
@@ -2797,7 +2805,13 @@ impl Workbench {
             true => Vec::new(),
             false => exthost::menu_items("view/title", &[keys]),
         };
-        let view_buttons = self.ext_buttons("ext-view", items, None, cx);
+        let items = items.into_iter().filter(|i| i.navigation).collect();
+        let mut view_buttons = self.ext_buttons("ext-view", items, Vec::new(), cx);
+        if self.view == View::Scm {
+            let (mut items, args) = self.scm_title_items();
+            items.retain(|i| i.navigation);
+            view_buttons.extend(self.ext_buttons("ext-scm", items, args, cx));
+        }
         let header = h_flex()
             .h(px(35.))
             .flex_none()
@@ -2814,6 +2828,7 @@ impl Workbench {
                 actions.iter().enumerate().map(|(i, &(ch, text))| {
                     match (self.view, text == MORE.1) {
                         (View::Extensions, true) => extensions::more_button().into_any_element(),
+                        (View::Scm, true) => self.scm_more(cx),
                         _ => action_button(("sb-act", i), ch)
                             .tooltip(tip(text))
                             .into_any_element(),
@@ -2824,17 +2839,7 @@ impl Workbench {
         let body = match self.view {
             View::Explorer => self.render_explorer(cx).into_any_element(),
             View::Search => self.render_search(cx).into_any_element(),
-            View::Scm => v_flex()
-                .child(section_header("scm-repos", "Changes", true))
-                .child(
-                    v_flex()
-                        .px(px(12.))
-                        .pt(px(4.))
-                        .gap(px(6.))
-                        .child(search_box(&self.commit))
-                        .child(primary_button("commit", "Commit", Some(icon::CHECK))),
-                )
-                .into_any_element(),
+            View::Scm => self.render_scm(cx),
             View::Run => self.render_run(cx),
             View::Extensions => v_flex()
                 .size_full()
@@ -3501,25 +3506,18 @@ impl Workbench {
         (items, Some(doc.path.clone()))
     }
 
-    /// Extensions' title buttons, run with `path`'s Uri: the "navigation"
-    /// group's (VS Code puts the others in "...").
+    /// Extensions' menu items as buttons, run with `args`.
     fn ext_buttons(
         &self,
         id: &'static str,
         items: Vec<exthost::MenuItem>,
-        path: Option<PathBuf>,
+        args: Vec<serde_json::Value>,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        let items = items.into_iter().filter(|i| i.navigation).enumerate();
-        items
+        (items.into_iter().enumerate())
             .map(|(ix, item)| {
                 let title = SharedString::from(item.title);
-                let path = path.clone();
-                let action = exthost::RunExtensionCommand {
-                    id: item.id,
-                    path,
-                    when: None,
-                };
+                let (command, args) = (item.id, args.clone());
                 let button = match item.icon {
                     Some(ch) => action_button((id, ix), ch),
                     None => div()
@@ -3535,7 +3533,8 @@ impl Workbench {
                         component::tooltip::Tooltip::new(title.clone()).build(window, cx)
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.run_extension_command(action.id.clone(), action.args(), cx)
+                        cx.stop_propagation();
+                        this.run_extension_command(command.clone(), args.clone(), cx)
                     }))
                     .into_any_element()
             })
@@ -3773,7 +3772,9 @@ impl Workbench {
                             .text_color(col::fg())
                             .children({
                                 let (items, path) = self.editor_title_items();
-                                self.ext_buttons("ext-title", items, path, cx)
+                                let items = items.into_iter().filter(|i| i.navigation).collect();
+                                let args = exthost::uri_args(path.as_deref());
+                                self.ext_buttons("ext-title", items, args, cx)
                             })
                             .child(
                                 action_button("split-editor", icon::SPLIT_HORIZONTAL)
@@ -3790,7 +3791,7 @@ impl Workbench {
                                     .dropdown_menu(move |menu, _, _| {
                                         let menu = chord(menu, "Close All", CloseAllEditors);
                                         let menu = chord(menu, "Close Saved", CloseSavedEditors);
-                                        ext_menu_items(menu, &wb_more, &more, more_path.as_deref())
+                                        ext_menu_items(menu, &wb_more, &more, exthost::uri_args(more_path.as_deref()))
                                     }),
                             ),
                     ),
@@ -4698,15 +4699,15 @@ fn explorer_menu(
     }
     exthost::resource_keys(&mut focus, path);
     let items = exthost::menu_items("explorer/context", &[focus]);
-    ext_menu_items(menu, wb, &items, Some(path))
+    ext_menu_items(menu, wb, &items, exthost::uri_args(Some(path)))
 }
 
-/// Extensions' menu items after a separator, run with `path`'s Uri.
+/// Extensions' menu items after a separator, run with `args`.
 fn ext_menu_items(
     menu: PopupMenu,
     wb: &WeakEntity<Workbench>,
     items: &[exthost::MenuItem],
-    path: Option<&Path>,
+    args: Vec<serde_json::Value>,
 ) -> PopupMenu {
     let menu = if items.is_empty() {
         menu
@@ -4714,16 +4715,11 @@ fn ext_menu_items(
         menu.separator()
     };
     items.iter().fold(menu, |menu, item| {
-        let (wb, path) = (wb.clone(), path.map(Path::to_path_buf));
-        let action = exthost::RunExtensionCommand {
-            id: item.id.clone(),
-            path,
-            when: None,
-        };
+        let (wb, command, args) = (wb.clone(), item.id.clone(), args.clone());
         menu.item(
             PopupMenuItem::new(item.title.clone()).on_click(move |_, _, cx| {
                 wb.update(cx, |this, cx| {
-                    this.run_extension_command(action.id.clone(), action.args(), cx)
+                    this.run_extension_command(command.clone(), args.clone(), cx)
                 })
                 .ok();
             }),
@@ -5889,7 +5885,7 @@ fn editor_tab_menu(
     focus.set("resourceLangId", lang);
     exthost::resource_keys(&mut focus, path);
     let items = exthost::menu_items("editor/title/context", &[focus]);
-    ext_menu_items(menu, wb, &items, Some(path))
+    ext_menu_items(menu, wb, &items, exthost::uri_args(Some(path)))
 }
 
 /// An editor tab being dragged: its index, and its name to draw under the mouse.

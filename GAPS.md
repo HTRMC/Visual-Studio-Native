@@ -497,7 +497,9 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [x] Extension keybindings' `when` with comparisons, regexes or `setContext` keys were skipped; the same check covers them.
 - [x] Extensions' `editor/title` non-navigation groups and submenus were ignored; they're in "..." and flattened into "Submenu › Item".
 - [x] Extensions' `editor/title/context` and `view/title` items were ignored; they're on the tab menu and the built-in views' headers.
-- [ ] Extensions' `scm/*` menus (no SCM providers); real nested submenus; with extension items, the editor's own menu items are always enabled.
+- [x] Extensions' `scm/*` menus and source controls: the Source Control view shows their groups and resources, with title, inline and row-menu items.
+- [ ] Extension source controls: one commit box, the first provider's; groups don't collapse; no status letters, multi-select or `actionButton`; `resourceStates` changed in place (not reassigned) don't sync.
+- [ ] Real nested submenus; with extension items, the editor's own menu items are always enabled.
 - [x] Quick pick, input box and message buttons for extensions, in the palette and the notification.
 - [x] `globalState`/`workspaceState` persist (JSON under `~/.vsn/globalStorage` and `workspaceStorage`); `storageUri` is per folder.
 - [x] `executeCommand` runs ~35 of VS Code's built-in commands (`vscode.open`, saves, views, panels, formatting, ...) as vsn's actions.

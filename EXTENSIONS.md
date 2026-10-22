@@ -111,7 +111,8 @@ there.
 | `workspace` | 3 | `getConfiguration`, `workspaceFolders`, `fs`, `onDidChangeConfiguration`, `openTextDocument` |
 | `languages` | 4 | completion, hover, definition, diagnostics collections, formatting |
 | `env`, `Uri`, `EventEmitter`, `Disposable` | 3 | Plain JS in the shim |
-| `debug`, `tasks`, `scm`, `notebooks`, webviews | later / never | |
+| `scm` | 2 | `createSourceControl`, resource groups, `inputBox`, `acceptInputCommand` |
+| `debug`, `tasks`, `notebooks`, webviews | later / never | |
 
 ## Phases
 
@@ -146,7 +147,11 @@ there.
    `when` in full (comparisons, `=~` regexes, `in`, `setContext` keys),
    over VS Code's focus keys (`editorTextFocus`, `terminalFocus`,
    `filesExplorerFocus`, ...), the resource keys and the platform.
-   *Left:* `scm/*` menus (no SCM providers yet), extensions' own views.
+   Extensions' source controls fill the Source Control view: the commit
+   box, groups and resources, `scm/title` buttons and "...", the
+   `scm/resourceGroup/context` and `scm/resourceState/context` items inline
+   on hover and in the row menus.
+   *Left:* extensions' own views.
 3. **JS host.** The bundled runtime and the `vscode` shim; a simple Open VSX
    extension that registers commands, shows messages and adds a status bar
    item works unchanged. The Bun vs Node comparison happens here.

@@ -479,6 +479,72 @@ const env = {
   asExternalUri: async (u) => u,
 };
 
+// ---- source control ----------------------------------------------------------
+
+// Extensions' source controls by handle: the SourceControl, its groups and
+// its input box's fields. Any change to them is sent whole to vsn.
+const scms = new Map();
+let nextScm = 0;
+
+const watched = (obj, sync) => new Proxy(obj, { set(t, k, v) { t[k] = v; sync(); return true; } });
+
+function scmJson(handle) {
+  const { sc, groups, input } = scms.get(handle);
+  const resource = (r) => {
+    const d = r.decorations || {};
+    const tip = d.tooltip && typeof d.tooltip === 'object' ? d.tooltip.value : d.tooltip;
+    return { path: r.resourceUri.fsPath, tooltip: tip || '', strike: !!d.strikeThrough, faded: !!d.faded, context: r.contextValue || '' };
+  };
+  return {
+    m: 'scm', handle, id: sc.id, label: sc.label, root: sc.rootUri ? sc.rootUri.fsPath : null,
+    input: input.value, placeholder: input.placeholder, count: sc.count,
+    groups: groups.map((g) => ({ id: g.id, label: g.label, hideWhenEmpty: !!g.hideWhenEmpty, resources: (g.resourceStates || []).map(resource) })),
+  };
+}
+
+// ponytail: quickDiffProvider, commitTemplate, statusBarCommands and
+// inputBox.validateInput are kept but unused.
+function createSourceControl(id, label, rootUri) {
+  const handle = ++nextScm;
+  let pending = false;
+  const sync = () => {
+    if (pending) return;
+    pending = true;
+    queueMicrotask(() => { pending = false; if (scms.has(handle)) send(scmJson(handle)); });
+  };
+  const input = { value: '', placeholder: '', enabled: true, visible: true };
+  const groups = [];
+  const sc = watched({
+    id, label, rootUri, count: undefined, inputBox: watched(input, sync),
+    createResourceGroup(gid, glabel) {
+      const g = watched({
+        id: gid, label: glabel, hideWhenEmpty: undefined, resourceStates: [],
+        dispose() { groups.splice(groups.indexOf(g), 1); sync(); },
+      }, sync);
+      groups.push(g);
+      sync();
+      return g;
+    },
+    dispose() { scms.delete(handle); send({ m: 'scm', handle, gone: true }); },
+  }, sync);
+  scms.set(handle, { sc, groups, input });
+  sync();
+  return sc;
+}
+
+// The SourceControl, group or resource state a `{ $scm: [h, g?, r?] }`
+// argument from vsn's menus names.
+function scmArg([h, g, r]) {
+  const s = scms.get(h);
+  if (!s || g === undefined) return s && s.sc;
+  const group = s.groups[g];
+  return r === undefined ? group : group && group.resourceStates[r];
+}
+
+function runScm(cmd, args = []) {
+  if (cmd) vscodeCommands.executeCommand(cmd.command, ...(cmd.arguments || []), ...args).catch((err) => send({ m: 'error', text: errorText(err) }));
+}
+
 // ---- languages ---------------------------------------------------------------
 
 // The language ids a document selector names.
@@ -765,6 +831,7 @@ const known = {
   __esModule: true,
   commands: vscodeCommands, extensions: vscodeExtensions, env,
   window: withStubs('window', vscodeWindow), workspace: withStubs('workspace', vscodeWorkspace), languages: withStubs('languages', vscodeLanguages),
+  scm: withStubs('scm', { createSourceControl }),
   Disposable, EventEmitter, Uri, Position, Range, Selection, ThemeColor, ThemeIcon, CancellationTokenSource,
   Location, Diagnostic, DiagnosticRelatedInformation, MarkdownString, Hover, SnippetString, CompletionItem, CompletionList, TextEdit, CodeActionKind,
   WorkspaceEdit, CodeAction, CodeActionTriggerKind: { Invoke: 1, Automatic: 2 },
@@ -859,7 +926,8 @@ async function run(command, args) {
   if (!fn) return send({ m: 'error', text: `command '${command}' not found` });
   try {
     // A menu passes its file as VS Code does, a Uri.
-    await fn(...(args || []).map((a) => (a && a.$uri ? Uri.parse(a.$uri) : a)));
+    // and a source control's view its SourceControl, group or resource.
+    await fn(...(args || []).map((a) => (a && a.$uri ? Uri.parse(a.$uri) : a && a.$scm ? scmArg(a.$scm) : a)));
   } catch (err) {
     send({ m: 'error', text: `Running the contributed command: '${command}' failed. ${errorText(err)}` });
   }
@@ -898,6 +966,21 @@ rl.on('line', (line) => {
         return onLsp(msg.msg);
       case 'activeEditor':
         return setActiveEditor(msg.editor);
+      case 'scmInput': {
+        // Typed in vsn, so not sent back.
+        const s = scms.get(msg.handle);
+        if (s) s.input.value = msg.value;
+        return;
+      }
+      case 'scmAccept': {
+        const s = scms.get(msg.handle);
+        return s && runScm(s.sc.acceptInputCommand);
+      }
+      case 'scmOpen': {
+        // A resource without a command opens its file, as in VS Code.
+        const r = scmArg(msg.ref);
+        return r && runScm(r.command || { command: 'vscode.open', arguments: [r.resourceUri] });
+      }
     }
   });
 });
