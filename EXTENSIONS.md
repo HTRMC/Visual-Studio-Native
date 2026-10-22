@@ -3,6 +3,33 @@
 How vsn runs VS Code extensions (JavaScript, for compatibility) and its own
 native plugins (WebAssembly, for speed and sandboxing) on one shared core.
 
+## Goal
+
+A VS Code user can move to vsn without losing their extensions, and vsn
+offers something VS Code can't: plugins that are fast and safe by design.
+
+- **Compatibility.** An extension from Open VSX installs and works
+  unchanged, whether it's a theme or snippet pack (no code), a language
+  extension (a language server behind a thin JS wrapper) or a plain JS
+  extension (commands, messages, status bar, configuration). The bar is
+  the 20 most-downloaded JS extensions on Open VSX activating without
+  errors.
+- **Native plugins.** A plugin written against vsn's own API in Rust, or
+  any language that compiles to WebAssembly, runs sandboxed. It has no file
+  or network access unless granted, and runs under CPU and memory limits.
+  It keeps working across vsn updates without a rebuild.
+- **The editor stays native.** No extension, JS or WASM, can freeze the UI
+  or crash vsn. The JS host is a separate process that restarts on its own,
+  and WASM calls are metered. With no extensions installed, startup costs
+  nothing extra.
+- **One system.** Both kinds install, update, disable and show in the same
+  Extensions view, from the same `package.json` manifest, and reach the
+  editor through the same core API.
+
+Not goals: the Microsoft Marketplace, Microsoft's VS Code-only extensions,
+webviews, and every corner of the `vscode` API. Coverage grows as real
+extensions need it.
+
 ## Decisions
 
 | Question | Decision | Why |
