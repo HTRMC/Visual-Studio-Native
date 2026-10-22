@@ -1846,14 +1846,18 @@ impl Workbench {
             .and_then(|s| rows.iter().position(|(p, ..)| p == s));
         let row = cur.map(|i| rows[i].clone());
         let open = |p: &PathBuf| self.expanded.contains(p);
-        // ponytail: PageUp/Down move a page's worth of rows; VS Code first
-        // stops at the first/last row in view.
-        let height = self.tree_scroll.0.borrow().base_handle.bounds().size.height;
-        let page = ((height / px(22.)) as usize).saturating_sub(1).max(1);
+        // PageUp/Down first go to the top/bottom row in view, then a page on.
+        let scroll = self.tree_scroll.0.borrow().base_handle.clone();
+        let page = ((scroll.bounds().size.height / px(22.)) as usize)
+            .saturating_sub(1)
+            .max(1);
+        let top = (-scroll.offset().y / px(22.)).ceil() as usize;
         let to = match (ev.keystroke.key.as_str(), cur, &row) {
             ("down" | "up" | "pagedown" | "pageup", None, _) | ("home", ..) => 0,
             ("end", ..) => last,
+            ("pagedown", Some(i), _) if i < top + page => (top + page).min(last),
             ("pagedown", Some(i), _) => (i + page).min(last),
+            ("pageup", Some(i), _) if i > top => top,
             ("pageup", Some(i), _) => i.saturating_sub(page),
             ("down", Some(i), _) => (i + 1).min(last),
             ("up", Some(i), _) => i.saturating_sub(1),

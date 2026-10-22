@@ -142,8 +142,8 @@ Differences from VS Code still to close, smallest first within each area.
       opens into the editor, Space opens keeping focus; the selection's
       outline shows only while the explorer has focus.
 - [x] PageUp/PageDown move the explorer's selection a page of rows.
-- [ ] PageUp/PageDown don't first stop at the first/last row in view, as
-      VS Code's do.
+- [x] PageUp/PageDown first stop at the first/last row in view, as VS
+      Code's do, then move a page.
 - [ ] The explorer lacks type-to-find, F2/Delete on the selection, and
       Ctrl/Shift multi-select.
 - [x] Ctrl+Shift+E (View: Show Explorer, View > Explorer) opens the
