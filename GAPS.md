@@ -255,7 +255,7 @@ Differences from VS Code still to close, smallest first within each area.
       not editor.wordWrapColumn; Alt+Z toggles all editors, not just the
       active one as VS Code does.
 - [ ] Still-inert menu entries: Open Recent > More..., Preferences >
-      Keyboard Shortcuts / Themes; Edit > Toggle Line/Block Comment;
+      Keyboard Shortcuts / Themes; Edit > Toggle Block Comment;
       Selection > Expand/Shrink Selection; View > Open View..., Editor Layout > Split
       Up/Down; Go to Symbol in Workspace...; Run > Open/Add
       Configuration..., Run Task..., Run Build Task...; Help's entries.
@@ -268,6 +268,12 @@ Differences from VS Code still to close, smallest first within each area.
 - [ ] Copy/Move Line take the active selection's lines only, not every
       cursor's; undoing one leaves the swapped lines selected instead of
       putting the cursor back.
+- [x] Edit > Toggle Line Comment was inert; it and Ctrl+/ comment or
+      uncomment the selected lines with the language's line comment.
+- [ ] Toggle Line Comment does nothing for block-comment-only languages
+      (CSS, HTML, XML, Markdown; VS Code adds a block comment), handles
+      the active selection only, and Ctrl+K Ctrl+C / Ctrl+K Ctrl+U (Add /
+      Remove Line Comment) are missing.
 - [x] File > Auto Save was inert; it and "File: Toggle Auto Save" flip
       files.autoSave, and "afterDelay" saves dirty files after
       files.autoSaveDelay.

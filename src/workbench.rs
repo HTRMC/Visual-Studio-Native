@@ -114,6 +114,7 @@ actions!(
         CopyLinesDown,
         MoveLinesUp,
         MoveLinesDown,
+        ToggleLineComment,
         ScrollTerminalUp,
         ScrollTerminalDown,
         ScrollTerminalUpPage,
@@ -236,6 +237,7 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         ),
         KeyBinding::new("alt-up", MoveLinesUp, Some("Input && mode == editor")),
         KeyBinding::new("alt-down", MoveLinesDown, Some("Input && mode == editor")),
+        KeyBinding::new("ctrl-/", ToggleLineComment, Some("Input && mode == editor")),
         KeyBinding::new(
             "ctrl-alt-pageup",
             ScrollTerminalUp,
@@ -387,13 +389,7 @@ fn lines_moved(
 ) -> Option<(Range<usize>, String, Range<usize>)> {
     let line_start = |i: usize| text[..i].rfind('\n').map_or(0, |n| n + 1);
     let line_end = |i: usize| text[i..].find('\n').map_or(text.len(), |n| i + n);
-    let start = line_start(sel.start);
-    // A selection ending at a line's start doesn't take that line, as in VS Code.
-    let last = match sel.end > sel.start && sel.end == line_start(sel.end) {
-        true => sel.end - 1,
-        false => sel.end,
-    };
-    let end = line_end(last);
+    let Range { start, end } = selected_lines(text, &sel);
     let block = &text[start..end];
     let shift = |by: isize| {
         let at = |i: usize| i.saturating_add_signed(by);
@@ -426,6 +422,99 @@ fn lines_moved(
             )
         }
     })
+}
+
+/// The byte range of the whole lines `sel` touches in `text`, without the
+/// last one's line break.
+fn selected_lines(text: &str, sel: &Range<usize>) -> Range<usize> {
+    let line_start = |i: usize| text[..i].rfind('\n').map_or(0, |n| n + 1);
+    // A selection ending at a line's start doesn't take that line, as in VS Code.
+    let last = match sel.end > sel.start && sel.end == line_start(sel.end) {
+        true => sel.end - 1,
+        false => sel.end,
+    };
+    line_start(sel.start)..text[last..].find('\n').map_or(text.len(), |n| last + n)
+}
+
+/// Language `lang`'s line comment token, from VS Code's language
+/// configurations.
+// ponytail: None for languages with only block comments (CSS, HTML, XML,
+// Markdown), where VS Code's Toggle Line Comment adds a block comment.
+fn line_comment(lang: &str) -> Option<&'static str> {
+    Some(match lang {
+        "rust" | "typescript" | "typescriptreact" | "javascript" | "javascriptreact" | "json"
+        | "jsonc" | "c" | "cpp" | "csharp" | "go" | "java" | "kotlin" | "php" | "swift" | "zig"
+        | "scss" => "//",
+        "python" | "ruby" | "toml" | "yaml" | "shellscript" | "powershell" | "makefile"
+        | "dockerfile" | "ignore" => "#",
+        "lua" | "sql" => "--",
+        "bat" => "@REM",
+        _ => return None,
+    })
+}
+
+/// The edit for Toggle Line Comment with `token` on the lines `sel` touches
+/// in `text`, as for [`lines_moved`]: removes the token (and a space after
+/// it) when every non-blank line starts with it, else adds "token " at their
+/// least indentation. None when every line is blank.
+fn comment_toggled(
+    text: &str,
+    sel: Range<usize>,
+    token: &str,
+) -> Option<(Range<usize>, String, Range<usize>)> {
+    let lines = selected_lines(text, &sel);
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let mut offset = lines.start;
+    // (where, bytes removed, text inserted) per line, in order.
+    let mut edits = Vec::new();
+    let body = text[lines.clone()].split('\n').map(|l| {
+        let at = offset;
+        offset += l.len() + 1;
+        (at, l)
+    });
+    let body: Vec<_> = body.filter(|(_, l)| !l.trim().is_empty()).collect();
+    let col = body.iter().map(|(_, l)| indent(l)).min()?;
+    let add = format!("{token} ");
+    if body.iter().all(|(_, l)| l.trim_start().starts_with(token)) {
+        for (at, l) in &body {
+            let i = indent(l);
+            let space = l[i + token.len()..].starts_with(' ') as usize;
+            edits.push((at + i, token.len() + space, ""));
+        }
+    } else {
+        for (at, _) in &body {
+            edits.push((at + col, 0, add.as_str()));
+        }
+    }
+    Some(apply_edits(text, lines, &edits, sel))
+}
+
+/// `edits` (position, bytes removed, text inserted), in order, applied to
+/// `text[lines]`: the range, its replacement, and `sel` moved along.
+fn apply_edits(
+    text: &str,
+    lines: Range<usize>,
+    edits: &[(usize, usize, &str)],
+    sel: Range<usize>,
+) -> (Range<usize>, String, Range<usize>) {
+    let mut out = String::new();
+    let mut from = lines.start;
+    for &(at, removed, inserted) in edits {
+        out.push_str(&text[from..at]);
+        out.push_str(inserted);
+        from = at + removed;
+    }
+    out.push_str(&text[from..lines.end]);
+    let moved = |pos: usize| {
+        let mut new = pos;
+        for &(at, removed, inserted) in edits {
+            if at <= pos {
+                new = new - pos.min(at + removed).saturating_sub(at) + inserted.len();
+            }
+        }
+        new
+    };
+    (lines, out, moved(sel.start)..moved(sel.end))
 }
 
 /// `text` with every line ending made CRLF or LF, as VS Code keeps one
@@ -1695,12 +1784,23 @@ impl Workbench {
     /// lines.
     // ponytail: the active selection only; VS Code moves every cursor's lines.
     fn line_op(&mut self, up: bool, copy: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.edit_lines(|text, sel| lines_moved(text, sel, up, copy), window, cx)
+    }
+
+    /// Applies `edit`'s (range, replacement, selection after) for the active
+    /// editor's text and selection as one undo step.
+    fn edit_lines(
+        &mut self,
+        edit: impl FnOnce(&str, Range<usize>) -> Option<(Range<usize>, String, Range<usize>)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(doc) = self.docs.get(self.active).filter(|d| !d.binary) else {
             return;
         };
         doc.editor.update(cx, |e, cx| {
             let text = e.value();
-            if let Some((range, new, sel)) = lines_moved(&text, e.selected_range(), up, copy) {
+            if let Some((range, new, sel)) = edit(&text, e.selected_range()) {
                 e.set_selected_range(range, cx);
                 e.replace(new, window, cx);
                 e.set_selected_range(sel, cx);
@@ -4105,6 +4205,12 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &MoveLinesDown, window, cx| {
                 this.line_op(false, false, window, cx)
             }))
+            .on_action(cx.listener(|this, _: &ToggleLineComment, window, cx| {
+                let token = (this.docs.get(this.active)).and_then(|d| line_comment(d.lang));
+                if let Some(token) = token {
+                    this.edit_lines(|text, sel| comment_toggled(text, sel, token), window, cx)
+                }
+            }))
             .on_action(cx.listener(|this, _: &ToggleSizeToContentWidth, _, cx| {
                 this.toggle_size_to_content_width(cx)
             }))
@@ -4397,7 +4503,7 @@ fn app_menu(
             .menu("Find in Files", Box::new(ShowSearch))
             .menu("Replace in Files", Box::new(ReplaceInFiles))
             .separator()
-            .menu("Toggle Line Comment", noop())
+            .menu("Toggle Line Comment", Box::new(ToggleLineComment))
             .menu("Toggle Block Comment", noop()),
         "Selection" => menu
             .menu("Select All", Box::new(input::SelectAll))
@@ -4492,7 +4598,29 @@ fn app_menu(
 
 #[cfg(test)]
 mod tests {
-    use super::{Encoding, copy_all, copy_target, detect_indent, lines_moved, with_eol};
+    use super::{
+        Encoding, comment_toggled, copy_all, copy_target, detect_indent, lines_moved, with_eol,
+    };
+
+    #[test]
+    fn toggle_line_comment() {
+        let toggle = |text: &str, sel| {
+            let (range, new, sel) = comment_toggled(text, sel, "//")?;
+            let mut out = text.to_string();
+            out.replace_range(range, &new);
+            Some((out, sel))
+        };
+        let text = "  a\n\n    b\nc";
+        // Comments at the least indentation, skipping the blank line.
+        let (commented, sel) = toggle(text, 0..9).unwrap();
+        assert_eq!(commented, "  // a\n\n  //   b\nc");
+        assert_eq!(sel, 0..15);
+        assert_eq!(toggle(&commented, sel), Some((text.into(), 0..9)));
+        // The cursor stays on its character.
+        assert_eq!(toggle("x", 1..1), Some(("// x".into(), 4..4)));
+        assert_eq!(toggle("//x", 3..3), Some(("x".into(), 1..1)));
+        assert_eq!(toggle("  \n", 0..0), None);
+    }
 
     #[test]
     fn move_and_copy_lines() {
