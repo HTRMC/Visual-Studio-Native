@@ -71,6 +71,10 @@ Differences from VS Code still to close, smallest first within each area.
       Ctrl+Home/End, outside full-screen programs.
 - [x] Find's matches are marked down the right edge (VS Code's overview
       ruler), the current one gray.
+- [x] A selection or find's matches stay on their text once the full
+      scrollback drops its oldest lines.
+- [ ] Find re-searches the whole scrollback per chunk of output; search only
+      the lines it touched.
 - [ ] Dragging a tab onto the editor area moves the terminal into an editor.
 - [ ] Shell integration: command decorations, run recent command, go to
       recent directory.

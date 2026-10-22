@@ -87,8 +87,6 @@ pub(super) struct Terminal {
     cell_w: f32,
     /// Drag start and end as cell boundaries (line, col), lines counted from
     /// the oldest in the scrollback, so a selection scrolls with its text.
-    // ponytail: once the scrollback is full, output trims its oldest lines
-    // and shifts a standing selection up; count trimmed lines if that bites.
     selection: Option<Span>,
     selecting: bool,
     /// The word, or with true the line, a double or triple click selected;
@@ -127,6 +125,18 @@ impl Drop for Terminal {
 }
 
 impl Terminal {
+    /// Moves the selection and find's matches up by `n` lines the scrollback
+    /// dropped; an end that went with them clamps to the top.
+    fn trim(&mut self, n: usize) {
+        let at = |(line, col): (usize, u16)| line.checked_sub(n).map_or((0, 0), |l| (l, col));
+        let shift = |(a, b): Span| (a.0.max(b.0) >= n).then(|| (at(a), at(b)));
+        self.selection = self.selection.and_then(shift);
+        self.unit = self.unit.and_then(|(line, s)| Some((line, shift(s)?)));
+        let current = self.current.and_then(|i| shift(self.matches[i]));
+        self.matches = self.matches.iter().filter_map(|&m| shift(m)).collect();
+        self.current = current.and_then(|m| self.matches.iter().position(|&n| n == m));
+    }
+
     /// Shows the scrollbars after a scroll, fading as if the mouse had just
     /// left, as VS Code does on any scroll.
     fn reveal(&mut self) {
@@ -421,9 +431,16 @@ fn cells(
 struct Replies {
     out: Vec<u8>,
     cwd: Option<PathBuf>,
+    /// Lines a full scrollback dropped off its top, to move what's counted
+    /// from it up with its text.
+    trimmed: usize,
 }
 
 impl vt100::Callbacks for Replies {
+    fn on_scroll(&mut self, _: vt100::capture::RowContents<'_>, alternate_screen: bool) {
+        self.trimmed += usize::from(!alternate_screen);
+    }
+
     fn unhandled_csi(
         &mut self,
         screen: &mut vt100::Screen,
@@ -1045,6 +1062,10 @@ impl Workbench {
         match msg {
             Msg::Out(bytes) => {
                 t.parser.process(&bytes);
+                let trimmed = std::mem::take(&mut t.parser.callbacks_mut().trimmed);
+                if trimmed > 0 {
+                    t.trim(trimmed);
+                }
                 if let Some(re) = re {
                     // ponytail: the whole scrollback again per chunk of
                     // output; search only the lines it touched if that lags.
@@ -2683,6 +2704,19 @@ mod tests {
             b"\x1b[M\x61\x21\x21"
         );
         assert_eq!(mouse_bytes(0, true, (0, 0), Default), b"\x1b[M\x23\x21\x21");
+    }
+
+    #[test]
+    fn counts_trimmed_lines() {
+        let mut p = vt100::Parser::new_with_callbacks(
+            2.try_into().unwrap(),
+            4.try_into().unwrap(),
+            2,
+            super::Replies::default(),
+        );
+        // Five lines: two on screen, two in the scrollback, one dropped.
+        p.process(b"a\r\nb\r\nc\r\nd\r\ne");
+        assert_eq!(p.callbacks().trimmed, 1);
     }
 
     #[test]
