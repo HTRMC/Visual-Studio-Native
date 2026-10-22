@@ -405,8 +405,6 @@ Differences from VS Code still to close, smallest first within each area.
       there's no preview; VS Code asks language servers.
 - [x] Jumping to a line (Go to Symbol, `file:line`, search results, terminal
       links, stack frames) put it at the viewport's edge; VS Code centers it.
-- [ ] A jump that centers its line keeps the horizontal scroll, so a column
-      past the right edge may stay out of view.
 - [x] The mouse's back/forward side buttons didn't navigate.
 - [x] Go menu: Switch Editor's Next/Previous Editor (Ctrl+PageDown/Up).
 - [ ] Go menu's other navigation entries (Next/Previous Used Editor's
