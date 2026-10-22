@@ -1276,6 +1276,40 @@ impl Workbench {
         cx.notify();
     }
 
+    /// A selected tab dropped on another takes every selected tab along, in
+    /// order, each group once.
+    fn move_terminals(&mut self, src: u64, dst: u64, cx: &mut Context<Self>) {
+        let list = &self.terminals.list;
+        let pos = |id| list.iter().position(|t| t.id == id);
+        let (Some(to), true) = (pos(dst), self.terminals.picked.contains(&src)) else {
+            return self.move_terminal(src, dst, cx);
+        };
+        let mut ids: Vec<usize> = self
+            .terminals
+            .picked
+            .iter()
+            .filter_map(|&id| pos(id))
+            .collect();
+        ids.sort();
+        let mut seen = Vec::new();
+        ids.retain(|&i| {
+            let g = list[i].group;
+            g == list[to].group
+                || !seen.contains(&g) && {
+                    seen.push(g);
+                    true
+                }
+        });
+        let ids: Vec<(usize, u64)> = ids.into_iter().map(|i| (i, list[i].id)).collect();
+        // Those above land after the target, so go last-first to keep order.
+        for &(_, id) in ids.iter().filter(|&&(i, _)| i < to).rev() {
+            self.move_terminal(id, dst, cx);
+        }
+        for &(_, id) in ids.iter().filter(|&&(i, _)| i > to) {
+            self.move_terminal(id, dst, cx);
+        }
+    }
+
     /// A tab clicked: alone it activates, with Ctrl it joins or leaves the
     /// selection, with Shift the selection runs from the active tab to it.
     fn click_tab(&mut self, id: u64, m: Modifiers, window: &mut Window, cx: &mut Context<Self>) {
@@ -1863,7 +1897,7 @@ impl Workbench {
                 })
                 .drag_over::<DraggedTab>(|s, _, _, _| s.bg(c(0x383B3D)))
                 .on_drop(cx.listener(move |this, tab: &DraggedTab, _, cx| {
-                    this.move_terminal(tab.0, id, cx)
+                    this.move_terminals(tab.0, id, cx)
                 }))
                 .context_menu(move |menu, _, _| tab_menu(menu, &wb, id, !tree.is_empty(), joins))
         });

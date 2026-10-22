@@ -85,7 +85,9 @@ Differences from VS Code still to close, smallest first within each area.
       chunk.
 - [x] Terminal: Find Next/Previous (F3/Shift+F3) from the terminal or the
       palette, not only Enter in find's box.
-- [ ] Dragging one of several selected tabs moves them all.
+- [x] Dragging one of several selected tabs moves them all.
+- [ ] Dropping several selected tabs onto a terminal moves them all into
+      its split group.
 - [ ] Dragging a tab onto the editor area moves the terminal into an editor.
 - [ ] Shell integration: command decorations, run recent command, go to
       recent directory.
