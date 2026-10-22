@@ -3501,7 +3501,11 @@ impl Workbench {
             .map(|(ix, item)| {
                 let title = SharedString::from(item.title);
                 let path = path.clone();
-                let action = exthost::RunExtensionCommand { id: item.id, path };
+                let action = exthost::RunExtensionCommand {
+                    id: item.id,
+                    path,
+                    when: None,
+                };
                 let button = match item.icon {
                     Some(ch) => action_button((id, ix), ch),
                     None => div()
@@ -4696,6 +4700,7 @@ fn ext_menu_items(
         let action = exthost::RunExtensionCommand {
             id: item.id.clone(),
             path,
+            when: None,
         };
         menu.item(
             PopupMenuItem::new(item.title.clone()).on_click(move |_, _, cx| {
@@ -5032,7 +5037,11 @@ impl Render for Workbench {
             }))
             .on_action(cx.listener(|this, _: &ChangeEol, window, cx| this.change_eol(window, cx)))
             .on_action(
-                cx.listener(|this, a: &exthost::RunExtensionCommand, _, cx| {
+                cx.listener(|this, a: &exthost::RunExtensionCommand, window, cx| {
+                    let focus = window.context_stack();
+                    if (a.when.as_deref()).is_some_and(|w| !exthost::when_holds(w, &focus)) {
+                        return cx.propagate();
+                    }
                     this.run_extension_command(a.id.clone(), a.args(), cx)
                 }),
             )

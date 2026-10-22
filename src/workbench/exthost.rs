@@ -25,11 +25,21 @@ const RESTARTS: usize = 3;
 
 /// Runs an extension's command, from the palette, a keybinding or a menu;
 /// a menu passes its file's Uri.
-#[derive(Clone, PartialEq, Debug, Action)]
+#[derive(Clone, Debug, Action)]
 #[action(namespace = vsn, no_json)]
 pub(crate) struct RunExtensionCommand {
     pub id: String,
     pub path: Option<PathBuf>,
+    /// A keybinding's `when`: when it doesn't hold, the key goes on to the
+    /// next binding.
+    pub when: Option<String>,
+}
+
+/// Equal whatever their `when`, so the palette finds a command's keybinding.
+impl PartialEq for RunExtensionCommand {
+    fn eq(&self, other: &Self) -> bool {
+        (&self.id, &self.path) == (&other.id, &other.path)
+    }
 }
 
 impl RunExtensionCommand {
@@ -473,11 +483,6 @@ impl When<'_> {
     }
 }
 
-/// A `when` clause's word as a gpui identifier.
-fn mangle(word: &str) -> String {
-    word.replace(|c: char| !c.is_alphanumeric() && c != '-', "_")
-}
-
 /// The editor's right-click menu with extensions' `editor/context` items:
 /// the input's own items, which a custom menu replaces, then theirs.
 // ponytail: the input's items are always enabled here, as its capabilities
@@ -501,51 +506,13 @@ pub(super) fn editor_context_menu(menu: NativeMenu, path: &Path, window: &Window
     items.into_iter().fold(menu, |menu, item| {
         let path = Some(path.to_path_buf());
         let id = item.id;
-        menu.menu(item.title, Box::new(RunExtensionCommand { id, path }))
+        let action = RunExtensionCommand {
+            id,
+            path,
+            when: None,
+        };
+        menu.menu(item.title, Box::new(action))
     })
-}
-
-/// A VS Code `when` clause as a gpui context predicate. vsn's editor,
-/// terminal and explorer set VS Code's focus keys and `editorLangId`; other
-/// keys are unset, so false as in VS Code when nothing sets them.
-// ponytail: keybindings only (menus and the palette use `when_holds`). All
-// keys of a clause are matched on one element's context, so it's focus keys
-// plus the editor's language; `setContext` keys aren't seen, values that
-// aren't identifiers never match, and `<`, `=~` and `in` aren't expressible
-// in gpui's, so their bindings are skipped.
-fn when_predicate(when: &str) -> Option<KeyBindingContextPredicate> {
-    if ["<", ">", "=~", " in "].iter().any(|op| when.contains(op)) {
-        return None;
-    }
-    let os = match std::env::consts::OS {
-        "macos" => "isMac",
-        "windows" => "isWindows",
-        _ => "isLinux",
-    };
-    let word = |w: &str| -> String {
-        let w = w.trim_matches(['\'', '"']);
-        match w {
-            "true" => "!false_".into(),
-            "isMac" | "isWindows" | "isLinux" | "isWeb" if w == os => "!false_".into(),
-            "false" | "isMac" | "isWindows" | "isLinux" | "isWeb" => "false_".into(),
-            _ => mangle(w),
-        }
-    };
-    let mut out = String::new();
-    let mut rest = when;
-    while let Some(c) = rest.chars().next() {
-        let len = match "!&|=() \t".contains(c) {
-            true => c.len_utf8(),
-            false => rest.find(|c| "!&|=() \t".contains(c)).unwrap_or(rest.len()),
-        };
-        let (tok, tail) = rest.split_at(len);
-        out += &match "!&|=() \t".contains(c) {
-            true => tok.to_string(),
-            false => word(tok),
-        };
-        rest = tail;
-    }
-    KeyBindingContextPredicate::parse(&out).ok()
 }
 
 /// Extensions' keybindings, VS Code's "ctrl+shift+h" as gpui's "ctrl-shift-h".
@@ -568,17 +535,15 @@ pub(super) fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBindin
                 .map(|chord| chord.replace('+', "-"))
                 .collect::<Vec<_>>()
                 .join(" ");
-            let context = match k["when"].as_str() {
-                Some(when) => match when_predicate(when) {
-                    Some(p) => Some(p.into()),
-                    None => continue,
-                },
-                None => None,
-            };
+            // Matching on the focused element, as VS Code's keybindings
+            // rank above its defaults; `when` is checked as the key comes.
+            let context = KeyBindingContextPredicate::parse("!vsn_anywhere").ok();
             let action = Box::new(RunExtensionCommand {
                 id: id.into(),
                 path: None,
+                when: k["when"].as_str().map(str::to_string),
             });
+            let context = context.map(Into::into);
             list.extend(KeyBinding::load(&keys, action, context, false, None, mapper).ok());
         }
     }
@@ -1150,7 +1115,7 @@ impl Workbench {
 #[cfg(test)]
 mod tests {
     use super::{KeyContext, SET_CONTEXT, editor_keys, json, when_holds};
-    use super::{contains, status_label, when_predicate};
+    use super::{contains, status_label};
     use std::path::Path;
 
     #[test]
@@ -1159,9 +1124,7 @@ mod tests {
         editor.add("editorTextFocus");
         editor.set("editorLangId", "markdown");
         let terminal = KeyContext::parse("Terminal terminalFocus").unwrap();
-        let eval = |when: &str, cx: &KeyContext| {
-            when_predicate(when).unwrap().eval(std::slice::from_ref(cx))
-        };
+        let eval = |when: &str, cx: &KeyContext| when_holds(when, std::slice::from_ref(cx));
         let md = "editorTextFocus && editorLangId == 'markdown' && !editorReadonly";
         assert!(eval(md, &editor));
         assert!(!eval(md, &terminal));
@@ -1172,19 +1135,13 @@ mod tests {
         ));
         assert!(!eval("config.foo.enabled", &editor));
         assert!(eval("!(suggestWidgetVisible || false)", &editor));
-        // The palette's check: anywhere along the focus path.
+        // Anywhere along the focus path.
         let path = [terminal.clone(), editor.clone()];
-        assert!(
-            when_predicate("terminalFocus")
-                .unwrap()
-                .depth_of(&path)
-                .is_some()
-        );
-        assert!(when_predicate("false").unwrap().depth_of(&path).is_none());
-        assert!(
-            when_predicate("editorTextFocus && view == 'x' || resourceExtname =~ /md/").is_none()
-        );
-        assert!(when_predicate("listFocus && foo > 2").is_none());
+        assert!(when_holds("terminalFocus && editorTextFocus", &path));
+        assert!(!when_holds("false", &path));
+        // Keybindings match on the focused element, the deepest.
+        let anywhere = super::KeyBindingContextPredicate::parse("!vsn_anywhere").unwrap();
+        assert_eq!(anywhere.depth_of(&path), Some(2));
     }
 
     #[test]

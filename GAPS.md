@@ -480,12 +480,12 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [x] JS extensions run in a Node (or Bun) host: commands in the palette and keys, messages, status bar items, configuration defaults, activation events, restart on crash.
 - [x] Extension keybindings took effect only after a restart; they're rebound on install, uninstall and enable.
 - [x] Extension keybindings with a `when` clause were skipped; focus keys, `editorLangId` and the platform are matched now.
-- [ ] Extension keybindings' `when` with `<`, `>`, `=~` or `in` are skipped, and context keys beyond focus and language are unset.
+- [x] Extension keybindings' `when` with `<`, `>`, `=~` or `in` were skipped; they're checked in full as the key comes.
 - [x] `commandPalette` `when` clauses other than `false` were ignored; they're checked where focus was when the palette opened.
 - [x] Extensions' `editor/context` and `explorer/context` menu items were ignored; they're added, with the file's Uri.
 - [x] Extensions' `editor/title` navigation buttons were ignored; they're in the editor's title bar, with `resource*` keys for their `when`.
 - [x] Extensions' `when` clauses with comparisons, regexes or `in` hid their menu and palette items, and `setContext` was ignored; menus and the palette evaluate VS Code's full grammar.
-- [ ] Extension keybindings' `when` with comparisons, regexes or `setContext` keys are skipped (gpui predicates can't express them).
+- [x] Extension keybindings' `when` with comparisons, regexes or `setContext` keys were skipped; the same check covers them.
 - [x] Extensions' `editor/title` non-navigation groups and submenus were ignored; they're in "..." and flattened into "Submenu › Item".
 - [x] Extensions' `editor/title/context` and `view/title` items were ignored; they're on the tab menu and the built-in views' headers.
 - [ ] Extensions' `scm/*` menus (no SCM providers); real nested submenus; with extension items, the editor's own menu items are always enabled.

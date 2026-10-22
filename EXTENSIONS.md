@@ -131,17 +131,18 @@ there.
    contributed keybindings (rebound on install, uninstall and enable),
    configuration defaults; every activation event
    above, plus commands contributing `onCommand` implicitly, and globs in
-   `workspaceContains`. Keybindings' `when` clauses become gpui context
-   predicates over VS Code's focus keys (`editorTextFocus`, `terminalFocus`,
-   `filesExplorerFocus`, ...), `editorLangId` and the platform.
+   `workspaceContains`. Keybindings rank above vsn's own and check their
+   `when` as the key comes, falling through to the next binding when it
+   doesn't hold.
    `editor/context` and `explorer/context` items run with the file's Uri, as
    do `editor/title`'s navigation buttons and its other groups in "...";
    submenus are flattened into "Submenu › Item". `editor/title/context`
    items are on the tab menu, `view/title` buttons on the Explorer, Search
    and Source Control headers. Menus and the palette evaluate
-   `when` in full (comparisons, `=~` regexes, `in`, `setContext` keys).
-   *Left:* `scm/*` menus (no SCM providers yet), extensions' own views;
-   keybindings' `when` with comparisons, regexes or `setContext` keys.
+   `when` in full (comparisons, `=~` regexes, `in`, `setContext` keys),
+   over VS Code's focus keys (`editorTextFocus`, `terminalFocus`,
+   `filesExplorerFocus`, ...), the resource keys and the platform.
+   *Left:* `scm/*` menus (no SCM providers yet), extensions' own views.
 3. **JS host.** The bundled runtime and the `vscode` shim; a simple Open VSX
    extension that registers commands, shows messages and adds a status bar
    item works unchanged. The Bun vs Node comparison happens here.
