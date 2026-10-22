@@ -655,9 +655,14 @@ pub(super) fn settings() -> serde_json::Value {
         .unwrap_or_default()
 }
 
+pub(super) fn set_default_profile(name: &str) -> Result<(), String> {
+    set_setting(DEFAULT_PROFILE, name.into())
+}
+
+/// Sets the user setting `key` to `value`.
 // ponytail: rewrites settings.json as plain JSON, dropping its comments;
 // VS Code edits the one property in place (jsonc-parser's modify).
-pub(super) fn set_default_profile(name: &str) -> Result<(), String> {
+pub(super) fn set_setting(key: &str, value: serde_json::Value) -> Result<(), String> {
     const UNABLE: &str = "Unable to write into user settings. Please open the user settings \
                           to correct errors/warnings in it and try again.";
     let path = settings_path().ok_or(UNABLE)?;
@@ -669,7 +674,7 @@ pub(super) fn set_default_profile(name: &str) -> Result<(), String> {
         }
         settings = serde_json::json!({});
     }
-    settings[DEFAULT_PROFILE] = name.into();
+    settings[key] = value;
     fs::create_dir_all(path.parent().unwrap())
         .and_then(|_| fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()))
         .map_err(|err| format!("Unable to write into user settings ({err})"))

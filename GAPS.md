@@ -216,8 +216,13 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Status bar Col and Go to Line columns use the file's detected tab size.
 - [ ] Change Language Mode rebuilds the editor (gpui-base's set_highlighter
       doesn't re-highlight a shown one), so undo history is lost.
-- [ ] Change Language Mode lacks VS Code's "Auto Detect" and "Configure
-      File Association" rows.
+- [x] Change Language Mode's "Configure File Association for '.ext'..." row
+      writes `files.associations` and re-languages the editor.
+- [ ] Change Language Mode lacks VS Code's "Auto Detect" row (needs language
+      detection) and "Configure 'X' language based settings..." (no `[lang]`
+      settings here).
+- [ ] Change Language Mode's rows have no language icons (VS Code shows each
+      language's file icon).
 - [x] `files.associations` (glob → language id) picks an opened file's language.
 - [ ] `files.associations` path globs match relative to the workspace root
       (VS Code: absolute path), and file icons still follow the file name.

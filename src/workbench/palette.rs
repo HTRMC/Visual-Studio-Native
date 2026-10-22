@@ -28,7 +28,7 @@ use gpui_kit::component::{
     input::{Position, RangeDecoration, RangeDecorationCollection, RangeDecorationStyle},
 };
 
-use super::terminal::{ANSI, COLORS, Profile, profiles, set_default_profile};
+use super::terminal::{ANSI, COLORS, Profile, profiles, set_default_profile, set_setting};
 use super::*;
 use crate::theme::{LANGUAGES, c, ca, codicons, col, file_icon, icon, language_label};
 
@@ -225,6 +225,9 @@ enum Pick {
     Eol(bool, Vec<usize>),
     /// A language id for Change Language Mode, its "Name (id)" row, matched offsets.
     Lang(&'static str, String, Vec<usize>),
+    /// Change Language Mode's "Configure File Association for '.ext'..." row,
+    /// and the matched offsets.
+    Associate(String, Vec<usize>),
     /// Select Indentation's action (an index into `INDENT_ACTIONS`) or tab
     /// size, and the matched offsets.
     Indent(usize, Vec<usize>),
@@ -314,6 +317,9 @@ pub(super) struct Palette {
     eol: bool,
     /// Set while the palette is Change Language Mode's pick list.
     lang: bool,
+    /// Set while Change Language Mode's list picks the language to associate
+    /// with: the `files.associations` key and the file's language by name.
+    associating: Option<(String, &'static str)>,
     /// Set while the palette is one of Select Indentation's pick lists.
     indent: Option<IndentStep>,
     /// Set while the palette is one of Change File Encoding's pick lists.
@@ -372,6 +378,7 @@ impl Palette {
             joining: false,
             eol: false,
             lang: false,
+            associating: None,
             indent: None,
             encoding: None,
             goto: None,
@@ -1676,6 +1683,7 @@ impl Workbench {
         p.joining = false;
         p.eol = false;
         p.lang = false;
+        p.associating = None;
         p.indent = None;
         p.encoding = None;
         p.parse = None;
@@ -1900,6 +1908,40 @@ impl Workbench {
         }
     }
 
+    /// Change Language Mode's Configure File Association: the palette lists
+    /// the languages to associate the active file's extension (or name) with.
+    fn pick_association(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self.docs.get(self.active).map(|d| d.path.clone()) else {
+            return;
+        };
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        let key = match path.extension() {
+            Some(ext) => format!("*.{}", ext.to_string_lossy()),
+            None => name.into_owned(),
+        };
+        let by_name = self.file_language(&path);
+        // The list opens once this one has closed.
+        cx.defer_in(window, move |this, window, cx| {
+            this.open_palette("", window, cx);
+            this.palette.lang = true;
+            this.palette.associating = Some((key, by_name));
+            this.palette_query(String::new(), cx);
+        });
+    }
+
+    /// Adds `key` → `id` to the user's `files.associations`.
+    fn associate(&mut self, key: String, id: &'static str, cx: &mut Context<Self>) {
+        let settings = super::terminal::settings();
+        let mut map = settings["files.associations"]
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        map.insert(key, id.into());
+        if let Err(err) = set_setting("files.associations", map.into()) {
+            self.settings_error(err, cx);
+        }
+    }
+
     /// Highlights the active editor as `id`, and the status bar names it.
     fn set_language(&mut self, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.docs.get_mut(self.active) else {
@@ -2051,6 +2093,7 @@ impl Workbench {
         p.joining = false;
         p.eol = false;
         p.lang = false;
+        p.associating = None;
         p.indent = None;
         p.encoding = None;
         // A command may have moved focus (Show Search); only restore it when it is still ours.
@@ -2096,21 +2139,46 @@ impl Workbench {
             return;
         }
         if p.lang {
-            let current = active.map_or("", |d| d.lang);
+            // Associating lists names alone, the file's current one preselected.
+            let (current, associating) = match &p.associating {
+                Some((_, by_name)) => (*by_name, true),
+                None => (active.map_or("", |d| d.lang), false),
+            };
             let mut langs: Vec<_> = (LANGUAGES.iter())
-                .map(|&id| (id, format!("{} ({id})", language_label(id))))
-                .collect();
-            langs.sort_by_key(|l| l.1.to_lowercase());
-            let shown: Vec<_> = (langs.into_iter())
-                .filter_map(|(id, label)| {
-                    let hits = command_matches(query.trim(), &label)?;
-                    Some(Pick::Lang(id, label, hits))
+                .map(|&id| match associating {
+                    true => (id, language_label(id).to_string()),
+                    false => (id, format!("{} ({id})", language_label(id))),
                 })
                 .collect();
+            langs.sort_by_key(|l| l.1.to_lowercase());
+            // VS Code offers to associate a file's extension, or its whole name
+            // when it has none (.gitignore, Dockerfile).
+            let ext = (active.filter(|d| !associating && !d.untitled))
+                .and_then(|d| d.path.file_name())
+                .map(|name| match Path::new(name).extension() {
+                    Some(ext) => format!(".{}", ext.to_string_lossy()),
+                    None => name.to_string_lossy().into_owned(),
+                });
+            let associate = ext.and_then(|ext| {
+                let label = format!("Configure File Association for '{ext}'...");
+                let hits = command_matches(query.trim(), &label)?;
+                Some(Pick::Associate(label, hits))
+            });
+            let shown: Vec<_> = (associate.into_iter())
+                .chain(langs.into_iter().filter_map(|(id, label)| {
+                    let hits = command_matches(query.trim(), &label)?;
+                    Some(Pick::Lang(id, label, hits))
+                }))
+                .collect();
+            let first = shown.iter().position(|p| matches!(p, Pick::Lang(..)));
+            let groups = match (associating, first) {
+                (false, Some(at)) => vec![(at, "languages (identifier)".into())],
+                _ => Vec::new(),
+            };
             let preselect = (shown.iter())
                 .position(|p| matches!(p, Pick::Lang(id, ..) if *id == current))
                 .unwrap_or(0);
-            p.show(shown, Vec::new(), preselect);
+            p.show(shown, groups, preselect);
             return;
         }
         if let Some(step) = p.encoding {
@@ -2450,7 +2518,14 @@ impl Workbench {
                 (None, None)
             }
             Some(&Pick::Lang(id, ..)) => {
+                if let Some((key, _)) = p.associating.take() {
+                    self.associate(key, id, cx);
+                }
                 self.set_language(id, window, cx);
+                (None, None)
+            }
+            Some(Pick::Associate(..)) => {
+                self.pick_association(window, cx);
                 (None, None)
             }
             Some(&Pick::Indent(ix, _)) => {
@@ -2512,6 +2587,7 @@ impl Workbench {
 
         let this = cx.weak_entity();
         let (this2, this3) = (this.clone(), this.clone());
+        let associate_placeholder;
         let placeholder = if p.profiles.is_some() {
             "Select your default terminal profile"
         } else if p.renaming.is_some() {
@@ -2524,6 +2600,12 @@ impl Workbench {
             "Select a terminal to join"
         } else if p.eol {
             "Select End of Line Sequence"
+        } else if let Some((key, _)) = &p.associating {
+            associate_placeholder = format!(
+                "Select Language Mode to Associate with '{}'",
+                key.trim_start_matches('*')
+            );
+            &associate_placeholder
         } else if p.lang {
             "Select Language Mode"
         } else if p.indent == Some(IndentStep::Action) || p.encoding == Some(EncodingStep::Action) {
@@ -2602,7 +2684,15 @@ impl Workbench {
                     row(RowIcon::Symbol(*ch, *color), name, hits).item()
                 }
                 Pick::Eol(crlf, hits) => row(RowIcon::None, eol(*crlf), hits).item(),
-                Pick::Lang(_, label, hits) => row(RowIcon::None, label, hits).item(),
+                Pick::Lang(id, label, hits) => {
+                    let current = matches!(&p.associating, Some((_, by_name)) if by_name == id);
+                    Row {
+                        desc: if current { "Current Association" } else { "" }.into(),
+                        ..row(RowIcon::None, label, hits)
+                    }
+                    .item()
+                }
+                Pick::Associate(label, hits) => row(RowIcon::None, label, hits).item(),
                 Pick::Indent(ix, hits) if p.indent == Some(IndentStep::Action) => {
                     row(RowIcon::None, INDENT_ACTIONS[*ix], hits).item()
                 }
