@@ -211,8 +211,9 @@ Differences from VS Code still to close, smallest first within each area.
       many tabs widened the editor and pushed its actions off-screen.
 - [x] The active tab isn't scrolled into view in the tab strip (VS Code
       reveals it on a switch).
-- [ ] Double-clicking the tab strip's empty space doesn't open a new
+- [x] Double-clicking the tab strip's empty space doesn't open a new
       untitled file, as VS Code's does.
+- [ ] Middle-clicking a tab doesn't close it, as VS Code's does.
 - [x] Go menu: Back/Forward (Alt+Left/Right, the title bar arrows) and
       Last Edit Location (Ctrl+K Ctrl+Q) were placeholders.
 - [ ] Go to Symbol in Workspace (Ctrl+T) is still a placeholder.

@@ -2207,7 +2207,18 @@ impl Workbench {
                                     .flex()
                                     .overflow_x_scroll()
                                     .track_scroll(&self.tabs_scroll)
-                                    .children(tabs),
+                                    .children(tabs)
+                                    // The space after the tabs: a double click
+                                    // opens a new untitled file.
+                                    .child(
+                                        div().id("tabs-empty").flex_1().h_full().on_click(
+                                            |ev, window, cx| {
+                                                if ev.click_count() == 2 {
+                                                    window.dispatch_action(Box::new(NewTextFile), cx);
+                                                }
+                                            },
+                                        ),
+                                    ),
                             ),
                     )
                     .child(self.slider("tabs", &self.tabs_scroll, Axis::Horizontal, 3.))
