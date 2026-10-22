@@ -14,8 +14,10 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Alt+click in full-screen programs (vim, less) moves the cursor up and
       down too.
 - [x] Dragging past the top or bottom edge scrolls while selecting.
-- [ ] A drag released outside the window keeps scrolling until the mouse
-      comes back (no mouse capture).
+- [x] A drag released outside the window keeps scrolling until the mouse
+      comes back (gpui captures the mouse, so the release still arrives).
+- [ ] Right-click copies the selection or pastes, without a menu
+      (`terminal.integrated.rightClickBehavior` is "copyPaste" on Windows).
 - [x] Links wrapped onto the next row are cut at the row end.
 - [x] A wrapped link or triple-clicked line half scrolled off the top or
       bottom is cut at the screen edge.
