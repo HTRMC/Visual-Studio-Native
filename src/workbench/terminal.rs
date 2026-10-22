@@ -845,10 +845,7 @@ impl Workbench {
             true => (l0..=l1)
                 .map(|l| text_between(screen, (l, c0.min(c1)), (l, c0.max(c1))))
                 .collect::<Vec<_>>()
-                .join(
-                    "
-",
-                ),
+                .join("\n"),
             false => text_between(screen, (l0, c0), (l1, c1)),
         };
         t.selection = None;
@@ -1050,9 +1047,9 @@ impl Workbench {
                     cursor_moves(t.parser.screen(), t.cell(ev.position, false))
             {
                 let csi = if t.parser.screen().application_cursor() {
-                    "O"
+                    "\x1bO"
                 } else {
-                    "["
+                    "\x1b["
                 };
                 let arrows = |n: isize, back, on| {
                     format!("{csi}{}", if n < 0 { back } else { on }).repeat(n.unsigned_abs())
@@ -1897,7 +1894,7 @@ mod tests {
         assert_eq!(cursor_moves(screen, (1, 8)), Some((0, 3)));
         assert_eq!(cursor_moves(screen, (0, 2)), Some((0, -13)));
         assert_eq!(cursor_moves(screen, (2, 0)), None);
-        parser.process(b"[?1h");
+        parser.process(b"\x1b[?1h");
         assert_eq!(cursor_moves(parser.screen(), (2, 0)), Some((1, -5)));
     }
 }
