@@ -33,6 +33,7 @@ use gpui_kit::{
 
 mod debug;
 pub(crate) mod extensions;
+mod exthost;
 mod palette;
 mod search;
 mod terminal;
@@ -175,7 +176,7 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         let context = context.map(|c| KeyBindingContextPredicate::parse(c).unwrap().into());
         KeyBinding::load(keys, action, context, false, None, mapper).unwrap()
     };
-    vec![
+    let mut list = vec![
         KeyBinding::new("ctrl-o", OpenFile, None),
         KeyBinding::new("ctrl-k ctrl-o", OpenFolder, None),
         KeyBinding::new("ctrl-k ctrl-t", SelectColorTheme, None),
@@ -330,7 +331,10 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-n", NewTextFile, None),
         // VS Code's notifications.hideList and hideToasts, which skip the shell.
         KeyBinding::new("escape", HideNotifications, Some("notificationsVisible")),
-    ]
+    ];
+    // Extensions' after the built-in ones, which they override as in VS Code.
+    list.extend(exthost::key_bindings(mapper));
+    list
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -943,6 +947,7 @@ pub struct Workbench {
     debug: debug::Debug,
     /// Spawned when the Terminal tab first shows; the error if the shell didn't start.
     terminals: terminal::Terminals,
+    ext: exthost::Host,
     commit: Entity<InputState>,
     ext_search: Entity<InputState>,
     pub focus: FocusHandle,
@@ -1002,6 +1007,7 @@ impl Workbench {
             expand_history: None,
             debug: debug::Debug::new(window, cx),
             terminals: Default::default(),
+            ext: Default::default(),
         };
         this.init_search(window, cx);
         this.init_debug(window, cx);
@@ -1012,6 +1018,7 @@ impl Workbench {
         })
         .detach();
         this.watch_root(cx);
+        this.activate_extensions("*", cx);
         // The title bar's close button (and Alt+F4) land here.
         let wb = cx.weak_entity();
         window.on_window_should_close(cx, move |window, cx| {
@@ -1104,6 +1111,7 @@ impl Workbench {
         });
         self.activate(self.docs.len() - 1, window, cx);
         self.open_editors_changed(cx);
+        self.activate_extensions(&format!("onLanguage:{lang}"), cx);
     }
 
     /// Ctrl+N: an `Untitled-N` editor, saved through Save As.
@@ -3871,7 +3879,7 @@ impl Workbench {
                 .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
         }
 
-        let mut right: Vec<AnyElement> = Vec::new();
+        let mut right = self.extension_status(true, cx);
         if let Some(doc) = self.docs.get(self.active).filter(|d| !d.binary) {
             let editor = doc.editor.read(cx);
             let pos = editor.cursor_position();
@@ -3990,7 +3998,8 @@ impl Workbench {
                                 .child(name)
                                 .on_click(cx.listener(|this, _, _, cx| this.show(View::Run, cx))),
                         )
-                    }),
+                    })
+                    .children(self.extension_status(false, cx)),
             )
             .child(h_flex().h_full().pr(px(4.)).children(right))
     }
@@ -4012,6 +4021,7 @@ impl Workbench {
     /// keeps an explicitly set language).
     fn relanguage(&mut self, old: &serde_json::Value, window: &mut Window, cx: &mut Context<Self>) {
         let new = terminal::settings();
+        self.ext.send_settings();
         if word_wrap(&new) != word_wrap(old) {
             self.set_word_wrap(word_wrap(&new), window, cx);
         }
@@ -4806,6 +4816,11 @@ impl Render for Workbench {
                 this.scroll_terminal(isize::MIN, 0, cx)
             }))
             .on_action(cx.listener(|this, _: &ChangeEol, window, cx| this.change_eol(window, cx)))
+            .on_action(
+                cx.listener(|this, a: &exthost::RunExtensionCommand, _, cx| {
+                    this.run_extension_command(a.id.clone(), Vec::new(), cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &InstallFromVsix, _, cx| this.install_from_vsix(cx)))
             .on_action(cx.listener(|this, _: &SelectColorTheme, window, cx| {
                 this.select_color_theme(window, cx)

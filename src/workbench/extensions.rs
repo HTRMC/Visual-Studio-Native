@@ -36,7 +36,13 @@ pub(crate) struct Extension {
 
 impl Extension {
     fn text(&self, key: &str) -> String {
-        let s = self.manifest[key].as_str().unwrap_or_default();
+        self.localize(&self.manifest[key])
+    }
+
+    /// A manifest string, `%key%` looked up in package.nls.json.
+    pub(super) fn localize(&self, value: &Value) -> String {
+        // Some manifests give `{ "value": ..., "original": ... }`.
+        let s = (value.as_str().or(value["value"].as_str())).unwrap_or_default();
         match s.strip_prefix('%').and_then(|s| s.strip_suffix('%')) {
             Some(key) => self.nls[key].as_str().unwrap_or(s).to_string(),
             None => s.to_string(),
@@ -69,12 +75,15 @@ impl Extension {
         icon.is_file().then_some(icon)
     }
 
-    /// The entries of contribution point `point`.
-    fn contributes(&self, point: &str) -> impl Iterator<Item = &Value> {
-        self.manifest["contributes"][point]
-            .as_array()
-            .into_iter()
-            .flatten()
+    /// The entries of contribution point `point` (a list, or one object).
+    pub(super) fn contributes(&self, point: &str) -> impl Iterator<Item = &Value> {
+        let value = &self.manifest["contributes"][point];
+        match value {
+            Value::Array(list) => list.as_slice(),
+            Value::Object(_) => slice::from_ref(value),
+            _ => &[],
+        }
+        .iter()
     }
 
     /// A path in the extension, from its manifest; None outside it.
@@ -1019,6 +1028,9 @@ impl Workbench {
                 }
                 // Its theme or languages may be the configured ones.
                 apply_theme(&configured_theme(), cx);
+                // A new version replaces the running one.
+                this.restart_extension_host(cx);
+                this.activate_extensions("*", cx);
                 cx.notify();
             })
             .ok();
@@ -1030,6 +1042,7 @@ impl Workbench {
         if let Err(err) = uninstall(&id) {
             self.error(format!("Unable to uninstall extension: {err}"), cx);
         }
+        self.restart_extension_host(cx);
         apply_theme(&configured_theme(), cx);
         cx.notify();
     }
@@ -1038,6 +1051,8 @@ impl Workbench {
         if let Err(err) = set_enabled(&id, enabled) {
             self.error(format!("Unable to change extension: {err}"), cx);
         }
+        self.restart_extension_host(cx);
+        self.activate_extensions("*", cx);
         apply_theme(&configured_theme(), cx);
         cx.notify();
     }

@@ -454,7 +454,7 @@ Differences from VS Code still to close, smallest first within each area.
 
 ## Extensions
 
-See EXTENSIONS.md for the plan; phase 1 is in.
+See EXTENSIONS.md for the plan; phases 1–3 are in.
 
 - [x] Install from VSIX... (the view's ... menu, and the palette).
 - [x] Installed list with search, Disable and Uninstall on the gear.
@@ -467,3 +467,11 @@ See EXTENSIONS.md for the plan; phase 1 is in.
 - [ ] Extension details page (README, changelog) when clicking a row.
 - [ ] Open VSX search and install (needs an HTTP client dependency).
 - [ ] Icon themes, brackets and indent rules from extensions.
+- [x] JS extensions run in a Node (or Bun) host: commands in the palette and keys, messages, status bar items, configuration defaults, activation events, restart on crash.
+- [ ] Extension keybindings take effect only after a restart; ones with a `when` clause are skipped.
+- [ ] `when` clauses and `menus` (editor title, context menus) for extension commands.
+- [ ] Quick pick, input box and message buttons for extensions (they read as cancelled).
+- [ ] Output channels go to vsn's log, not the Output panel.
+- [ ] VS Code's own commands (`vscode.open`, `workbench.action.*`) called by extensions do nothing.
+- [ ] `globalState`/`workspaceState` are in memory only; `activeTextEditor` and documents don't reach the host.
+- [ ] `workspaceContains:` matches plain paths only, not globs.

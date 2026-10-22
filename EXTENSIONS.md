@@ -35,7 +35,7 @@ extensions need it.
 | Question | Decision | Why |
 |---|---|---|
 | Manifest format | VS Code's `package.json`, for both kinds | Existing extensions work unchanged; one manager, one Extensions view |
-| JS runtime | Bundled with vsn, **Bun preferred**, Node as the fallback (see [Bun or Node](#bun-or-node)) | No "install Node first"; Bun starts faster and is one exe |
+| JS runtime | Bundled with vsn, **Node preferred**, Bun also works (see [Bun or Node](#bun-or-node)) | No "install Node first"; Node measured faster and smaller here |
 | Native plugins | **WebAssembly** (wasmtime, WIT interface) | Sandboxed, any source language, stable ABI across vsn versions |
 | Native DLL plugins | **No** | No stable Rust ABI, can't be sandboxed, a bad one crashes the editor |
 | Gallery | **Open VSX** (open-vsx.org) and local `.vsix` files | The Microsoft Marketplace's terms allow only Microsoft's products |
@@ -127,9 +127,28 @@ there.
 2. **Core API and command registry.** Extension commands in the palette,
    menus and keybindings; activation events (`onCommand`, `onLanguage`,
    `workspaceContains`, `onStartupFinished`, `*`).
+   *Done:* contributed commands in the palette as "Category: Title"
+   (`%nls%` titles localized, `commandPalette` `when: false` hidden),
+   contributed keybindings, configuration defaults; every activation event
+   above, plus commands contributing `onCommand` implicitly. *Left:* `menus`,
+   `when` clauses, globs in `workspaceContains`, keybindings of a newly
+   installed extension before a restart.
 3. **JS host.** The bundled runtime and the `vscode` shim; a simple Open VSX
    extension that registers commands, shows messages and adds a status bar
    item works unchanged. The Bun vs Node comparison happens here.
+   *Done:* `src/workbench/exthost.js`, one process for all JS extensions,
+   NDJSON over stdio; `commands`, `window` messages and status bar items
+   (codicons, tooltip, click), `workspace.getConfiguration`/`fs`/folders,
+   `extensions`, `env`, `Uri`, `EventEmitter`, `Disposable`, `Range` and
+   friends; unknown API members are stubs that log "not implemented"
+   instead of throwing. Install, uninstall, enable and disable restart the
+   host; a crash restarts it up to 3 times. `require('vscode')` works by
+   hooking `Module._resolveFilename` (Bun ignores `Module._load`) to a
+   `vscode.js` written next to the host. *Left:* quick pick, input box and
+   message buttons, output channels in the Output panel, VS Code's built-in
+   commands, persistent mementos, `activeTextEditor` and documents, a
+   bundled runtime in the installer (today: `runtime\` next to vsn.exe, then
+   PATH).
 4. **LSP client** into the provider registries; `vscode-languageclient`-based
    extensions then work through the JS host.
 5. **WASM host.** wasmtime, a WIT world generated from the core API, and a
@@ -137,8 +156,19 @@ there.
 
 ## Bun or Node
 
-Both run the same host code, which uses plain Node APIs only. Bun is the
-default if it passes this suite on the bundled build; otherwise Node.
+Both run the same host code, which uses plain Node APIs only. Measured with
+the phase 3 test extension (Windows 11, Node 24.14, Bun 1.3.13):
+
+| | Node | Bun |
+|---|---|---|
+| Spawn to first output | ~21–25 ms | ~620–650 ms |
+| Idle working set | 53 MB | 132 MB |
+| Phase 3 extension | works | works |
+
+So Node is preferred; `VSN_JS_RUNTIME` picks another runtime. Bun quirks
+met on the way: it ignores `Module._load` hooks, and when the main module's
+exports have `fetch` it starts `Bun.serve` on its own, so the `vscode` shim
+can't be a Proxy exported from the main module. Still to run on both:
 
 - `child_process` spawning with stdio pipes (language servers)
 - `net` sockets and named pipes (some LSP/DAP transports)

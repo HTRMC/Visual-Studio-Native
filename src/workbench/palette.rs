@@ -4,6 +4,7 @@
 //! (`file:line:col` jumps into a file).
 
 use std::{
+    borrow::Cow,
     cmp::Ordering,
     collections::{HashMap, HashSet},
     fs,
@@ -53,8 +54,22 @@ const RECENTLY_OPENED: usize = 500;
 /// Change Icon's grid columns: VS Code's 486px box less 30px, in 36px cells.
 const ICON_COLS: usize = 12;
 
-/// What the palette offers, VS Code's titles. Only commands that do something.
-fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
+/// What the palette offers: the built-in commands and extensions'.
+fn commands() -> Vec<(Cow<'static, str>, Box<dyn Action>)> {
+    let ext = super::exthost::palette_commands()
+        .into_iter()
+        .map(|(label, id)| {
+            let action: Box<dyn Action> = Box::new(super::exthost::RunExtensionCommand { id });
+            (label.into(), action)
+        });
+    (builtin_commands().into_iter())
+        .map(|(label, action)| (label.into(), action))
+        .chain(ext)
+        .collect()
+}
+
+/// VS Code's titles. Only commands that do something.
+fn builtin_commands() -> Vec<(&'static str, Box<dyn Action>)> {
     vec![
         ("File: Open File...", Box::new(OpenFile)),
         ("File: Open Folder...", Box::new(OpenFolder)),
@@ -2153,6 +2168,7 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.activate_extensions(&format!("onLanguage:{}", self.docs[ix].lang), cx);
         let doc = &self.docs[ix];
         let (path, lang, indent) = (doc.path.clone(), doc.lang, doc.indent);
         let wrap = self.wraps(doc);
@@ -2573,10 +2589,10 @@ impl Workbench {
             // VS Code lists recently used commands, then the rest alphabetically.
             let commands = commands();
             let mut shown: Vec<_> = (0..commands.len())
-                .filter_map(|ix| Some((ix, command_matches(q.trim(), commands[ix].0)?)))
+                .filter_map(|ix| Some((ix, command_matches(q.trim(), &commands[ix].0)?)))
                 .collect();
-            let recent = |ix: usize| p.recent.iter().position(|r| r == commands[ix].0);
-            shown.sort_by_key(|&(ix, _)| (recent(ix).unwrap_or(usize::MAX), commands[ix].0));
+            let recent = |ix: usize| p.recent.iter().position(|r| *r == commands[ix].0);
+            shown.sort_by_key(|&(ix, _)| (recent(ix).unwrap_or(usize::MAX), &commands[ix].0));
             let mut groups = Vec::new();
             if shown.first().is_some_and(|&(ix, _)| recent(ix).is_some()) {
                 groups.push((0, "recently used".into()));
@@ -2795,7 +2811,7 @@ impl Workbench {
             Some(&Pick::Command(ix, _)) => {
                 let (label, action) = commands().swap_remove(ix);
                 command = Some(action);
-                p.recent.retain(|r| r != label);
+                p.recent.retain(|r| *r != label);
                 p.recent.insert(0, label.to_string());
                 p.recent.truncate(COMMAND_HISTORY);
                 p.save(cx);
