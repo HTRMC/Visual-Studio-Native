@@ -158,15 +158,19 @@ fn contains(root: &Path, pattern: &str) -> bool {
 }
 
 /// The palette's extension commands, "Category: Title" and the command id,
-/// less those the manifest hides from it (`when: false`).
-pub(super) fn palette_commands() -> Vec<(String, String)> {
+/// less those whose `commandPalette` menu `when` is false where focus was.
+pub(super) fn palette_commands(focus: &[KeyContext]) -> Vec<(String, String)> {
     let mut list = Vec::new();
     for e in installed().iter().filter(|e| e.enabled) {
         let hidden: HashSet<&str> = (e.manifest["contributes"]["menus"]["commandPalette"]
             .as_array())
         .into_iter()
         .flatten()
-        .filter(|m| m["when"] == "false")
+        .filter(|m| {
+            m["when"]
+                .as_str()
+                .is_some_and(|w| when_predicate(w).is_some_and(|p| p.depth_of(focus).is_none()))
+        })
         .filter_map(|m| m["command"].as_str())
         .collect();
         for c in e.contributes("commands") {
@@ -799,6 +803,15 @@ mod tests {
         ));
         assert!(!eval("config.foo.enabled", &editor));
         assert!(eval("!(suggestWidgetVisible || false)", &editor));
+        // The palette's check: anywhere along the focus path.
+        let path = [terminal.clone(), editor.clone()];
+        assert!(
+            when_predicate("terminalFocus")
+                .unwrap()
+                .depth_of(&path)
+                .is_some()
+        );
+        assert!(when_predicate("false").unwrap().depth_of(&path).is_none());
         assert!(
             when_predicate("editorTextFocus && view == 'x' || resourceExtname =~ /md/").is_none()
         );

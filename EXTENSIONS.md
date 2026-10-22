@@ -127,15 +127,14 @@ there.
    menus and keybindings; activation events (`onCommand`, `onLanguage`,
    `workspaceContains`, `onStartupFinished`, `*`).
    *Done:* contributed commands in the palette as "Category: Title"
-   (`%nls%` titles localized, `commandPalette` `when: false` hidden),
+   (`%nls%` titles localized, hidden by a false `commandPalette` `when`),
    contributed keybindings (rebound on install, uninstall and enable),
    configuration defaults; every activation event
    above, plus commands contributing `onCommand` implicitly, and globs in
    `workspaceContains`. Keybindings' `when` clauses become gpui context
    predicates over VS Code's focus keys (`editorTextFocus`, `terminalFocus`,
    `filesExplorerFocus`, ...), `editorLangId` and the platform. *Left:*
-   `menus`, `commandPalette` `when` clauses other than `false`, comparisons
-   and regexes in `when`.
+   `menus` other than `commandPalette`, comparisons and regexes in `when`.
 3. **JS host.** The bundled runtime and the `vscode` shim; a simple Open VSX
    extension that registers commands, shows messages and adds a status bar
    item works unchanged. The Bun vs Node comparison happens here.

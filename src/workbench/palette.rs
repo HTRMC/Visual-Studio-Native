@@ -55,8 +55,8 @@ const RECENTLY_OPENED: usize = 500;
 const ICON_COLS: usize = 12;
 
 /// What the palette offers: the built-in commands and extensions'.
-fn commands() -> Vec<(Cow<'static, str>, Box<dyn Action>)> {
-    let ext = super::exthost::palette_commands()
+fn commands(focus: &[KeyContext]) -> Vec<(Cow<'static, str>, Box<dyn Action>)> {
+    let ext = super::exthost::palette_commands(focus)
         .into_iter()
         .map(|(label, id)| {
             let action: Box<dyn Action> = Box::new(super::exthost::RunExtensionCommand { id });
@@ -492,6 +492,8 @@ pub(super) struct Palette {
     deco: Option<RangeDecorationCollection>,
     /// Where focus goes back to when the palette closes without moving it.
     restore: Option<FocusHandle>,
+    /// Its key contexts, for extension commands' `when` clauses.
+    focus_path: Vec<KeyContext>,
     focus: FocusHandle,
     walk: Option<Task<()>>,
     rank: Option<Task<()>>,
@@ -548,6 +550,7 @@ impl Palette {
             view: None,
             deco: None,
             restore: None,
+            focus_path: Vec::new(),
             focus: cx.focus_handle(),
             walk: None,
             rank: None,
@@ -1885,6 +1888,7 @@ impl Workbench {
         let p = &mut self.palette;
         if !p.open {
             p.restore = window.focused(cx);
+            p.focus_path = window.context_stack();
             p.open = true;
         }
         p.defs = None;
@@ -2630,7 +2634,7 @@ impl Workbench {
 
         if let Some(q) = query.strip_prefix('>') {
             // VS Code lists recently used commands, then the rest alphabetically.
-            let commands = commands();
+            let commands = commands(&p.focus_path);
             let mut shown: Vec<_> = (0..commands.len())
                 .filter_map(|ix| Some((ix, command_matches(q.trim(), &commands[ix].0)?)))
                 .collect();
@@ -2852,7 +2856,7 @@ impl Workbench {
                 (Some(root.join(rel)), Some((def.line, def.col)))
             }
             Some(&Pick::Command(ix, _)) => {
-                let (label, action) = commands().swap_remove(ix);
+                let (label, action) = commands(&p.focus_path).swap_remove(ix);
                 command = Some(action);
                 p.recent.retain(|r| *r != label);
                 p.recent.insert(0, label.to_string());
@@ -3045,7 +3049,7 @@ impl Workbench {
             .filterable(false)
             .max_h(px(list_h))
             .placeholder(placeholder);
-        let commands = commands();
+        let commands = commands(&p.focus_path);
         let defs = p.defs.as_deref().unwrap_or_default();
         let ws_defs = p.ws_defs.as_deref().map_or(&[][..], |w| w.as_slice());
         let profiles = p.profiles.as_deref().unwrap_or_default();
