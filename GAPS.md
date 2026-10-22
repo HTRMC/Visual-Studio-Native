@@ -252,8 +252,11 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Editors always soft-wrapped and View > Word Wrap was inert; they now
       follow editor.wordWrap (default "off"), and Word Wrap / Alt+Z toggle it.
 - [ ] editor.wordWrap "wordWrapColumn"/"bounded" wrap at the window edge,
-      not editor.wordWrapColumn; Alt+Z toggles all editors, not just the
-      active one as VS Code does.
+      not editor.wordWrapColumn.
+- [x] Alt+Z toggled every editor; like VS Code it now flips the active one
+      only, and View > Word Wrap's check follows the active editor.
+- [ ] With no editor open, View > Word Wrap is still enabled (VS Code greys
+      it out).
 - [ ] Still-inert menu entries: Open Recent > More..., Preferences >
       Keyboard Shortcuts / Themes; View > Editor Layout > Split Up/Down;
       Run > Open/Add Configuration..., Run Task..., Run Build Task...;

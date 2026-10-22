@@ -2082,6 +2082,7 @@ impl Workbench {
     ) {
         let doc = &self.docs[ix];
         let (path, lang, indent) = (doc.path.clone(), doc.lang, doc.indent);
+        let wrap = self.wraps(doc);
         let old = doc.editor.read(cx);
         let (text, pos, scroll) = (
             old.value().to_string(),
@@ -2091,7 +2092,7 @@ impl Workbench {
         // ponytail: gpui-base's set_highlighter doesn't re-highlight a shown
         // editor and its tab size has no setter, so it's rebuilt (as Save As
         // does), dropping undo history.
-        let editor = self.new_editor(&path, lang, text, indent, window, cx);
+        let editor = self.new_editor(&path, lang, text, indent, wrap, window, cx);
         editor.update(cx, |e, cx| {
             e.set_cursor_position(pos, window, cx);
             e.set_scroll_offset(scroll, cx);

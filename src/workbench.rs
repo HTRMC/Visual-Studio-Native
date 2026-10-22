@@ -416,6 +416,8 @@ struct Doc {
     /// Detected from the text as it opened.
     indent: TabSize,
     untitled: bool,
+    /// Alt+Z's word wrap for this editor alone, overriding editor.wordWrap.
+    wrap: Option<bool>,
 }
 
 /// The encodings VS Code detects without `files.autoGuessEncoding`.
@@ -1066,7 +1068,7 @@ impl Workbench {
         };
         let indent = detect_indent(&text);
         let lang = self.file_language(&path);
-        let editor = self.new_editor(&path, lang, text, indent, window, cx);
+        let editor = self.new_editor(&path, lang, text, indent, self.word_wrap, window, cx);
         self.docs.push(Doc {
             indent,
             lang,
@@ -1079,6 +1081,7 @@ impl Workbench {
             encoding,
             binary,
             untitled,
+            wrap: None,
         });
         self.activate(self.docs.len() - 1, window, cx);
         self.open_editors_changed(cx);
@@ -1132,7 +1135,7 @@ impl Workbench {
         };
         let text = encoding.decode_as(&bytes);
         let doc = &self.docs[ix];
-        let (path, lang) = (doc.path.clone(), doc.lang);
+        let (path, lang, wrap) = (doc.path.clone(), doc.lang, self.wraps(doc));
         let old = doc.editor.read(cx);
         let (pos, scroll) = (old.cursor_position(), old.scroll_offset());
         let crlf = match text.contains('\n') {
@@ -1140,7 +1143,7 @@ impl Workbench {
             false => doc.crlf,
         };
         let indent = detect_indent(&text);
-        let editor = self.new_editor(&path, lang, text, indent, window, cx);
+        let editor = self.new_editor(&path, lang, text, indent, wrap, window, cx);
         editor.update(cx, |e, cx| {
             e.set_cursor_position(pos, window, cx);
             e.set_scroll_offset(scroll, cx);
@@ -1157,12 +1160,14 @@ impl Workbench {
     }
 
     /// An editor for `path`'s text, highlighted as language id `lang`.
+    #[allow(clippy::too_many_arguments)]
     fn new_editor(
         &mut self,
         path: &Path,
         lang: &str,
         text: String,
         indent: TabSize,
+        wrap: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<EditorState> {
@@ -1171,7 +1176,7 @@ impl Workbench {
             EditorState::new(window, cx)
                 .language(lang)
                 .searchable(true)
-                .soft_wrap(self.word_wrap)
+                .soft_wrap(wrap)
                 .tab_size(indent)
         });
         editor.update(cx, |e, cx| e.set_value(text, window, cx));
@@ -1660,9 +1665,9 @@ impl Workbench {
                     eprintln!("save {}: {err}", path.display());
                     return;
                 }
-                let indent = this.docs[ix].indent;
+                let (indent, wrap) = (this.docs[ix].indent, this.wraps(&this.docs[ix]));
                 let lang = this.file_language(&path);
-                let editor = this.new_editor(&path, lang, text, indent, window, cx);
+                let editor = this.new_editor(&path, lang, text, indent, wrap, window, cx);
                 let doc = &mut this.docs[ix];
                 doc.saved = text_hash(&editor, cx);
                 doc.lang = lang;
@@ -2050,12 +2055,30 @@ impl Workbench {
         cx.notify();
     }
 
-    /// Wraps (or stops wrapping) every editor's long lines at its width.
+    /// editor.wordWrap changed: wraps (or stops wrapping) the long lines of
+    /// every editor that Alt+Z hasn't set on its own.
     fn set_word_wrap(&mut self, wrap: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.word_wrap = wrap;
-        for doc in &self.docs {
+        for doc in self.docs.iter().filter(|d| d.wrap.is_none()) {
             (doc.editor).update(cx, |e, cx| e.set_soft_wrap(wrap, window, cx));
         }
+        cx.notify();
+    }
+
+    /// Whether `doc`'s editor wraps: its Alt+Z override, else editor.wordWrap.
+    fn wraps(&self, doc: &Doc) -> bool {
+        doc.wrap.unwrap_or(self.word_wrap)
+    }
+
+    /// Alt+Z (View: Toggle Word Wrap): flips the active editor only, as VS Code does.
+    fn toggle_word_wrap(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.get(self.active) else {
+            return;
+        };
+        let wrap = !self.wraps(doc);
+        let doc = &mut self.docs[self.active];
+        doc.wrap = Some(wrap);
+        (doc.editor).update(cx, |e, cx| e.set_soft_wrap(wrap, window, cx));
         cx.notify();
     }
 
@@ -2271,7 +2294,7 @@ impl Workbench {
         ]
         .into_iter()
         .map(|name| {
-            let wrap = self.word_wrap;
+            let wrap = self.docs.get(self.active).is_some_and(|d| self.wraps(d));
             let focus = self.menu_focus.clone();
             Button::new(name)
                 .ghost()
@@ -4635,9 +4658,11 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &FindPreviousInTerminal, window, cx| {
                 this.find_step(true, window, cx)
             }))
-            .on_action(cx.listener(|this, _: &ToggleWordWrap, window, cx| {
-                this.set_word_wrap(!this.word_wrap, window, cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &ToggleWordWrap, window, cx| {
+                    this.toggle_word_wrap(window, cx)
+                }),
+            )
             .on_action(
                 cx.listener(|this, _: &CopyLinesUp, window, cx| {
                     this.line_op(true, true, window, cx)
