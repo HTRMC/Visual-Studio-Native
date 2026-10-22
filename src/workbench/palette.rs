@@ -129,6 +129,13 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ),
         ("Change End of Line Sequence", Box::new(ChangeEol)),
         ("Change Language Mode", Box::new(ChangeLanguageMode)),
+        (INDENT_ACTIONS[0], Box::new(IndentUsingSpaces)),
+        (INDENT_ACTIONS[1], Box::new(IndentUsingTabs)),
+        (INDENT_ACTIONS[2], Box::new(ChangeTabDisplaySize)),
+        (INDENT_ACTIONS[3], Box::new(DetectIndentation)),
+        (INDENT_ACTIONS[4], Box::new(IndentationToSpaces)),
+        (INDENT_ACTIONS[5], Box::new(IndentationToTabs)),
+        (INDENT_ACTIONS[6], Box::new(TrimTrailingWhitespace)),
         ("View: Show Explorer", Box::new(ShowExplorer)),
         ("View: Show Search", Box::new(ShowSearch)),
         ("View: Show Source Control", Box::new(ShowScm)),
@@ -1692,11 +1699,21 @@ impl Workbench {
         self.palette_query(String::new(), cx);
     }
 
+    /// Runs Select Indentation's action `ix` from its command.
+    pub(super) fn indent_action(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.docs.get(self.active).is_some_and(|d| !d.binary) {
+            self.set_indent(IndentStep::Action, ix, window, cx);
+        }
+    }
+
     /// Runs Select Indentation's action `ix`, or sets the tab size it picked.
-    fn set_indent(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(step) = self.palette.indent else {
-            return;
-        };
+    fn set_indent(
+        &mut self,
+        step: IndentStep,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let doc = &mut self.docs[self.active];
         let mut text = None;
         match (step, ix) {
@@ -2240,7 +2257,8 @@ impl Workbench {
                 (None, None)
             }
             Some(&Pick::Indent(ix, _)) => {
-                self.set_indent(ix, window, cx);
+                let step = p.indent.unwrap_or(IndentStep::Action);
+                self.set_indent(step, ix, window, cx);
                 (None, None)
             }
             Some(&Pick::Color(color, _)) => {

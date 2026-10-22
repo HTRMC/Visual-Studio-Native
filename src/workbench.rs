@@ -98,6 +98,13 @@ actions!(
         SelectDefaultProfile,
         ChangeEol,
         ChangeLanguageMode,
+        IndentUsingSpaces,
+        IndentUsingTabs,
+        ChangeTabDisplaySize,
+        DetectIndentation,
+        IndentationToSpaces,
+        IndentationToTabs,
+        TrimTrailingWhitespace,
         NewTextFile,
         ShowNotifications,
         HideNotifications,
@@ -142,6 +149,7 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("alt-left", GoBack, None),
         KeyBinding::new("alt-right", GoForward, None),
         KeyBinding::new("ctrl-k ctrl-q", GoToLastEditLocation, None),
+        KeyBinding::new("ctrl-k ctrl-x", TrimTrailingWhitespace, None),
         KeyBinding::new("ctrl-pagedown", NextEditor, None),
         KeyBinding::new("ctrl-pageup", PreviousEditor, None),
         // Shells read Alt+arrows themselves (VS Code doesn't skip them).
@@ -2420,6 +2428,27 @@ impl Render for Workbench {
                 this.scroll_terminal(isize::MIN, 0, cx)
             }))
             .on_action(cx.listener(|this, _: &ChangeEol, window, cx| this.change_eol(window, cx)))
+            .on_action(cx.listener(|this, _: &IndentUsingSpaces, window, cx| {
+                this.indent_action(0, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &IndentUsingTabs, window, cx| {
+                this.indent_action(1, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ChangeTabDisplaySize, window, cx| {
+                this.indent_action(2, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &DetectIndentation, window, cx| {
+                this.indent_action(3, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &IndentationToSpaces, window, cx| {
+                this.indent_action(4, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &IndentationToTabs, window, cx| {
+                this.indent_action(5, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &TrimTrailingWhitespace, window, cx| {
+                this.indent_action(6, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &ChangeLanguageMode, window, cx| {
                 this.change_language(window, cx)
             }))

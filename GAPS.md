@@ -126,7 +126,8 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Indentation detected per file on open (`editor.detectIndentation`): status bar reads "Spaces: N" or "Tab Size: N".
 - [x] Clicking Spaces opens Select Action (Indent Using Spaces/Tabs, Change Tab Display Size, Detect Indentation, Convert Indentation, Trim Trailing Whitespace) and Select Tab Size for Current File.
 - [ ] Clicking the encoding opens Reopen/Save with Encoding.
-- [ ] Indentation actions are missing from the command palette (Indent Using Spaces, Convert Indentation to Tabs, ...), and Reindent Lines.
+- [x] Indentation actions are in the command palette; Trim Trailing Whitespace is Ctrl+K Ctrl+X.
+- [ ] Reindent Lines / Reindent Selected Lines (need the language's indent rules).
 - [ ] Changing indentation rebuilds the editor, dropping undo history (Convert/Trim can't be undone).
 - [ ] Tab characters render zero-width: gpui-base shapes `	` as text instead of advancing to the next tab stop.
 - [x] Status bar Col and Go to Line columns use the file's detected tab size.
