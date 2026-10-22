@@ -224,6 +224,13 @@ enum Encoding {
     Utf16Be,
 }
 
+/// `text` with every line ending made CRLF or LF, as VS Code keeps one
+/// ending per file.
+fn with_eol(text: &str, crlf: bool) -> String {
+    let lf = text.replace("\r\n", "\n");
+    if crlf { lf.replace('\n', "\r\n") } else { lf }
+}
+
 impl Encoding {
     fn label(self) -> &'static str {
         match self {
@@ -472,11 +479,15 @@ impl Workbench {
                 && let Some(doc) = this.docs.iter_mut().find(|d| d.editor == editor)
             {
                 doc.dirty = true;
-                // Undoing Change End of Line Sequence brings the old endings back.
+                // Most endings decide, as Enter inserts a bare LF and undoing
+                // Change End of Line Sequence brings the old endings back.
                 let text = editor.read(cx).text();
-                if text.lines_len() > 1 {
-                    let cr = text.line_start_offset(1).checked_sub(2);
-                    doc.crlf = cr.and_then(|i| text.char_at(i)) == Some('\r');
+                let breaks = text.lines_len() - 1;
+                if breaks > 0 {
+                    let crs: usize = (text.chunks())
+                        .map(|c| c.bytes().filter(|&b| b == b'\r').count())
+                        .sum();
+                    doc.crlf = crs * 2 > breaks;
                 }
                 let path = doc.path.clone();
                 this.refresh_search_file(&path, cx);
@@ -512,7 +523,7 @@ impl Workbench {
             self.save_as(ix, window, cx);
             return;
         }
-        let text = doc.editor.read(cx).value();
+        let text = with_eol(&doc.editor.read(cx).value(), doc.crlf);
         match fs::write(&doc.path, doc.encoding.encode(&text)) {
             Ok(()) => doc.dirty = false,
             Err(err) => eprintln!("save {}: {err}", doc.path.display()),
@@ -538,7 +549,7 @@ impl Workbench {
                 let Some(ix) = this.docs.iter().position(|d| d.editor == editor) else {
                     return;
                 };
-                let text = editor.read(cx).value().to_string();
+                let text = with_eol(&editor.read(cx).value(), this.docs[ix].crlf);
                 if let Err(err) = fs::write(&path, &text) {
                     eprintln!("save {}: {err}", path.display());
                     return;
@@ -2423,7 +2434,13 @@ fn app_menu(
 
 #[cfg(test)]
 mod tests {
-    use super::Encoding;
+    use super::{Encoding, with_eol};
+
+    #[test]
+    fn eol() {
+        assert_eq!(with_eol("a\r\nb\nc", true), "a\r\nb\r\nc");
+        assert_eq!(with_eol("a\r\nb\nc", false), "a\nb\nc");
+    }
 
     #[test]
     fn encodings() {

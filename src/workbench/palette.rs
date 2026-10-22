@@ -1613,8 +1613,7 @@ impl Workbench {
         };
         doc.crlf = crlf;
         let old = doc.editor.read(cx).value();
-        let lf = old.replace("\r\n", "\n");
-        let text = if crlf { lf.replace('\n', "\r\n") } else { lf };
+        let text = with_eol(&old, crlf);
         if text != old.as_ref() {
             doc.editor.update(cx, |e, cx| {
                 let pos = e.cursor_position();

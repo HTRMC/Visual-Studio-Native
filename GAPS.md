@@ -115,8 +115,12 @@ Differences from VS Code still to close, smallest first within each area.
 - [ ] Clicking Spaces/encoding/language opens their pickers.
 - [ ] Undoing back to the saved text leaves the tab dirty (VS Code clears
       the dot).
-- [ ] Enter in a CRLF file may insert a bare LF (check the editor's
-      newline).
+- [x] Enter in a CRLF file inserts a bare LF; saving now writes the file's
+      one ending throughout, and the label goes by most endings.
+- [ ] New untitled files start LF; VS Code's files.eol "auto" makes them
+      CRLF on Windows.
+- [ ] The breadcrumb of a file outside the folder shows a stray `\` after
+      `C:`.
 - [ ] Go menu: Back/Forward (Alt+Left/Right), Last Edit Location and
       Go to Symbol in Workspace (Ctrl+T) are still placeholders.
 - [ ] Do Not Disturb (the center's bell-slash button).
