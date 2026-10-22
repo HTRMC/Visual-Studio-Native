@@ -74,6 +74,7 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
             Box::new(KillTerminal),
         ),
         ("Terminal: Unsplit Terminal", Box::new(UnsplitTerminal)),
+        ("Terminal: Join Terminals", Box::new(JoinTerminals)),
         (
             "Terminal: Focus Next Terminal Group",
             Box::new(FocusNextTerminalGroup),
@@ -152,6 +153,8 @@ enum Pick {
     Color(Option<usize>, Vec<usize>),
     /// A row of Change Icon's grid: codicon names, glyphs and matched offsets.
     Icons(Vec<(&'static str, char, Vec<usize>)>),
+    /// A terminal for Join Terminals: id, name, tab icon and color, matched offsets.
+    Join(u64, String, char, Hsla, Vec<usize>),
 }
 
 /// A definition in the active editor, for `@`.
@@ -194,6 +197,8 @@ pub(super) struct Palette {
     coloring: Option<u64>,
     /// Set while the palette is Terminal: Change Icon's pick list.
     iconing: Option<u64>,
+    /// Set while the palette is Terminal: Join Terminals' pick list.
+    joining: bool,
     /// 0-based line and column from a `file:line:col` query.
     goto: Option<(u32, u32)>,
     shown: Vec<Pick>,
@@ -241,6 +246,7 @@ impl Palette {
             renaming: None,
             coloring: None,
             iconing: None,
+            joining: false,
             goto: None,
             shown: Vec::new(),
             groups: Vec::new(),
@@ -1499,6 +1505,7 @@ impl Workbench {
         p.renaming = None;
         p.coloring = None;
         p.iconing = None;
+        p.joining = false;
         p.parse = None;
         p.state
             .update(cx, |s, cx| s.set_query(query.to_string(), window, cx));
@@ -1544,6 +1551,17 @@ impl Workbench {
         };
         self.open_palette("", window, cx);
         self.palette.coloring = Some(id);
+        self.palette_query(String::new(), cx);
+    }
+
+    /// VS Code's Terminal: Join Terminals: the palette lists the terminals
+    /// alone in their group, to join the active one's.
+    pub(super) fn pick_terminal_to_join(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.terminal_name().is_none() {
+            return;
+        }
+        self.open_palette("", window, cx);
+        self.palette.joining = true;
         self.palette_query(String::new(), cx);
     }
 
@@ -1643,6 +1661,7 @@ impl Workbench {
         p.renaming = None;
         p.coloring = None;
         p.iconing = None;
+        p.joining = false;
         // A command may have moved focus (Show Search); only restore it when it is still ours.
         if p.focus.contains_focused(window, cx) {
             match p.restore.take() {
@@ -1682,6 +1701,19 @@ impl Workbench {
                     Some(Pick::Profile(ix, command_matches(query.trim(), &pr.name)?))
                 })
                 .collect();
+            p.show(shown, Vec::new(), 0);
+            return;
+        }
+        if p.joining {
+            let q = query.trim();
+            let shown = (self.joinable().into_iter())
+                .filter_map(|(id, name, ch, color)| {
+                    let hits = command_matches(q, &name)?;
+                    Some(Pick::Join(id, name, ch, color, hits))
+                })
+                .collect();
+            let p = &mut self.palette;
+            p.empty = "All terminals are joined already".into();
             p.show(shown, Vec::new(), 0);
             return;
         }
@@ -1909,6 +1941,10 @@ impl Workbench {
                 }
                 (None, None)
             }
+            Some(&Pick::Join(id, ..)) => {
+                self.join_active_terminal(id, window, cx);
+                (None, None)
+            }
             Some(&Pick::Color(color, _)) => {
                 if let Some(id) = p.coloring {
                     self.set_terminal_color(id, color, cx);
@@ -1962,6 +1998,8 @@ impl Workbench {
             "Search icons"
         } else if p.coloring.is_some() {
             "Choose a color for the terminal"
+        } else if p.joining {
+            "Select a terminal to join"
         } else if p.query.starts_with('>') {
             ""
         } else {
@@ -2025,6 +2063,9 @@ impl Workbench {
                         .child(move |_, _| icon_row(&icons, at, ix, this.clone()))
                 }
                 Pick::Color(None, hits) => row(RowIcon::None, "Reset to default", hits).item(),
+                Pick::Join(_, name, ch, color, hits) => {
+                    row(RowIcon::Symbol(*ch, *color), name, hits).item()
+                }
                 Pick::Command(cmd, hits) => {
                     let (label, action) = &commands[*cmd];
                     Row {

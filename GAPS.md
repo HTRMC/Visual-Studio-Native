@@ -57,8 +57,10 @@ Differences from VS Code still to close, smallest first within each area.
       (Ctrl/Shift+click selects several tabs).
 - [x] A terminal shown at a new size redraws at it, not only on its next
       output.
-- [ ] Terminal: Join Terminals from the palette: a multi-pick of terminals to
-      join with the active one.
+- [x] Terminal: Join Terminals from the palette: a pick of the terminals
+      alone in their group, joined to the active one's.
+- [ ] With nothing to join, Join Terminals warns in a notification (VS Code's
+      "All terminals are joined already") instead of an empty pick list.
 - [x] Kill Terminal and Change Color/Icon on a multi-selection act on every
       selected tab.
 - [x] Rename... on a multi-selection renames every selected tab (VS Code

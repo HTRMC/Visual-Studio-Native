@@ -1366,6 +1366,37 @@ impl Workbench {
         }
     }
 
+    /// Join Terminals' picks: every other terminal alone in its group.
+    pub(super) fn joinable(&self) -> Vec<(u64, String, char, Hsla)> {
+        let list = &self.terminals.list;
+        let active = list.get(self.terminals.active).map(|t| t.group);
+        let alone = |g| list.iter().filter(|t| t.group == g).count() == 1;
+        (list.iter())
+            .filter(|t| Some(t.group) != active && alone(t.group))
+            .map(|t| {
+                let color = t.color.map_or(col::fg(), |i| c(ANSI[i]));
+                (t.id, t.name.clone(), t.icon, color)
+            })
+            .collect()
+    }
+
+    /// Join Terminals' pick: the terminal splits in after the active
+    /// terminal's group.
+    pub(super) fn join_active_terminal(
+        &mut self,
+        id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let list = &self.terminals.list;
+        let Some(group) = list.get(self.terminals.active).map(|t| t.group) else {
+            return;
+        };
+        let last = list.iter().rfind(|t| t.group == group).unwrap().id;
+        self.terminals.picked.clear();
+        self.join_terminal(id, last, true, window, cx);
+    }
+
     /// A tab dropped on a terminal: it leaves its group to split beside that
     /// one, before or `after` it, and becomes active.
     fn join_terminal(

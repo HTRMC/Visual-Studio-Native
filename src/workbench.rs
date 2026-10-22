@@ -69,6 +69,7 @@ actions!(
         ChangeTerminalIcon,
         KillTerminal,
         UnsplitTerminal,
+        JoinTerminals,
         FocusNextTerminalGroup,
         FocusPreviousTerminalGroup,
         FocusNextTerminal,
@@ -1792,6 +1793,9 @@ impl Render for Workbench {
             }))
             .on_action(cx.listener(|this, _: &UnsplitTerminal, window, cx| {
                 this.unsplit_terminal(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &JoinTerminals, window, cx| {
+                this.pick_terminal_to_join(window, cx)
             }))
             .on_action(cx.listener(|this, _: &FocusNextTerminalGroup, window, cx| {
                 this.focus_next_terminal(true, false, window, cx)
