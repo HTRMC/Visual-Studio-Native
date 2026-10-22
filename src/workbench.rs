@@ -2126,6 +2126,7 @@ impl Workbench {
                 .child(
                     div()
                         .id(("tab-close", ix))
+                        .tooltip(tip("Close (Ctrl+F4)"))
                         .flex()
                         .items_center()
                         .justify_center()
