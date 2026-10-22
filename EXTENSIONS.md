@@ -154,14 +154,14 @@ there.
    *Done:* `src/workbench/lsp.rs`, a client over stdio with no new
    dependency: one server per language from a built-in table on PATH
    (rust-analyzer, clangd, gopls, zls, basedpyright, typescript-language-server),
-   full-text sync, `publishDiagnostics` as squiggles, the Problems panel
+   full-text sync (didOpen, didChange, didSave, didClose), `publishDiagnostics` as squiggles, the Problems panel
    (click to jump) and the status bar counts, `window/showMessage` as
    toasts; logs in the Output panel; a crashed server restarts, up to 5 times; Format Document; hover, completion and Go to Definition through gpui-component's
    editor providers (`lsp-types` and `anyhow` became direct dependencies for
    their types). *Left:* range formatting, rename, references, signature help
    and code actions; servers from language extensions, either by running
    `vscode-languageclient` in the JS host against this client or by reading
-   the server path from the extension; didClose.
+   the server path from the extension.
 5. **WASM host.** wasmtime, a WIT world generated from the core API, and a
    sample plugin in Rust.
 

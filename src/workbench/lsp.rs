@@ -75,8 +75,6 @@ struct Server {
     /// Requests awaiting their response, by id.
     pending: Mutex<HashMap<i64, oneshot::Sender<Value>>>,
     /// The open documents' versions and the hash of the text last sent.
-    // ponytail: closing an editor sends no didClose; the server keeps its
-    // last text, which the next didOpen-as-didChange replaces.
     open: Mutex<HashMap<PathBuf, (i64, u64)>>,
 }
 
@@ -370,6 +368,20 @@ impl Workbench {
             if server.open.lock().unwrap().contains_key(&doc.path) {
                 server.sync(&doc.path, doc.lang, &doc.editor.read(cx).value());
             }
+        }
+    }
+
+    /// Sends didClose for the files no editor shows any more.
+    pub(super) fn lsp_closed(&self) {
+        for server in self.lsp.servers.values().flatten() {
+            server.open.lock().unwrap().retain(|path, _| {
+                let shown = self.docs.iter().any(|d| &d.path == path);
+                if !shown {
+                    let doc = json!({ "textDocument": { "uri": path_uri(path) } });
+                    notify(&server.out, "textDocument/didClose", doc);
+                }
+                shown
+            });
         }
     }
 
