@@ -240,6 +240,11 @@ Differences from VS Code still to close, smallest first within each area.
       (VS Code's files.hotExit "onExit" keeps them for the next start).
 - [x] No "File: Revert File" command (the File menu's entry was inert).
 - [x] Revert File leaves an Untitled editor as is (VS Code empties it).
+- [x] File > Save As... was inert; it, Ctrl+Shift+S and the palette's
+      "File: Save As..." save the active editor under a new name.
+- [ ] Save As onto a file open in another tab leaves both tabs (VS Code
+      replaces that one).
+- [ ] File > New Window, Close Window and Auto Save are inert.
 - [x] Writing a setting (default profile, file associations) rewrote
       settings.json as plain JSON, dropping its comments; it's now edited in
       place like VS Code's jsonc-parser `modify`.

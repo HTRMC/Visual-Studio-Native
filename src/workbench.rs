@@ -124,6 +124,7 @@ actions!(
         TrimTrailingWhitespace,
         NewTextFile,
         RevertFile,
+        SaveAs,
         ShowNotifications,
         HideNotifications,
         ClearAllNotifications,
@@ -149,6 +150,7 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-o", OpenFile, None),
         KeyBinding::new("ctrl-k ctrl-o", OpenFolder, None),
         KeyBinding::new("ctrl-s", Save, None),
+        KeyBinding::new("ctrl-shift-s", SaveAs, None),
         KeyBinding::new("ctrl-k s", SaveAll, None),
         KeyBinding::new("ctrl-w", CloseEditor, None),
         KeyBinding::new("ctrl-f4", CloseEditor, None),
@@ -1156,15 +1158,20 @@ impl Workbench {
         cx.notify();
     }
 
-    /// Asks where to save an untitled editor, then reopens it as that file
-    /// (its language follows the new name; undo history starts over).
+    /// File: Save As: asks where to save editor `ix` (an untitled one in the
+    /// folder, a file beside itself), then reopens it as that file (its
+    /// language follows the new name; undo history starts over).
+    // ponytail: saving onto a file open in another tab leaves both tabs; VS
+    // Code replaces that one.
     fn save_as(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let doc = &self.docs[ix];
         let editor = doc.editor.clone();
-        let dir = (self.root.clone())
-            .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_default();
-        let path = cx.prompt_for_new_path(&dir, Some(&doc.path.to_string_lossy()));
+        let dir = match doc.untitled {
+            true => self.root.clone().or_else(|| std::env::current_dir().ok()),
+            false => doc.path.parent().map(Path::to_path_buf),
+        };
+        let name = doc.path.file_name().unwrap_or_default().to_string_lossy();
+        let path = cx.prompt_for_new_path(&dir.unwrap_or_default(), Some(&name));
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(path))) = path.await else {
                 return;
@@ -3817,6 +3824,11 @@ impl Render for Workbench {
             }))
             .on_action(cx.listener(Self::new_text_file))
             .on_action(cx.listener(Self::revert_file))
+            .on_action(cx.listener(|this, _: &SaveAs, window, cx| {
+                if this.docs.get(this.active).is_some_and(|d| !d.binary) {
+                    this.save_as(this.active, window, cx);
+                }
+            }))
             .on_action(
                 cx.listener(|this, _: &NewTerminal, window, cx| {
                     this.new_terminal(false, window, cx)
@@ -4130,7 +4142,7 @@ fn app_menu(
             })
             .separator()
             .menu("Save", Box::new(Save))
-            .menu("Save As...", noop())
+            .menu("Save As...", Box::new(SaveAs))
             .map(|m| chord(m, "Save All", SaveAll))
             .separator()
             .menu("Auto Save", noop())
