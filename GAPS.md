@@ -11,7 +11,7 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Shift+click extends the selection.
 - [x] Alt+drag selects a column block.
 - [x] Alt+click moves the prompt cursor to the clicked cell.
-- [ ] Alt+click in full-screen programs (vim, less) moves the cursor up and
+- [x] Alt+click in full-screen programs (vim, less) moves the cursor up and
       down too.
 - [x] Dragging past the top or bottom edge scrolls while selecting.
 - [ ] A drag released outside the window keeps scrolling until the mouse

@@ -1046,15 +1046,19 @@ impl Workbench {
                 && t.block
                 && t.selection.is_some_and(|(a, b)| a == b)
                 && t.parser.screen().scrollback() == 0
-                && let Some(n) = cursor_moves(t.parser.screen(), t.cell(ev.position, false))
+                && let Some((down, right)) =
+                    cursor_moves(t.parser.screen(), t.cell(ev.position, false))
             {
-                let arrow = match (t.parser.screen().application_cursor(), n < 0) {
-                    (false, false) => "[C",
-                    (false, true) => "[D",
-                    (true, false) => "OC",
-                    (true, true) => "OD",
+                let csi = if t.parser.screen().application_cursor() {
+                    "O"
+                } else {
+                    "["
                 };
-                t.write(arrow.repeat(n.unsigned_abs()).as_bytes());
+                let arrows = |n: isize, back, on| {
+                    format!("{csi}{}", if n < 0 { back } else { on }).repeat(n.unsigned_abs())
+                };
+                let keys = arrows(down, 'A', 'B') + &arrows(right, 'D', 'C');
+                t.write(keys.as_bytes());
             }
             t.selecting = false;
         }
@@ -1561,15 +1565,19 @@ fn word_span(line: &[char], col: usize) -> (usize, usize) {
     (a, b)
 }
 
-/// The arrow presses, + right and - left, that walk the cursor to the visible
-/// cell `to` along its wrapped line, or None when `to` is on another line.
-// ponytail: horizontal only; full-screen programs need up/down moves too.
-fn cursor_moves(screen: &vt100::Screen, (row, col): (u16, u16)) -> Option<isize> {
+/// The arrow presses, (down, right) with negatives going up and left, that
+/// walk the cursor to the visible cell `to`. At a prompt they only go along
+/// its wrapped line, None when `to` is on another; a full-screen program,
+/// told apart as for the wheel, also moves up and down.
+fn cursor_moves(screen: &vt100::Screen, (row, col): (u16, u16)) -> Option<(isize, isize)> {
     let (crow, ccol) = screen.cursor_position();
+    let (down, right) = (row as isize - crow as isize, col as isize - ccol as isize);
+    if screen.alternate_screen() || screen.application_cursor() {
+        return Some((down, right));
+    }
     let cols = screen.size().1.get() as isize;
     let joined = (row.min(crow)..row.max(crow)).all(|r| screen.row_wrapped(r));
-    (!screen.alternate_screen() && joined)
-        .then(|| (row as isize - crow as isize) * cols + col as isize - ccol as isize)
+    joined.then_some((0, down * cols + right))
 }
 
 /// Whether the cell at `at` is in a selection, or with `block` in the
@@ -1886,8 +1894,10 @@ mod tests {
         let mut parser = vt100::Parser::new(3.try_into().unwrap(), 10.try_into().unwrap(), 0);
         parser.process(b"abcdefghijklmno");
         let screen = parser.screen();
-        assert_eq!(cursor_moves(screen, (1, 8)), Some(3));
-        assert_eq!(cursor_moves(screen, (0, 2)), Some(-13));
+        assert_eq!(cursor_moves(screen, (1, 8)), Some((0, 3)));
+        assert_eq!(cursor_moves(screen, (0, 2)), Some((0, -13)));
         assert_eq!(cursor_moves(screen, (2, 0)), None);
+        parser.process(b"[?1h");
+        assert_eq!(cursor_moves(parser.screen(), (2, 0)), Some((1, -5)));
     }
 }
