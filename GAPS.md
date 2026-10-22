@@ -330,4 +330,6 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Do Not Disturb (the center's bell-slash button, Notifications: Toggle Do Not Disturb Mode): the bell turns bell-slash and warnings skip the toast.
 - [x] Do Not Disturb is remembered across restarts (state.json, as VS Code's application storage).
 - [ ] Do Not Disturb lacks VS Code's per-source filter (needs extensions as notification sources).
-- [ ] Notifications: several toasts stacked (only one warning exists so far).
+- [x] Notifications: several toasts stacked (only one warning exists so far).
+- [ ] A 4th toast drops the oldest instead of queueing it until one closes,
+      and toasts appear without VS Code's slide-in.

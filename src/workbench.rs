@@ -460,9 +460,9 @@ pub struct Workbench {
     search: Entity<InputState>,
     find: search::Find,
     palette: palette::Palette,
-    /// A warning toast over the status bar, whether the mouse is over it,
-    /// and the timer that hides it.
-    toast: Option<(SharedString, bool, Task<()>)>,
+    /// The toasts over the status bar, oldest first: each one's message,
+    /// whether the mouse is over it, and the timer that hides it.
+    toasts: Vec<(SharedString, bool, Task<()>)>,
     /// Every notification, newest first, as the bell's center lists them.
     /// Notifications, newest first.
     notes: Vec<(SharedString, Severity)>,
@@ -533,7 +533,7 @@ impl Workbench {
             focus: cx.focus_handle(),
             find: search::Find::new(window, cx),
             palette: palette::Palette::new(window, cx),
-            toast: None,
+            toasts: Vec::new(),
             notes: Vec::new(),
             crumbs: ScrollHandle::new(),
             crumbs_at: Default::default(),
@@ -3186,8 +3186,10 @@ impl Workbench {
 
     /// A warning notification: listed in the bell's center, and shown as a
     /// toast (unless the center is open) until VS Code's 18 seconds pass, or
-    /// later while the mouse is over it. A repeat replaces the old one.
-    // ponytail: one toast at a time.
+    /// later while the mouse is over it. A repeat replaces the old one, and
+    /// up to 3 toasts stack, newest at the bottom.
+    // ponytail: a 4th toast drops the oldest (it stays in the center); VS Code
+    // keeps it queued and shows it once one closes.
     fn warn(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.note(message.into(), Severity::Warning, cx);
     }
@@ -3214,15 +3216,16 @@ impl Workbench {
         if self.palette.dnd && !error {
             return cx.notify();
         }
+        let m = message.clone();
         let hide = cx.spawn(async move |this, cx| {
             loop {
                 let wait = std::time::Duration::from_secs(18);
                 cx.background_executor().timer(wait).await;
                 let gone = this.update(cx, |this, cx| {
-                    if this.toast.as_ref().is_some_and(|t| t.1) {
+                    if this.toasts.iter().any(|t| t.0 == m && t.1) {
                         return false;
                     }
-                    this.toast = None;
+                    this.toasts.retain(|t| t.0 != m);
                     cx.notify();
                     true
                 });
@@ -3231,7 +3234,10 @@ impl Workbench {
                 }
             }
         });
-        self.toast = Some((message, false, hide));
+        self.toasts.push((message, false, hide));
+        if self.toasts.len() > 3 {
+            drop(self.toasts.remove(0));
+        }
     }
 
     /// Opens or closes the bell's center; opening it hides the toast and
@@ -3239,7 +3245,7 @@ impl Workbench {
     fn show_center(&mut self, show: bool, cx: &mut Context<Self>) {
         self.center = show;
         if show {
-            self.toast = None;
+            self.toasts.clear();
             self.unseen = 0;
         }
         cx.notify();
@@ -3282,7 +3288,7 @@ impl Workbench {
         self.palette.dnd = !self.palette.dnd;
         self.palette.save(cx);
         if self.palette.dnd {
-            self.toast = None;
+            self.toasts.clear();
         }
         cx.notify();
     }
@@ -3290,7 +3296,7 @@ impl Workbench {
     /// Clear All Notifications, which closes the center too.
     fn clear_notes(&mut self, cx: &mut Context<Self>) {
         self.notes.clear();
-        self.toast = None;
+        self.toasts.clear();
         self.unseen = 0;
         self.center = false;
         cx.notify();
@@ -3303,9 +3309,7 @@ impl Workbench {
         if self.notes.len() < count && !self.center {
             self.unseen = self.unseen.saturating_sub(1);
         }
-        if self.toast.as_ref().is_some_and(|t| &t.0 == message) {
-            self.toast = None;
-        }
+        self.toasts.retain(|t| &t.0 != message);
         cx.notify();
     }
 
@@ -3438,30 +3442,39 @@ impl Workbench {
         )
     }
 
-    fn render_toast(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
-        let (message, ..) = self.toast.as_ref()?;
-        let note = self.notes.iter().find(|n| &n.0 == message)?;
-        Some(
-            self.note_row("toast-close", note, cx)
-                .id("toast")
-                .absolute()
-                .right(px(11.))
-                .bottom(px(33.))
-                .w(px(450.))
-                .rounded(px(6.))
-                // notifications.background
-                .bg(c(0x202122))
-                .border_1()
-                .border_color(col::border())
-                .shadow_lg()
-                .text_size(px(13.))
-                .text_color(col::fg())
-                .on_hover(cx.listener(|this, &over, _, _| {
-                    if let Some(t) = &mut this.toast {
-                        t.1 = over;
-                    }
-                })),
-        )
+    fn render_toasts(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let toasts = self
+            .toasts
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (message, ..))| {
+                let note = self.notes.iter().find(|n| &n.0 == message)?;
+                let m = message.clone();
+                Some(
+                    self.note_row(("toast-close", i), note, cx)
+                        .id(("toast", i))
+                        .rounded(px(6.))
+                        // notifications.background
+                        .bg(c(0x202122))
+                        .border_1()
+                        .border_color(col::border())
+                        .shadow_lg()
+                        .text_size(px(13.))
+                        .text_color(col::fg())
+                        .on_hover(cx.listener(move |this, &over, _, _| {
+                            if let Some(t) = this.toasts.iter_mut().find(|t| t.0 == m) {
+                                t.1 = over;
+                            }
+                        })),
+                )
+            });
+        v_flex()
+            .absolute()
+            .right(px(11.))
+            .bottom(px(33.))
+            .w(px(450.))
+            .gap(px(8.))
+            .children(toasts)
     }
 }
 
@@ -3655,7 +3668,7 @@ impl Render for Workbench {
         let toolbar = self.render_debug_toolbar(window, cx);
 
         v_flex()
-            .key_context(match self.center || self.toast.is_some() {
+            .key_context(match self.center || !self.toasts.is_empty() {
                 true => "Workbench notificationsVisible",
                 false => "Workbench",
             })
@@ -3901,8 +3914,8 @@ impl Render for Workbench {
             )
             .on_action(cx.listener(|this, _: &ShowNotifications, _, cx| this.show_center(true, cx)))
             .on_action(cx.listener(|this, _: &HideNotifications, _, cx| {
-                // The toast stays listed in the center.
-                this.toast = None;
+                // The toasts stay listed in the center.
+                this.toasts.clear();
                 this.show_center(false, cx);
             }))
             .on_action(cx.listener(|this, _: &ClearAllNotifications, _, cx| this.clear_notes(cx)))
@@ -3949,7 +3962,7 @@ impl Render for Workbench {
             )
             .child(self.render_statusbar(cx))
             .children(toolbar)
-            .children(self.render_toast(cx))
+            .child(self.render_toasts(cx))
             .children(self.render_center(cx))
             .children(palette)
     }
