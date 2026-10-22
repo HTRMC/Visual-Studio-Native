@@ -77,6 +77,7 @@ actions!(
         ShowExtensions,
         CommandPalette,
         QuickOpen,
+        OpenView,
         GoToLine,
         GoToSymbol,
         GoBack,
@@ -204,6 +205,7 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-,", OpenSettings, None),
         KeyBinding::new("f1", CommandPalette, None),
         KeyBinding::new("ctrl-p", QuickOpen, None),
+        KeyBinding::new("ctrl-q", OpenView, None),
         KeyBinding::new("ctrl-g", GoToLine, None),
         KeyBinding::new("ctrl-shift-o", GoToSymbol, None),
         // VS Code sends these two to the shell rather than skipping it.
@@ -4499,6 +4501,11 @@ impl Render for Workbench {
                 cx.listener(|this, _: &GoToLine, window, cx| this.open_palette(":", window, cx)),
             )
             .on_action(
+                cx.listener(|this, _: &OpenView, window, cx| {
+                    this.open_palette("view ", window, cx)
+                }),
+            )
+            .on_action(
                 cx.listener(|this, _: &GoToSymbol, window, cx| this.open_palette("@", window, cx)),
             )
             .on_action(cx.listener(|this, _: &CommandPalette, window, cx| {
@@ -4935,7 +4942,7 @@ fn app_menu(
             .menu("Select All Occurrences", Box::new(SelectAllOccurrences)),
         "View" => menu
             .menu("Command Palette...", Box::new(CommandPalette))
-            .menu("Open View...", noop())
+            .menu("Open View...", Box::new(OpenView))
             .separator()
             .submenu("Appearance", window, cx, |m, _, _| {
                 m.menu("Primary Side Bar", Box::new(ToggleSidebar))

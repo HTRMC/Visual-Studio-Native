@@ -100,6 +100,7 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("View: Toggle Terminal", Box::new(ToggleTerminal)),
         ("Go to Line/Column...", Box::new(GoToLine)),
         ("Go to Symbol in Editor...", Box::new(GoToSymbol)),
+        ("View: Open View", Box::new(OpenView)),
         (
             "Notifications: Show Notifications",
             Box::new(ShowNotifications),
@@ -286,7 +287,26 @@ enum Pick {
     EncodingAction(usize, Vec<usize>),
     /// An encoding to reopen or save with, its description, matched offsets.
     Encoding(Encoding, &'static str, Vec<usize>),
+    /// Index into `VIEWS`, and the matched offsets.
+    View(usize, Vec<usize>),
 }
+
+/// Open View's views: the side bar's, then the panel's in `PANEL_TABS` order.
+// ponytail: whole containers; VS Code lists their sub-views too (Open
+// Editors, Outline, Timeline) and each terminal.
+const VIEWS: [&str; 10] = [
+    "Explorer",
+    "Search",
+    "Source Control",
+    "Run and Debug",
+    "Extensions",
+    "Problems",
+    "Output",
+    "Debug Console",
+    "Terminal",
+    "Ports",
+];
+const SIDE_BAR_VIEWS: usize = 5;
 
 /// VS Code's Select Indentation actions: "change view" ones, then "convert file" ones.
 const INDENT_ACTIONS: [&str; 7] = [
@@ -2384,6 +2404,30 @@ impl Workbench {
             return;
         }
 
+        if let Some(q) = query.strip_prefix("view ") {
+            let shown: Vec<_> = (0..VIEWS.len())
+                .filter_map(|ix| Some((ix, command_matches(q.trim(), VIEWS[ix])?)))
+                .collect();
+            let group = |row: usize| match shown[row].0 < SIDE_BAR_VIEWS {
+                true => "Side Bar",
+                false => "Panel",
+            };
+            let groups = (0..shown.len())
+                .filter(|&row| row == 0 || group(row) != group(row - 1))
+                .map(|row| (row, group(row).into()))
+                .collect();
+            p.empty = "No matching views".into();
+            p.show(
+                shown
+                    .into_iter()
+                    .map(|(ix, hits)| Pick::View(ix, hits))
+                    .collect(),
+                groups,
+                0,
+            );
+            return;
+        }
+
         if let Some(q) = query.strip_prefix('>') {
             // VS Code lists recently used commands, then the rest alphabetically.
             let commands = commands();
@@ -2545,7 +2589,7 @@ impl Workbench {
 
     fn palette_confirm(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
         let p = &mut self.palette;
-        let mut command = None;
+        let (mut command, mut view) = (None, None);
         let (file, pos) = match p.shown.get(row) {
             Some(Pick::File(rel, ..)) => {
                 let path = match &self.root {
@@ -2619,6 +2663,10 @@ impl Workbench {
                 }
                 (None, None)
             }
+            Some(&Pick::View(ix, _)) => {
+                view = Some(ix);
+                (None, None)
+            }
             None => (None, None),
         };
         self.palette_unpreview(false, cx);
@@ -2626,6 +2674,9 @@ impl Workbench {
         // From where focus went back to, like a keybinding.
         if let Some(action) = command {
             window.dispatch_action(action, cx);
+        }
+        if let Some(ix) = view {
+            self.open_view(ix, window, cx);
         }
         if let Some(path) = file {
             self.open_path(path, window, cx);
@@ -2635,6 +2686,20 @@ impl Workbench {
                 e.set_cursor_position(Position::new(line, col), window, cx)
             });
         }
+    }
+
+    /// Shows and focuses `VIEWS[ix]`; unlike its activity bar item, never hides it.
+    fn open_view(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        match ix {
+            0 => window.dispatch_action(Box::new(ShowExplorer), cx),
+            1 => window.dispatch_action(Box::new(ShowSearch), cx),
+            2 => (self.sidebar, self.view) = (true, View::Scm),
+            3 => (self.sidebar, self.view) = (true, View::Run),
+            4 => (self.sidebar, self.view) = (true, View::Extensions),
+            _ if ix - SIDE_BAR_VIEWS == TERMINAL => self.focus_terminal(window, cx),
+            _ => (self.panel, self.panel_tab) = (true, ix - SIDE_BAR_VIEWS),
+        }
+        cx.notify();
     }
 
     pub(super) fn render_palette(
@@ -2755,6 +2820,7 @@ impl Workbench {
                     row(RowIcon::Symbol(*ch, *color), name, hits).item()
                 }
                 Pick::Eol(crlf, hits) => row(RowIcon::None, eol(*crlf), hits).item(),
+                Pick::View(ix, hits) => row(RowIcon::None, VIEWS[*ix], hits).item(),
                 Pick::Lang(id, label, hits) => {
                     let current = matches!(&p.associating, Some((_, by_name)) if by_name == id);
                     Row {

@@ -255,10 +255,9 @@ Differences from VS Code still to close, smallest first within each area.
       not editor.wordWrapColumn; Alt+Z toggles all editors, not just the
       active one as VS Code does.
 - [ ] Still-inert menu entries: Open Recent > More..., Preferences >
-      Keyboard Shortcuts / Themes;
-      View > Open View..., Editor Layout > Split
-      Up/Down; Go to Symbol in Workspace...; Run > Open/Add
-      Configuration..., Run Task..., Run Build Task...; Help's entries.
+      Keyboard Shortcuts / Themes; View > Editor Layout > Split Up/Down;
+      Go to Symbol in Workspace...; Run > Open/Add Configuration..., Run
+      Task..., Run Build Task...; Help's entries.
 - [x] Edit and Selection menu entries (Undo, Cut, Select All...) never
       reached the editor and showed no shortcuts; they now go to whatever
       had focus when the menu opened. Selection > Add Cursor Above/Below
@@ -298,6 +297,10 @@ Differences from VS Code still to close, smallest first within each area.
 - [ ] Expand Selection uses brackets, not the syntax tree, so strings,
       comments and brackets inside them don't count; it handles the
       active selection only.
+- [x] View > Open View... was inert; it and Ctrl+Q list the side bar and
+      panel views in the palette (`view ` prefix) and show the picked one.
+- [ ] Open View lists whole containers, not their sub-views (Open Editors,
+      Outline, Timeline) or each open terminal, and has no Other group.
 - [x] File > Auto Save was inert; it and "File: Toggle Auto Save" flip
       files.autoSave, and "afterDelay" saves dirty files after
       files.autoSaveDelay.
