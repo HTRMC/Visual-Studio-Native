@@ -133,7 +133,7 @@ there.
    above, plus commands contributing `onCommand` implicitly, and globs in
    `workspaceContains`. Keybindings' `when` clauses become gpui context
    predicates over VS Code's focus keys (`editorTextFocus`, `terminalFocus`,
-   `filesExplorerFocus`, ...), `editorLangId` and the platform. *Left:*
+   `filesExplorerFocus`, ...), `editorLangId` and the platform.
    `editor/context` and `explorer/context` items run with the file's Uri.
    *Left:* `editor/title` and the other `menus`, submenus, comparisons and
    regexes in `when`.
