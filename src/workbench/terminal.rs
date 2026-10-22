@@ -1042,6 +1042,21 @@ impl Workbench {
             t.report(button, true, ev.position);
         }
         if ev.button == MouseButton::Left {
+            // Alt+click without a drag moves the prompt cursor there.
+            if t.selecting
+                && t.block
+                && t.selection.is_some_and(|(a, b)| a == b)
+                && t.parser.screen().scrollback() == 0
+                && let Some(n) = cursor_moves(t.parser.screen(), t.cell(ev.position, false))
+            {
+                let arrow = match (t.parser.screen().application_cursor(), n < 0) {
+                    (false, false) => "[C",
+                    (false, true) => "[D",
+                    (true, false) => "OC",
+                    (true, true) => "OD",
+                };
+                t.write(arrow.repeat(n.unsigned_abs()).as_bytes());
+            }
             t.selecting = false;
         }
     }
@@ -1506,6 +1521,17 @@ fn word_span(line: &[char], col: usize) -> (usize, usize) {
     (a, b)
 }
 
+/// The arrow presses, + right and - left, that walk the cursor to the visible
+/// cell `to` along its wrapped line, or None when `to` is on another line.
+// ponytail: horizontal only; full-screen programs need up/down moves too.
+fn cursor_moves(screen: &vt100::Screen, (row, col): (u16, u16)) -> Option<isize> {
+    let (crow, ccol) = screen.cursor_position();
+    let cols = screen.size().1.get() as isize;
+    let joined = (row.min(crow)..row.max(crow)).all(|r| screen.row_wrapped(r));
+    (!screen.alternate_screen() && joined)
+        .then(|| (row as isize - crow as isize) * cols + col as isize - ccol as isize)
+}
+
 /// Whether the cell at `at` is in a selection, or with `block` in the
 /// columns between its ends.
 fn selected(selection: Span, block: bool, at: (usize, u16)) -> bool {
@@ -1698,7 +1724,8 @@ mod tests {
     use gpui_kit::Keystroke;
 
     use super::{
-        Link, key_bytes, link, mouse_bytes, reflow, selected, text_between, word_at, word_span,
+        Link, cursor_moves, key_bytes, link, mouse_bytes, reflow, selected, text_between, word_at,
+        word_span,
     };
 
     #[test]
@@ -1799,5 +1826,15 @@ mod tests {
         assert!(selected(block, true, (2, 1)) && selected(block, true, (3, 2)));
         assert!(!selected(block, true, (2, 3)) && !selected(block, true, (0, 1)));
         assert!(selected(block, false, (2, 3)));
+    }
+
+    #[test]
+    fn alt_click_moves() {
+        let mut parser = vt100::Parser::new(3.try_into().unwrap(), 10.try_into().unwrap(), 0);
+        parser.process(b"abcdefghijklmno");
+        let screen = parser.screen();
+        assert_eq!(cursor_moves(screen, (1, 8)), Some(3));
+        assert_eq!(cursor_moves(screen, (0, 2)), Some(-13));
+        assert_eq!(cursor_moves(screen, (2, 0)), None);
     }
 }
