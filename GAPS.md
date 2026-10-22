@@ -229,7 +229,7 @@ Differences from VS Code still to close, smallest first within each area.
       `tab.dragAndDropBorder` on the side the tab will land.
 - [x] Files from Windows dropped on the explorer aren't copied into the
       folder under the mouse.
-- [ ] A drop over the explorer tints only the row under the mouse; VS Code
+- [x] A drop over the explorer tints only the row under the mouse; VS Code
       tints the whole target folder with its children.
 - [x] Dragging in the explorer can't move files between folders.
 - [ ] An explorer move can't be undone (Ctrl+Z in the explorer), Ctrl+drag

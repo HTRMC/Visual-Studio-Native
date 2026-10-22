@@ -420,6 +420,8 @@ impl Encoding {
 pub struct Workbench {
     root: Option<PathBuf>,
     expanded: HashSet<PathBuf>,
+    /// The explorer folder a drag would drop into, tinted with its children.
+    drop_dir: Option<PathBuf>,
     tree_scroll: UniformListScrollHandle,
     /// The explorer's selected row: the active editor's file, or a folder
     /// clicked since.
@@ -494,6 +496,7 @@ impl Workbench {
         let mut this = Self {
             root,
             expanded: HashSet::new(),
+            drop_dir: None,
             tree_scroll: UniformListScrollHandle::new(),
             tree_sel: None,
             tree_cursor: None,
@@ -886,6 +889,17 @@ impl Workbench {
             .ok();
         })
         .detach();
+    }
+
+    /// Points an explorer drag at `dir`, unless dropping there would leave
+    /// the item `moving` where it is.
+    fn drag_target(&mut self, dir: Option<PathBuf>, moving: Option<&Path>, cx: &mut Context<Self>) {
+        let dir = dir
+            .filter(|d| moving.is_none_or(|from| from.parent() != Some(d) && !d.starts_with(from)));
+        if self.drop_dir != dir {
+            self.drop_dir = dir;
+            cx.notify();
+        }
     }
 
     fn copy_in(
@@ -1899,6 +1913,25 @@ impl Workbench {
                         .track_scroll(&self.tree_scroll)
                         .track_focus(&self.tree_focus)
                         .on_key_down(cx.listener(Self::tree_key))
+                        // Left alone, a drag over the tree drops into the
+                        // root; the row under the mouse moves it after this.
+                        .on_drag_move(cx.listener(|this, e: &DragMoveEvent<DraggedFile>, _, cx| {
+                            let from = e.drag(cx).0.clone();
+                            let inside = e.bounds.contains(&e.event.position);
+                            this.drag_target(this.root.clone().filter(|_| inside), Some(&from), cx);
+                        }))
+                        .on_drag_move(cx.listener(
+                            |this, e: &DragMoveEvent<ExternalPaths>, _, cx| {
+                                let inside = e.bounds.contains(&e.event.position);
+                                this.drag_target(this.root.clone().filter(|_| inside), None, cx);
+                            },
+                        ))
+                        .when(
+                            self.drop_dir.is_some()
+                                && self.drop_dir == self.root
+                                && cx.has_active_drag(),
+                            |d| d.bg(col::drop()),
+                        )
                         .on_drop(cx.listener(|this, file: &DraggedFile, window, cx| {
                             if let Some(root) = this.root.clone() {
                                 this.move_into(file.0.clone(), root, window, cx)
@@ -2218,17 +2251,28 @@ impl Workbench {
             })
             // Explorer items are moved into this folder, or this file's, and
             // files from Windows copied there.
-            // ponytail: tints the row only; VS Code tints the whole target
-            // folder with its children.
-            .drag_over::<DraggedFile>(|s, _, _, _| s.bg(col::drop()))
-            .drag_over::<ExternalPaths>(|s, _, _, _| s.bg(col::drop()))
             .map(|d| {
                 let dir = match is_dir {
                     true => path.clone(),
                     false => path.parent().unwrap_or(path).to_path_buf(),
                 };
-                let into = dir.clone();
-                d.on_drop(cx.listener(move |this, file: &DraggedFile, window, cx| {
+                let (into, over, over_ext) = (dir.clone(), dir.clone(), dir.clone());
+                d.on_drag_move(
+                    cx.listener(move |this, e: &DragMoveEvent<DraggedFile>, _, cx| {
+                        if e.bounds.contains(&e.event.position) {
+                            let from = e.drag(cx).0.clone();
+                            this.drag_target(Some(over.clone()), Some(&from), cx);
+                        }
+                    }),
+                )
+                .on_drag_move(
+                    cx.listener(move |this, e: &DragMoveEvent<ExternalPaths>, _, cx| {
+                        if e.bounds.contains(&e.event.position) {
+                            this.drag_target(Some(over_ext.clone()), None, cx);
+                        }
+                    }),
+                )
+                .on_drop(cx.listener(move |this, file: &DraggedFile, window, cx| {
                     cx.stop_propagation();
                     this.move_into(file.0.clone(), into.clone(), window, cx)
                 }))
@@ -2250,6 +2294,12 @@ impl Workbench {
             .border_1()
             .border_color(transparent_black())
             .when(active, |d| d.bg(col::selected()))
+            .when(
+                self.drop_dir.as_ref().is_some_and(|d| {
+                    cx.has_active_drag() && self.root.as_ref() != Some(d) && path.starts_with(d)
+                }),
+                |d| d.bg(col::drop()),
+            )
             .when(focused && self.tree_cursor.as_ref() == Some(path), |d| {
                 d.border_color(col::focus())
             })
