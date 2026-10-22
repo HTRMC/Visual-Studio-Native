@@ -428,7 +428,7 @@ impl Workbench {
             let made = (path.parent().map_or(Ok(()), fs::create_dir_all))
                 .and_then(|_| fs::write(&path, "{}\n"));
             if let Err(err) = made {
-                return self.warn(format!("Unable to create '{}' ({err})", path.display()), cx);
+                return self.error(format!("Unable to create '{}' ({err})", path.display()), cx);
             }
         }
         self.open_path(path, window, cx);

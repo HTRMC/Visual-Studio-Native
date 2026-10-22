@@ -142,8 +142,9 @@ Differences from VS Code still to close, smallest first within each area.
       one, which closes the notification and opens settings.json.
 - [x] It was a warning; it's now an error, as in VS Code (red icon, and it
       toasts through Do Not Disturb).
-- [ ] Explorer failures (Unable to copy/move/create) are warnings; VS Code
-      reports them as errors.
+- [x] Explorer failures (Unable to copy/move/create, paste into itself) were
+      warnings; they're now errors, as in VS Code.
+- [ ] Notifications have no source line ("Source: ...") or info severity.
 - [x] Notification buttons used gpui-component's primary colour; they now
       use button.background (#0078D4) and button.hoverBackground.
 - [ ] Notification buttons aren't in the keyboard focus order (VS Code tabs

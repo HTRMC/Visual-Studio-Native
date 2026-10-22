@@ -464,9 +464,8 @@ pub struct Workbench {
     /// and the timer that hides it.
     toast: Option<(SharedString, bool, Task<()>)>,
     /// Every notification, newest first, as the bell's center lists them.
-    /// Notifications, newest first, each with whether it's a settings.json
-    /// error (error severity, with an Open Settings button) or a warning.
-    notes: Vec<(SharedString, bool)>,
+    /// Notifications, newest first.
+    notes: Vec<(SharedString, Severity)>,
     /// The breadcrumb row, scrolled to show the file name.
     crumbs: ScrollHandle,
     /// The file and row width the breadcrumb and the tab strip were last
@@ -863,7 +862,7 @@ impl Workbench {
         }
         let to = copy_target(&dir, name);
         if let Err(err) = copy_all(from, &to) {
-            return self.warn(format!("Unable to copy '{}' ({err})", from.display()), cx);
+            return self.error(format!("Unable to copy '{}' ({err})", from.display()), cx);
         }
         self.expanded.insert(dir);
         self.tree_sel = Some(to.clone());
@@ -892,7 +891,7 @@ impl Workbench {
             dir = from.parent().unwrap_or(&from).to_path_buf();
         }
         if dir.starts_with(&from) {
-            return self.warn("File to paste is an ancestor of the destination folder", cx);
+            return self.error("File to paste is an ancestor of the destination folder", cx);
         }
         match cut {
             true => {
@@ -961,7 +960,7 @@ impl Workbench {
             false => Ok(()),
         };
         if let Err(err) = replaced.and_then(|_| fs::rename(from, to)) {
-            return self.warn(format!("Unable to move '{}' ({err})", from.display()), cx);
+            return self.error(format!("Unable to move '{}' ({err})", from.display()), cx);
         }
         // Open editors and expanded folders follow the move.
         let moved = |p: &Path| p.strip_prefix(from).ok().map(|rest| to.join(rest));
@@ -1018,7 +1017,7 @@ impl Workbench {
             };
             match replaced.and_then(|_| copy_all(path, &to)) {
                 Ok(()) => copied.push(to),
-                Err(err) => self.warn(format!("Unable to copy '{}' ({err})", path.display()), cx),
+                Err(err) => self.error(format!("Unable to copy '{}' ({err})", path.display()), cx),
             }
         }
         self.dirs.clear();
@@ -3149,19 +3148,25 @@ impl Workbench {
     /// A warning notification: listed in the bell's center, and shown as a
     /// toast (unless the center is open) until VS Code's 18 seconds pass, or
     /// later while the mouse is over it. A repeat replaces the old one.
-    // ponytail: one toast at a time; the only errors are settings.json's.
+    // ponytail: one toast at a time.
     fn warn(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.note(message.into(), false, cx);
+        self.note(message.into(), Severity::Warning, cx);
+    }
+
+    /// An error notification, which toasts even in Do Not Disturb mode.
+    fn error(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.note(message.into(), Severity::Error, cx);
     }
 
     /// An error writing settings.json, with VS Code's "Open Settings" button.
     fn settings_error(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.note(message.into(), true, cx);
+        self.note(message.into(), Severity::SettingsError, cx);
     }
 
-    fn note(&mut self, message: SharedString, error: bool, cx: &mut Context<Self>) {
+    fn note(&mut self, message: SharedString, severity: Severity, cx: &mut Context<Self>) {
+        let error = severity != Severity::Warning;
         self.clear_note(&message, cx);
-        self.notes.insert(0, (message.clone(), error));
+        self.notes.insert(0, (message.clone(), severity));
         if self.center {
             return;
         }
@@ -3270,7 +3275,7 @@ impl Workbench {
     fn note_row(
         &self,
         id: impl Into<ElementId>,
-        (message, error): &(SharedString, bool),
+        &(ref message, severity): &(SharedString, Severity),
         cx: &mut Context<Self>,
     ) -> Div {
         let id = id.into();
@@ -3284,7 +3289,7 @@ impl Workbench {
             .py(px(8.))
             .gap(px(8.))
             // notificationsErrorIcon.foreground and notificationsWarningIcon.foreground
-            .child(match error {
+            .child(match severity != Severity::Warning {
                 true => codicon(icon::ERROR).mt(px(5.)).text_color(c(0xF14C4C)),
                 false => codicon(icon::WARNING).mt(px(5.)).text_color(c(0xCCA700)),
             })
@@ -3303,27 +3308,29 @@ impl Workbench {
                     this.center &= !this.notes.is_empty();
                 },
             )));
-        v_flex().child(row).when(*error, |d| {
-            // An action closes its notification, as in VS Code.
-            // button.background, button.hoverBackground and button.foreground; the
-            // custom variant dims its colour, so bg sets it too.
-            let blue = ButtonCustomVariant::new(cx)
-                .color(c(0x0078D4))
-                .hover(c(0x026EC1))
-                .active(c(0x026EC1))
-                .foreground(c(0xFFFFFF));
-            let button = Button::new((id, "open-settings"))
-                .custom(blue)
-                .bg(c(0x0078D4))
-                .small()
-                .label("Open Settings")
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.clear_note(&open, cx);
-                    this.center &= !this.notes.is_empty();
-                    this.open_settings(window, cx);
-                }));
-            d.child(h_flex().justify_end().px(px(8.)).pb(px(8.)).child(button))
-        })
+        v_flex()
+            .child(row)
+            .when(severity == Severity::SettingsError, |d| {
+                // An action closes its notification, as in VS Code.
+                // button.background, button.hoverBackground and button.foreground; the
+                // custom variant dims its colour, so bg sets it too.
+                let blue = ButtonCustomVariant::new(cx)
+                    .color(c(0x0078D4))
+                    .hover(c(0x026EC1))
+                    .active(c(0x026EC1))
+                    .foreground(c(0xFFFFFF));
+                let button = Button::new((id, "open-settings"))
+                    .custom(blue)
+                    .bg(c(0x0078D4))
+                    .small()
+                    .label("Open Settings")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.clear_note(&open, cx);
+                        this.center &= !this.notes.is_empty();
+                        this.open_settings(window, cx);
+                    }));
+                d.child(h_flex().justify_end().px(px(8.)).pb(px(8.)).child(button))
+            })
     }
 
     /// VS Code's notification center, opened from the bell.
@@ -3417,6 +3424,14 @@ impl Workbench {
                 })),
         )
     }
+}
+
+/// A notification's severity; settings.json errors offer Open Settings.
+#[derive(Clone, Copy, PartialEq)]
+enum Severity {
+    Warning,
+    Error,
+    SettingsError,
 }
 
 /// VS Code's hover beside the activity bar: a box with a beak pointing back
