@@ -1508,6 +1508,11 @@ impl Workbench {
                     .child(
                         h_flex()
                             .gap(px(4.))
+                            .children(
+                                (self.panel_tab == TERMINAL)
+                                    .then(|| self.single_terminal_tab(cx))
+                                    .flatten(),
+                            )
                             .children(actions.iter().enumerate().map(|(i, &ch)| {
                                 let button = action_button(("panel-act", i), ch);
                                 if (ch, self.panel_tab) == (icon::CHEVRON_DOWN, TERMINAL) {

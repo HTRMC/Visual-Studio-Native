@@ -1427,8 +1427,14 @@ impl Workbench {
         self.palette.renaming = Some(id);
         (self.palette.state).update(cx, |s, cx| s.set_query(name.clone(), window, cx));
         self.palette_query(name, cx);
-        // Selected, as in VS Code, so typing replaces it; the input exists once drawn.
-        window.on_next_frame(|window, cx| window.dispatch_action(Box::new(input::SelectAll), cx));
+        // Selected, as in VS Code, so typing replaces it. Frame callbacks run
+        // before drawing, and the input exists once drawn: wait out one frame.
+        let input = self.palette.state.focus_handle(cx);
+        window.on_next_frame(move |window, _| {
+            window.on_next_frame(move |window, cx| {
+                input.dispatch_action(&input::SelectAll, window, cx)
+            })
+        });
     }
 
     /// Re-lists the workspace's files when the watcher saw them change. The

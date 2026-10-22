@@ -1199,28 +1199,7 @@ impl Workbench {
                 .on_click(
                     cx.listener(move |this, _, window, cx| this.activate_terminal(id, window, cx)),
                 )
-                .context_menu(move |menu: PopupMenu, _, _| {
-                    type Act = fn(&mut Workbench, u64, &mut Window, &mut Context<Workbench>);
-                    // Each acts on the right-clicked tab, made active first as in VS Code.
-                    let item = |label: &'static str, act: Act| {
-                        let wb = wb.clone();
-                        PopupMenuItem::new(label).on_click(move |_, window, cx| {
-                            wb.update(cx, |this, cx| {
-                                this.activate_terminal(id, window, cx);
-                                act(this, id, window, cx)
-                            })
-                            .ok();
-                        })
-                    };
-                    menu.item(item("Split Terminal", |this, _, w, cx| {
-                        this.new_terminal(true, w, cx)
-                    }))
-                    .item(item("Rename...", |this, _, w, cx| {
-                        this.rename_terminal(w, cx)
-                    }))
-                    .separator()
-                    .item(item("Kill Terminal", Workbench::kill_terminal))
-                })
+                .context_menu(move |menu, _, _| tab_menu(menu, &wb, id))
         });
         v_flex()
             .w(px(TABS_W))
@@ -1229,6 +1208,26 @@ impl Workbench {
             .border_l_1()
             .border_color(col::border())
             .children(rows)
+    }
+
+    /// VS Code's single terminal tab: with no list of terminals beside it, the
+    /// panel's title bar names the one terminal.
+    pub(super) fn single_terminal_tab(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let [t] = &self.terminals.list[..] else {
+            return None;
+        };
+        let (id, wb) = (t.id, cx.weak_entity());
+        let tab = h_flex()
+            .id("terminal-single-tab")
+            .h(px(22.))
+            .px(px(4.))
+            .gap(px(4.))
+            .rounded(px(5.))
+            .hover(|s| s.bg(col::hover()))
+            .child(codicon(icon::TERMINAL))
+            .child(t.name.clone())
+            .context_menu(move |menu, _, _| tab_menu(menu, &wb, id));
+        Some(tab)
     }
 
     fn render_one(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -1510,6 +1509,30 @@ impl Workbench {
             })
             .into_any_element()
     }
+}
+
+/// A terminal tab's right-click menu. Each item acts on that terminal, made
+/// active first as in VS Code.
+fn tab_menu(menu: PopupMenu, wb: &WeakEntity<Workbench>, id: u64) -> PopupMenu {
+    type Act = fn(&mut Workbench, u64, &mut Window, &mut Context<Workbench>);
+    let item = |label: &'static str, act: Act| {
+        let wb = wb.clone();
+        PopupMenuItem::new(label).on_click(move |_, window, cx| {
+            wb.update(cx, |this, cx| {
+                this.activate_terminal(id, window, cx);
+                act(this, id, window, cx)
+            })
+            .ok();
+        })
+    };
+    menu.item(item("Split Terminal", |this, _, w, cx| {
+        this.new_terminal(true, w, cx)
+    }))
+    .item(item("Rename...", |this, _, w, cx| {
+        this.rename_terminal(w, cx)
+    }))
+    .separator()
+    .item(item("Kill Terminal", Workbench::kill_terminal))
 }
 
 /// A terminal's name until it is renamed: its program's, like `pwsh`.

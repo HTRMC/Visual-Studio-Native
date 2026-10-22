@@ -28,7 +28,9 @@ Differences from VS Code still to close, smallest first within each area.
 - [ ] Find in terminal (Ctrl+F).
 - [x] Rename a terminal (Terminal: Rename..., or Rename... on a tab).
 - [x] Rename's input starts with the old name selected, so typing replaces it.
-- [ ] With one terminal, the panel's title bar shows its icon and name.
+- [x] With one terminal, the panel's title bar shows its icon and name.
+- [x] Rename... from a tab's menu also starts with the name selected.
+- [ ] Clicking the single terminal's title-bar tab focuses the terminal.
 - [ ] Change a terminal's icon and color.
 - [ ] Drag tabs to reorder terminals and move them between splits.
 - [ ] Shell integration: command decorations, run recent command, go to
