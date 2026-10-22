@@ -373,6 +373,8 @@ const vscodeWindow = {
   showSaveDialog: async () => undefined,
   createStatusBarItem,
   createOutputChannel,
+  createTreeView,
+  registerTreeDataProvider,
   setStatusBarMessage(text) {
     const item = createStatusBarItem(1, -Infinity);
     item.text = text; item.show();
@@ -543,6 +545,99 @@ function scmArg([h, g, r]) {
 
 function runScm(cmd, args = []) {
   if (cmd) vscodeCommands.executeCommand(cmd.command, ...(cmd.arguments || []), ...args).catch((err) => send({ m: 'error', text: errorText(err) }));
+}
+
+// ---- tree views --------------------------------------------------------------
+
+class TreeItem {
+  constructor(arg, collapsibleState = 0) {
+    if (arg instanceof Uri) this.resourceUri = arg; else this.label = arg;
+    this.collapsibleState = collapsibleState;
+  }
+}
+
+// Extensions' tree views by view id: the provider, the TreeView, the nodes
+// last sent by handle and which are open by key. Any change sends the whole
+// tree to vsn.
+// ponytail: every open node's children are fetched again on each change, and
+// onDidChangeTreeData(element) refreshes the whole tree; fine for small trees.
+const trees = new Map();
+
+function treeIcon(icon, item) {
+  if (icon && typeof icon === 'object' && 'dark' in icon) icon = icon.dark;
+  const file = item.resourceUri && item.resourceUri.fsPath;
+  if (icon instanceof ThemeIcon) {
+    if (file && (icon.id === 'file' || icon.id === 'folder')) return { file, folder: icon.id === 'folder' };
+    return { codicon: icon.id };
+  }
+  if (icon) return { path: icon instanceof Uri ? icon.fsPath : String(icon) };
+  return file ? { file, folder: !!item.collapsibleState } : null;
+}
+
+async function treeJson(id) {
+  const t = trees.get(id);
+  const handles = [];
+  const walk = async (el, parent, depth) => {
+    const out = [];
+    for (const child of (await t.provider.getChildren(el)) || []) {
+      const item = await t.provider.getTreeItem(child);
+      const uri = item.resourceUri;
+      const label = typeof item.label === 'object' && item.label ? item.label.label : item.label ?? (uri ? path.basename(uri.fsPath) : '');
+      const key = parent + '/' + (item.id ?? label);
+      const open = !!item.collapsibleState && (t.open.get(key) ?? item.collapsibleState === 2);
+      const tip = item.tooltip && typeof item.tooltip === 'object' ? item.tooltip.value : item.tooltip;
+      const h = handles.push({ el: child, item, key, open }) - 1;
+      out.push({
+        h, depth, label: String(label), description: typeof item.description === 'string' ? item.description : '',
+        tooltip: tip || '', icon: treeIcon(item.iconPath, item), context: item.contextValue || '',
+        state: item.collapsibleState ? (open ? 2 : 1) : 0,
+      });
+      if (open) out.push(...(await walk(child, key, depth + 1)));
+    }
+    return out;
+  };
+  let items = [];
+  try { items = await walk(undefined, '', 0); } catch (err) { log(errorText(err)); }
+  t.handles = handles;
+  const v = t.view || {};
+  return { m: 'tree', view: id, items, title: v.title ?? null, message: v.message ?? null, description: v.description ?? null };
+}
+
+function refreshTree(id) {
+  const t = trees.get(id);
+  if (!t || t.pending) return;
+  t.pending = true;
+  t.chain = t.chain.then(() => { t.pending = false; return trees.get(id) === t && treeJson(id).then(send); });
+}
+
+function registerTreeDataProvider(id, provider) {
+  const t = { provider, view: undefined, handles: [], open: new Map(), pending: false, chain: Promise.resolve() };
+  trees.set(id, t);
+  const sub = provider.onDidChangeTreeData && provider.onDidChangeTreeData(() => refreshTree(id));
+  refreshTree(id);
+  return new Disposable(() => {
+    if (sub) sub.dispose();
+    if (trees.get(id) === t) { trees.delete(id); send({ m: 'tree', view: id, gone: true }); }
+  });
+}
+
+// ponytail: reveal, selection, visibility, expand/collapse and checkbox
+// events aren't reported.
+function createTreeView(id, options) {
+  const d = registerTreeDataProvider(id, options.treeDataProvider);
+  const view = watched({
+    title: undefined, message: undefined, description: undefined, badge: undefined, visible: true, selection: [],
+    onDidChangeVisibility: never, onDidChangeSelection: never, onDidExpandElement: never, onDidCollapseElement: never,
+    onDidChangeCheckboxState: never, reveal: async () => {}, dispose: () => d.dispose(),
+  }, () => refreshTree(id));
+  trees.get(id).view = view;
+  return view;
+}
+
+// The element a `{ $tree: [view, h] }` argument from vsn's menus names.
+function treeArg([view, h]) {
+  const n = trees.get(view)?.handles[h];
+  return n && n.el;
 }
 
 // ---- languages ---------------------------------------------------------------
@@ -833,7 +928,7 @@ const known = {
   window: withStubs('window', vscodeWindow), workspace: withStubs('workspace', vscodeWorkspace), languages: withStubs('languages', vscodeLanguages),
   scm: withStubs('scm', { createSourceControl }),
   Disposable, EventEmitter, Uri, Position, Range, Selection, ThemeColor, ThemeIcon, CancellationTokenSource,
-  Location, Diagnostic, DiagnosticRelatedInformation, MarkdownString, Hover, SnippetString, CompletionItem, CompletionList, TextEdit, CodeActionKind,
+  TreeItem, Location, Diagnostic, DiagnosticRelatedInformation, MarkdownString, Hover, SnippetString, CompletionItem, CompletionList, TextEdit, CodeActionKind,
   WorkspaceEdit, CodeAction, CodeActionTriggerKind: { Invoke: 1, Automatic: 2 },
   SignatureHelp, SignatureInformation, ParameterInformation, SignatureHelpTriggerKind: { Invoke: 1, TriggerCharacter: 2, ContentChange: 3 },
   DiagnosticTag: { Unnecessary: 1, Deprecated: 2 },
@@ -926,8 +1021,9 @@ async function run(command, args) {
   if (!fn) return send({ m: 'error', text: `command '${command}' not found` });
   try {
     // A menu passes its file as VS Code does, a Uri.
-    // and a source control's view its SourceControl, group or resource.
-    await fn(...(args || []).map((a) => (a && a.$uri ? Uri.parse(a.$uri) : a && a.$scm ? scmArg(a.$scm) : a)));
+    // a source control's view its SourceControl, group or resource, and a
+    // tree view its element.
+    await fn(...(args || []).map((a) => (a && a.$uri ? Uri.parse(a.$uri) : a && a.$scm ? scmArg(a.$scm) : a && a.$tree ? treeArg(a.$tree) : a)));
   } catch (err) {
     send({ m: 'error', text: `Running the contributed command: '${command}' failed. ${errorText(err)}` });
   }
@@ -980,6 +1076,14 @@ rl.on('line', (line) => {
         // A resource without a command opens its file, as in VS Code.
         const r = scmArg(msg.ref);
         return r && runScm(r.command || { command: 'vscode.open', arguments: [r.resourceUri] });
+      }
+      case 'treeClick': {
+        // A collapsible item toggles; any item runs its command.
+        const t = trees.get(msg.view);
+        const n = t && t.handles[msg.h];
+        if (!n) return;
+        if (n.item.collapsibleState) { t.open.set(n.key, !n.open); refreshTree(msg.view); }
+        return runScm(n.item.command);
       }
     }
   });

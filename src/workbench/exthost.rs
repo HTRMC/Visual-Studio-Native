@@ -7,7 +7,7 @@ use std::{
     collections::{BTreeMap, HashSet},
     io::{BufRead as _, BufReader, Write as _},
     process::{Command, Stdio},
-    sync::{Mutex, mpsc},
+    sync::{LazyLock, Mutex, mpsc},
 };
 
 use serde_json::{Value, json};
@@ -96,6 +96,13 @@ pub(super) struct Host {
     /// Extensions' source controls, as exthost.js's `scm` messages last sent
     /// them.
     scm: Vec<Value>,
+    /// Extensions' tree views by view id, as exthost.js's `tree` messages
+    /// last sent them.
+    trees: HashMap<String, Value>,
+    /// The extension views collapsed, and those shown so far, whose
+    /// extensions `onView` activated.
+    closed_views: HashSet<String>,
+    seen_views: HashSet<String>,
 }
 
 impl Host {
@@ -186,6 +193,112 @@ fn wants(ext: &Extension, event: &str, root: Option<&Path>) -> bool {
             ext.contributes("commands")
                 .any(|c| c["command"].as_str() == Some(cmd))
         })
+        || event.strip_prefix("onView:").is_some_and(|view| {
+            (ext.manifest["contributes"]["views"].as_object().into_iter())
+                .flat_map(|containers| containers.values())
+                .flat_map(|views| views.as_array().into_iter().flatten())
+                .any(|v| v["id"].as_str() == Some(view))
+        })
+}
+
+/// An extension's view container in the activity bar.
+pub(super) struct ViewContainer {
+    pub id: String,
+    pub title: String,
+    /// A codicon, or an image in the extension.
+    pub icon: Result<char, PathBuf>,
+}
+
+/// Extensions' activity bar view containers that have views to show.
+// ponytail: `panel` containers aren't shown.
+pub(super) fn view_containers() -> Vec<ViewContainer> {
+    let list: Vec<_> = (installed().iter())
+        .filter(|e| e.enabled)
+        .flat_map(|e| {
+            (e.manifest["contributes"]["viewsContainers"]["activitybar"].as_array())
+                .into_iter()
+                .flatten()
+                .map(move |c| (e, c))
+        })
+        .filter_map(|(e, c)| {
+            let icon = c["icon"].as_str().unwrap_or_default();
+            let icon =
+                match icon.strip_prefix("$(").and_then(|i| i.strip_suffix(')')) {
+                    Some(name) => Ok((codicons().find(|(n, _)| *n == name))
+                        .map_or(icon::EXTENSIONS, |(_, ch)| ch)),
+                    None => Err(e.dir.join(icon)),
+                };
+            let id = c["id"].as_str()?.to_string();
+            Some(ViewContainer {
+                id,
+                title: e.localize(&c["title"]),
+                icon,
+            })
+        })
+        .collect();
+    (list.into_iter())
+        .filter(|c| !ext_views(&c.id).is_empty())
+        .collect()
+}
+
+/// A view an extension contributes.
+pub(super) struct ExtView {
+    pub id: String,
+    pub name: String,
+    /// Its `viewsWelcome` content, shown while it's empty: lines of text or
+    /// `[Label](command:id)` buttons.
+    pub welcome: Vec<String>,
+}
+
+/// The views extensions contribute to view container `container`, built-in
+/// (`explorer`, `scm`, `debug`) or theirs, whose `when` holds.
+// ponytail: webview views are left out.
+pub(super) fn ext_views(container: &str) -> Vec<ExtView> {
+    let exts = installed();
+    let enabled = || exts.iter().filter(|e| e.enabled);
+    let holds = |w: &Value| w.as_str().is_none_or(|w| when_holds(w, &[]));
+    enabled()
+        .flat_map(|e| {
+            (e.manifest["contributes"]["views"][container].as_array())
+                .into_iter()
+                .flatten()
+                .map(move |v| (e, v))
+        })
+        .filter(|(_, v)| v["type"] != "webview" && holds(&v["when"]))
+        .filter_map(|(e, v)| {
+            let id = v["id"].as_str()?.to_string();
+            let welcome = enabled()
+                .flat_map(|e| e.contributes("viewsWelcome").map(move |w| (e, w)))
+                .filter(|(_, w)| w["view"] == id.as_str() && holds(&w["when"]))
+                .flat_map(|(e, w)| {
+                    let text = e.localize(&w["contents"]);
+                    text.lines().map(str::to_string).collect::<Vec<_>>()
+                })
+                .collect();
+            Some(ExtView {
+                name: e.localize(&v["name"]),
+                id,
+                welcome,
+            })
+        })
+        .collect()
+}
+
+/// A tree item's icon: a codicon, an image, or the file icon theme's for
+/// its file or folder.
+fn tree_icon(icon: &Value, open: bool) -> Option<AnyElement> {
+    if let Some(name) = icon["codicon"].as_str() {
+        let (_, ch) = codicons().find(|(n, _)| *n == name)?;
+        return Some(codicon(ch).into_any_element());
+    }
+    if let Some(path) = icon["path"].as_str() {
+        return Some(img(PathBuf::from(path)).size(px(16.)).into_any_element());
+    }
+    let path = Path::new(icon["file"].as_str()?);
+    match icon["folder"] == true {
+        true => crate::theme::folder_icon(path, open),
+        false => Some(file_icon(path)),
+    }
 }
 
 /// Whether folder `root` has a file matching `pattern`, a path or a glob
@@ -810,6 +923,7 @@ impl Workbench {
         let wasm_alive = self.ext.wasm.is_some();
         self.ext.status.retain(|i| i.wasm && wasm_alive);
         self.ext.scm.clear();
+        self.ext.trees.clear();
         self.sync_commit_input(cx);
         let ids = std::mem::take(&mut self.ext.activated);
         let (kept, exts): (Vec<_>, Vec<_>) = (installed().iter())
@@ -1059,6 +1173,13 @@ impl Workbench {
                 self.sync_commit_input(cx);
                 cx.notify();
             }
+            "tree" => {
+                match msg["gone"] == true {
+                    true => drop(self.ext.trees.remove(&text("view"))),
+                    false => drop(self.ext.trees.insert(text("view"), msg.clone())),
+                }
+                cx.notify();
+            }
             "setContext" => {
                 let mut keys = SET_CONTEXT.lock().unwrap();
                 keys.insert(text("key"), msg["value"].clone());
@@ -1070,6 +1191,13 @@ impl Workbench {
                 let path = msg["args"][0]["fsPath"].as_str().map(PathBuf::from);
                 if command == "workbench.action.reloadWindow" {
                     return self.restart_extension_host(cx);
+                }
+                let container = command.strip_prefix("workbench.view.extension.");
+                if let Some(ix) =
+                    container.and_then(|c| view_containers().iter().position(|v| v.id == c))
+                {
+                    (self.sidebar, self.view) = (true, View::Ext(ix));
+                    return cx.notify();
                 }
                 let action = builtin_action(&command);
                 let (Some(window), true) = (
@@ -1108,6 +1236,7 @@ impl Workbench {
             );
             self.ext.status.retain(|i| i.wasm);
             self.ext.scm.clear();
+            self.ext.trees.clear();
             self.sync_commit_input(cx);
             self.lsp_host_gone(super::lsp::HOSTED, cx);
             return cx.notify();
@@ -1287,6 +1416,7 @@ impl Workbench {
                     let tip =
                         SharedString::from(r["tooltip"].as_str().unwrap_or_default().to_string());
                     let at = [handle, gi as u64, ri as u64];
+                    let click = json!({ "m": "scmOpen", "ref": at });
                     let row = h_flex()
                         .id("scm-resource")
                         .flex_1()
@@ -1313,7 +1443,7 @@ impl Workbench {
                         .when(!tip.is_empty(), |d| {
                             d.tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
                         });
-                    rows.push(self.scm_row(rows.len(), row, items, scm_args(&at), Some(at), cx));
+                    rows.push(self.scm_row(rows.len(), row, items, scm_args(&at), Some(click), cx));
                 }
             }
         }
@@ -1331,15 +1461,184 @@ impl Workbench {
             .into_any_element()
     }
 
-    /// A row of the Source Control view: its `inline` menu items as buttons
-    /// on hover and the others on right-click; clicking a resource's opens it.
+    /// The views extensions contribute to `container`, each under its
+    /// header: its tree, or its welcome content while that's empty. In an
+    /// extension's container (`fill`) the open views share the height; below
+    /// a built-in view each gets at most 240px.
+    // ponytail: views don't resize, reorder or move, and every row renders
+    // without virtualization.
+    pub(super) fn render_ext_views(
+        &mut self,
+        container: &str,
+        fill: bool,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let views = ext_views(container);
+        let mut sections = Vec::new();
+        for (vi, v) in views.into_iter().enumerate() {
+            let open = !self.ext.closed_views.contains(&v.id);
+            if open && self.ext.seen_views.insert(v.id.clone()) {
+                let (wb, event) = (cx.weak_entity(), format!("onView:{}", v.id));
+                cx.defer(move |cx| {
+                    (wb.update(cx, |this, cx| this.activate_extensions(&event, cx))).ok();
+                });
+            }
+            let mut keys = KeyContext::default();
+            keys.set("view", v.id.clone());
+            let (nav, more): (Vec<_>, Vec<_>) = menu_items("view/title", &[keys])
+                .into_iter()
+                .partition(|i| i.navigation);
+            let hdr = SharedString::from(format!("view-{}", v.id));
+            let id = v.id.clone();
+            let header = section_header(hdr.clone(), &v.name, open)
+                .child(
+                    h_flex()
+                        .invisible()
+                        .group_hover(format!("{hdr}-hdr"), |s| s.visible())
+                        .children(self.ext_buttons("view-title", nav, Vec::new(), cx)),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if !this.ext.closed_views.remove(&id) {
+                        this.ext.closed_views.insert(id.clone());
+                    }
+                    cx.notify();
+                }));
+            let wb = cx.weak_entity();
+            let header = match more.is_empty() {
+                true => header.into_any_element(),
+                false => (header
+                    .context_menu(move |m, _, _| ext_menu_items(m, &wb, &more, Vec::new())))
+                .into_any_element(),
+            };
+            let tree = self.ext.trees.get(&v.id).cloned().unwrap_or_default();
+            let items = tree["items"].as_array().cloned().unwrap_or_default();
+            let mut rows = Vec::new();
+            if let Some(m) = tree["message"].as_str().filter(|m| !m.is_empty()) {
+                let m = m.to_string();
+                rows.push(
+                    (div().px(px(20.)).py(px(4.)).text_color(col::fg_muted()))
+                        .child(m)
+                        .into_any_element(),
+                );
+            }
+            if items.is_empty() {
+                rows.extend(self.view_welcome(&v.welcome, cx));
+            }
+            for (ix, it) in items.iter().enumerate() {
+                rows.push(self.tree_row(&v.id, ix, it, cx));
+            }
+            let body = (v_flex().id(SharedString::from(format!("view-body-{}", v.id))))
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .when(!fill, |d| d.max_h(px(240.)))
+                .children(rows);
+            sections.push(
+                v_flex()
+                    .when(vi > 0 || !fill, |d| d.border_t_1())
+                    .border_color(col::border())
+                    .when(open && fill, |d| d.flex_1().min_h_0())
+                    .child(header)
+                    .when(open, |d| d.child(body))
+                    .into_any_element(),
+            );
+        }
+        sections
+    }
+
+    /// A view's `viewsWelcome` content: `[Label](command:id)` lines as
+    /// buttons, the others as text with their links' labels.
+    // ponytail: links inside text don't click, and a command link's
+    // arguments are dropped.
+    fn view_welcome(&self, lines: &[String], cx: &mut Context<Self>) -> Option<AnyElement> {
+        static LINK: LazyLock<regex::Regex> =
+            LazyLock::new(|| regex::Regex::new(r"\[([^\]]*)\]\([^)]*\)").unwrap());
+        let lines = lines.iter().map(|l| l.trim()).filter(|l| !l.is_empty());
+        let parts = lines.enumerate().map(|(i, line)| {
+            let button = (line.strip_prefix('[').and_then(|l| l.strip_suffix(')')))
+                .and_then(|l| l.split_once("](command:"));
+            match button {
+                Some((label, command)) => {
+                    let command = command.split(['?', ' ']).next().unwrap_or_default();
+                    let command = command.to_string();
+                    primary_button(("view-welcome", i), label.to_string(), None)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.run_extension_command(command.clone(), Vec::new(), cx)
+                        }))
+                        .into_any_element()
+                }
+                None => (div().child(LINK.replace_all(line, "$1").to_string())).into_any_element(),
+            }
+        });
+        let parts: Vec<_> = parts.collect();
+        (!parts.is_empty()).then(|| {
+            (v_flex()
+                .px(px(20.))
+                .pt(px(6.))
+                .pb(px(10.))
+                .gap(px(14.))
+                .text_size(px(13.)))
+            .children(parts)
+            .into_any_element()
+        })
+    }
+
+    /// A tree view's row, indented by depth, with its `view/item/context`
+    /// menu; clicking it toggles it and runs its command.
+    fn tree_row(&self, view: &str, ix: usize, it: &Value, cx: &mut Context<Self>) -> AnyElement {
+        let mut keys = KeyContext::default();
+        keys.set("view", view.to_string());
+        let context = it["context"].as_str().unwrap_or_default();
+        keys.set("viewItem", context.to_string());
+        let items = menu_items("view/item/context", &[keys]);
+        let state = it["state"].as_u64().unwrap_or_default();
+        let depth = it["depth"].as_u64().unwrap_or_default() as f32;
+        let tip = SharedString::from(it["tooltip"].as_str().unwrap_or_default().to_string());
+        let text = |k: &str| it[k].as_str().unwrap_or_default().to_string();
+        let row = h_flex()
+            .id("tree-item")
+            .flex_1()
+            .min_w_0()
+            .pl(px(4. + depth * 8.))
+            .child(div().w(px(20.)).flex_none().when(state != 0, |d| {
+                d.child(codicon(match state {
+                    2 => icon::CHEVRON_DOWN,
+                    _ => icon::CHEVRON_RIGHT,
+                }))
+            }))
+            .children(
+                tree_icon(&it["icon"], state == 2).map(|i| div().flex_none().mr(px(6.)).child(i)),
+            )
+            .child(div().flex_none().child(text("label")))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .ml(px(6.))
+                    .text_size(px(12.))
+                    .text_color(col::fg_muted())
+                    .text_ellipsis()
+                    .child(text("description")),
+            )
+            .when(!tip.is_empty(), |d| {
+                d.tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+            });
+        let h = it["h"].clone();
+        let args = vec![json!({ "$tree": [view, h] })];
+        let click = json!({ "m": "treeClick", "view": view, "h": h });
+        self.scm_row(ix, row, items, args, Some(click), cx)
+    }
+
+    /// A row of the Source Control view or a tree view: its `inline` menu
+    /// items as buttons on hover and the others on right-click; clicking it
+    /// sends `click` to the host.
     fn scm_row(
         &self,
         ix: usize,
         content: impl IntoElement,
         items: Vec<MenuItem>,
         args: Vec<Value>,
-        open: Option<[u64; 3]>,
+        click: Option<Value>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (inline, menu): (Vec<_>, Vec<_>) = items.into_iter().partition(|i| i.inline);
@@ -1365,10 +1664,8 @@ impl Workbench {
                     .group_hover("scm-row", |s| s.visible())
                     .children(self.ext_buttons("scm-inline", inline, args.clone(), cx)),
             )
-            .when_some(open, |d, at| {
-                d.on_click(cx.listener(move |this, _, _, _| {
-                    this.ext.send(json!({ "m": "scmOpen", "ref": at }))
-                }))
+            .when_some(click, |d, click| {
+                d.on_click(cx.listener(move |this, _, _, _| this.ext.send(click.clone())))
             });
         if menu.is_empty() {
             return row.into_any_element();

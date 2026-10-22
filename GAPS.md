@@ -498,6 +498,8 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [x] Extensions' `editor/title` non-navigation groups and submenus were ignored; they're in "..." and flattened into "Submenu › Item".
 - [x] Extensions' `editor/title/context` and `view/title` items were ignored; they're on the tab menu and the built-in views' headers.
 - [x] Extensions' `scm/*` menus and source controls: the Source Control view shows their groups and resources, with title, inline and row-menu items.
+- [x] Extensions' own views: activity bar containers, tree views, welcome content, `view/title` and `view/item/context` menus.
+- [ ] Extension views: no panel containers or webview views; views don't resize or reorder; a change refreshes the whole tree; no `reveal`, selection, checkboxes or expand events; links inside welcome text don't click.
 - [ ] Extension source controls: one commit box, the first provider's; groups don't collapse; no status letters, multi-select or `actionButton`; `resourceStates` changed in place (not reassigned) don't sync.
 - [ ] Real nested submenus; with extension items, the editor's own menu items are always enabled.
 - [x] Quick pick, input box and message buttons for extensions, in the palette and the notification.

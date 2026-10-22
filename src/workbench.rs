@@ -361,6 +361,8 @@ enum View {
     Scm,
     Run,
     Extensions,
+    /// An extension's view container, `exthost::view_containers()[ix]`.
+    Ext(usize),
 }
 
 const PANEL_TABS: [&str; 5] = ["Problems", "Output", "Debug Console", "Terminal", "Ports"];
@@ -942,8 +944,8 @@ pub struct Workbench {
     /// The activity bar item whose hover shows, the one waiting to, and when
     /// a hover last hid (moving to the next item within a moment shows its
     /// hover at once, as VS Code does).
-    act_hover: Option<&'static str>,
-    act_wait: Option<(&'static str, Task<()>)>,
+    act_hover: Option<SharedString>,
+    act_wait: Option<(SharedString, Task<()>)>,
     act_hid: Option<Instant>,
     /// The OS window's title, as last set.
     title: String,
@@ -2661,14 +2663,16 @@ impl Workbench {
     // ---- activity bar ------------------------------------------------------
 
     fn render_activitybar(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let item = |id: &'static str,
-                    ch: char,
-                    tip: &'static str,
+        let item = |id: SharedString,
+                    glyph: AnyElement,
+                    tip: SharedString,
                     view: Option<View>,
                     cx: &mut Context<Self>| {
             let active = self.sidebar && view == Some(self.view);
+            let (hover_id, down_id) = (id.clone(), id.clone());
             div()
-                .id(id)
+                .id(id.clone())
+                .group("act-item")
                 .relative()
                 .flex()
                 .items_center()
@@ -2688,7 +2692,7 @@ impl Workbench {
                             .bg(col::fg()),
                     )
                 })
-                .child(codicon(ch).text_size(px(24.)).line_height(px(24.)))
+                .child(glyph)
                 .when(self.act_hover == Some(id), |d| {
                     d.child(
                         div().absolute().left_0().top_0().child(deferred(
@@ -2700,16 +2704,78 @@ impl Workbench {
                     )
                 })
                 .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                    this.hover_activity(id, *hovered, cx)
+                    this.hover_activity(hover_id.clone(), *hovered, cx)
                 }))
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| this.hover_activity(id, false, cx)),
+                    cx.listener(move |this, _, _, cx| {
+                        this.hover_activity(down_id.clone(), false, cx)
+                    }),
                 )
                 .when_some(view, |d, view| {
                     d.on_click(cx.listener(move |this, _, _, cx| this.show(view, cx)))
                 })
         };
+        let glyph = |ch| (codicon(ch).text_size(px(24.)).line_height(px(24.))).into_any_element();
+        let builtin = [
+            (
+                "act-explorer",
+                icon::FILES,
+                "Explorer (Ctrl+Shift+E)",
+                View::Explorer,
+            ),
+            (
+                "act-search",
+                icon::SEARCH,
+                "Search (Ctrl+Shift+F)",
+                View::Search,
+            ),
+            (
+                "act-scm",
+                icon::SOURCE_CONTROL,
+                "Source Control (Ctrl+Shift+G)",
+                View::Scm,
+            ),
+            (
+                "act-run",
+                icon::DEBUG_ALT,
+                "Run and Debug (Ctrl+Shift+D)",
+                View::Run,
+            ),
+            (
+                "act-ext",
+                icon::EXTENSIONS,
+                "Extensions (Ctrl+Shift+X)",
+                View::Extensions,
+            ),
+        ];
+        let mut top: Vec<_> = (builtin.into_iter())
+            .map(|(id, ch, text, view)| item(id.into(), glyph(ch), text.into(), Some(view), cx))
+            .collect();
+        // Extensions' view containers, after the built-in ones as in VS Code.
+        // An image icon is drawn as a mask in the item's color, like a codicon.
+        // ponytail: a PNG icon keeps its own colors.
+        for (ix, c) in exthost::view_containers().into_iter().enumerate() {
+            let active = self.sidebar && self.view == View::Ext(ix);
+            let glyph = match c.icon {
+                Ok(ch) => glyph(ch),
+                Err(path)
+                    if path
+                        .extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case("svg")) =>
+                {
+                    svg()
+                        .external_path(path.to_string_lossy().to_string())
+                        .size(px(24.))
+                        .text_color(if active { col::fg() } else { col::fg_muted() })
+                        .group_hover("act-item", |s| s.text_color(col::fg()))
+                        .into_any_element()
+                }
+                Err(path) => img(path).size(px(24.)).into_any_element(),
+            };
+            let id = SharedString::from(format!("act-c-{}", c.id));
+            top.push(item(id, glyph, c.title.into(), Some(View::Ext(ix)), cx));
+        }
 
         v_flex()
             .w(px(48.))
@@ -2719,48 +2785,23 @@ impl Workbench {
             .bg(col::bg())
             .border_r_1()
             .border_color(col::border())
+            .child(v_flex().children(top))
             .child(
                 v_flex()
                     .child(item(
-                        "act-explorer",
-                        icon::FILES,
-                        "Explorer (Ctrl+Shift+E)",
-                        Some(View::Explorer),
+                        "act-account".into(),
+                        glyph(icon::ACCOUNT),
+                        "Accounts".into(),
+                        None,
                         cx,
                     ))
                     .child(item(
-                        "act-search",
-                        icon::SEARCH,
-                        "Search (Ctrl+Shift+F)",
-                        Some(View::Search),
-                        cx,
-                    ))
-                    .child(item(
-                        "act-scm",
-                        icon::SOURCE_CONTROL,
-                        "Source Control (Ctrl+Shift+G)",
-                        Some(View::Scm),
-                        cx,
-                    ))
-                    .child(item(
-                        "act-run",
-                        icon::DEBUG_ALT,
-                        "Run and Debug (Ctrl+Shift+D)",
-                        Some(View::Run),
-                        cx,
-                    ))
-                    .child(item(
-                        "act-ext",
-                        icon::EXTENSIONS,
-                        "Extensions (Ctrl+Shift+X)",
-                        Some(View::Extensions),
+                        "act-manage".into(),
+                        glyph(icon::SETTINGS_GEAR),
+                        "Manage".into(),
+                        None,
                         cx,
                     )),
-            )
-            .child(
-                v_flex()
-                    .child(item("act-account", icon::ACCOUNT, "Accounts", None, cx))
-                    .child(item("act-manage", icon::SETTINGS_GEAR, "Manage", None, cx)),
             )
     }
 
@@ -2768,7 +2809,15 @@ impl Workbench {
 
     fn render_sidebar(&mut self, cx: &mut Context<Self>) -> AnyElement {
         const MORE: (char, &str) = (icon::ELLIPSIS, "Views and More Actions...");
+        let containers = exthost::view_containers();
+        // A disabled extension's container is gone.
+        if let View::Ext(ix) = self.view
+            && ix >= containers.len()
+        {
+            self.view = View::Explorer;
+        }
         let (title, actions): (&str, &[(char, &str)]) = match self.view {
+            View::Ext(ix) => (&containers[ix].title, &[]),
             View::Explorer => ("Explorer", &[MORE]),
             View::Search => (
                 "Search",
@@ -2792,7 +2841,6 @@ impl Workbench {
             ),
         };
         // Extensions' `view/title` buttons, for VS Code's view ids.
-        // ponytail: built-in views only; extensions' own views aren't shown.
         let view_id = match self.view {
             View::Explorer => "workbench.explorer.fileView",
             View::Search => "workbench.view.search",
@@ -2836,7 +2884,18 @@ impl Workbench {
                 }),
             ));
 
+        // Extensions' views in a built-in container go below its own.
+        let below = match self.view {
+            View::Explorer => self.render_ext_views("explorer", false, cx),
+            View::Scm => self.render_ext_views("scm", false, cx),
+            View::Run => self.render_ext_views("debug", false, cx),
+            _ => Vec::new(),
+        };
         let body = match self.view {
+            View::Ext(ix) => v_flex()
+                .size_full()
+                .children(self.render_ext_views(&containers[ix].id, true, cx))
+                .into_any_element(),
             View::Explorer => self.render_explorer(cx).into_any_element(),
             View::Search => self.render_search(cx).into_any_element(),
             View::Scm => self.render_scm(cx),
@@ -2868,6 +2927,7 @@ impl Workbench {
             .text_color(col::fg())
             .child(header)
             .child(div().flex_1().min_h_0().child(body))
+            .children(below)
             .into_any_element()
     }
 
@@ -4261,7 +4321,7 @@ impl Workbench {
 
     /// Shows an activity bar item's hover after VS Code's delay, or at once
     /// while moving from one item to the next; leaving or clicking hides it.
-    fn hover_activity(&mut self, id: &'static str, hovered: bool, cx: &mut Context<Self>) {
+    fn hover_activity(&mut self, id: SharedString, hovered: bool, cx: &mut Context<Self>) {
         if !hovered {
             if self.act_hover.take_if(|h| *h == id).is_some() {
                 self.act_hid = Some(Instant::now());
@@ -4276,12 +4336,13 @@ impl Workbench {
             self.act_hover = Some(id);
             return cx.notify();
         }
+        let shown = id.clone();
         let wait = cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(500))
                 .await;
             this.update(cx, |this, cx| {
-                this.act_hover = Some(id);
+                this.act_hover = Some(shown);
                 this.act_wait = None;
                 cx.notify();
             })
@@ -4552,7 +4613,7 @@ enum Severity {
 
 /// VS Code's hover beside the activity bar: a box with a beak pointing back
 /// at the item, centred on its 48px row.
-fn activity_hover(text: &'static str) -> impl IntoElement {
+fn activity_hover(text: SharedString) -> impl IntoElement {
     let (bg, border) = (c(0x202122), col::input_border());
     div()
         .relative()
@@ -5223,10 +5284,11 @@ fn editor_language(id: &str) -> String {
 }
 
 /// 22px collapsible pane header (bold, uppercase, 11px) with optional hover actions.
-fn section_header(id: &'static str, label: &str, open: bool) -> Stateful<Div> {
+fn section_header(id: impl Into<SharedString>, label: &str, open: bool) -> Stateful<Div> {
+    let id = id.into();
     h_flex()
-        .id(id)
         .group(SharedString::from(format!("{id}-hdr")))
+        .id(id)
         .h(px(22.))
         .flex_none()
         .pl(px(2.))
@@ -5345,7 +5407,11 @@ fn search_box(state: &Entity<InputState>) -> impl IntoElement + use<> {
         .child(Input::new(state).appearance(false).text_size(px(13.)))
 }
 
-fn primary_button(id: &'static str, label: &'static str, ch: Option<char>) -> Stateful<Div> {
+fn primary_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    ch: Option<char>,
+) -> Stateful<Div> {
     h_flex()
         .id(id)
         .w_full()
@@ -5359,7 +5425,7 @@ fn primary_button(id: &'static str, label: &'static str, ch: Option<char>) -> St
         .text_size(px(13.))
         .cursor_pointer()
         .when_some(ch, |d, ch| d.child(codicon(ch)))
-        .child(label)
+        .child(label.into())
 }
 
 /// Empty editor group: the shortcut hints VS Code shows instead of a document.

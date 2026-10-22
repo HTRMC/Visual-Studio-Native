@@ -112,6 +112,7 @@ there.
 | `languages` | 4 | completion, hover, definition, diagnostics collections, formatting |
 | `env`, `Uri`, `EventEmitter`, `Disposable` | 3 | Plain JS in the shim |
 | `scm` | 2 | `createSourceControl`, resource groups, `inputBox`, `acceptInputCommand` |
+| `window` (views) | 2 | `createTreeView`, `registerTreeDataProvider`, `TreeItem` |
 | `debug`, `tasks`, `notebooks`, webviews | later / never | |
 
 ## Phases
@@ -150,8 +151,12 @@ there.
    Extensions' source controls fill the Source Control view: the commit
    box, groups and resources, `scm/title` buttons and "...", the
    `scm/resourceGroup/context` and `scm/resourceState/context` items inline
-   on hover and in the row menus.
-   *Left:* extensions' own views.
+   on hover and in the row menus. Extensions' own views: `viewsContainers`
+   (activity bar) and `views` filled by `TreeDataProvider`s, also below the
+   Explorer, Source Control and Run views; `viewsWelcome` content with
+   command buttons, `view/title` buttons and "...", `view/item/context`
+   items inline and in the row menus, and `onView` activation.
+   *Left:* nothing.
 3. **JS host.** The bundled runtime and the `vscode` shim; a simple Open VSX
    extension that registers commands, shows messages and adds a status bar
    item works unchanged. The Bun vs Node comparison happens here.
