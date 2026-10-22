@@ -684,46 +684,181 @@ pub(super) fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBindin
     list
 }
 
-/// vsn's action for VS Code built-in command `id`.
-// ponytail: the commands extensions run most; others log "not found".
+macro_rules! builtins {
+    ($($id:literal => $action:expr,)*) => { &[$(($id, || Box::new($action))),*] };
+}
+
+/// VS Code's built-in commands that run vsn's actions.
+// ponytail: commands without a vsn action log "not found"; the
+// `vscode.execute*Provider` ones that return results aren't here.
+type Builtin = (&'static str, fn() -> Box<dyn Action>);
+const BUILTINS: &[Builtin] = builtins! {
+    "workbench.action.files.save" => Save,
+    "workbench.action.files.saveAll" => SaveAll,
+    "workbench.action.files.saveAs" => SaveAs,
+    "workbench.action.files.revert" => RevertFile,
+    "workbench.action.files.openFile" => OpenFile,
+    "workbench.action.files.openFolder" => OpenFolder,
+    "workbench.action.files.newUntitledFile" => NewTextFile,
+    "workbench.action.closeFolder" => CloseFolder,
+    "workbench.action.toggleAutoSave" => ToggleAutoSave,
+    "workbench.action.closeActiveEditor" => CloseEditor,
+    "workbench.action.closeAllEditors" => CloseAllEditors,
+    "workbench.action.closeUnmodifiedEditors" => CloseSavedEditors,
+    "workbench.action.closeOtherEditors" => CloseOtherEditors,
+    "workbench.action.closeEditorsToTheRight" => CloseEditorsToTheRight,
+    "workbench.action.nextEditor" => NextEditor,
+    "workbench.action.previousEditor" => PreviousEditor,
+    "workbench.action.clearRecentFiles" => ClearRecent,
+    "copyFilePath" => CopyPath,
+    "copyRelativeFilePath" => CopyRelativePath,
+    "revealFileInOS" => RevealInFileExplorer,
+    "revealInExplorer" => RevealInExplorerView,
+    "filesExplorer.cut" => CutFile,
+    "filesExplorer.copy" => CopyFile,
+    "filesExplorer.paste" => PasteFile,
+    "filesExplorer.findInFolder" => FindInFolder,
+    "workbench.files.action.refreshFilesExplorer" => RefreshExplorer,
+    "workbench.files.action.collapseExplorerFolders" => CollapseExplorerFolders,
+    "workbench.action.quit" => Quit,
+    "workbench.action.closeWindow" => CloseWindow,
+    "workbench.action.showAboutDialog" => About,
+    "workbench.action.toggleSidebarVisibility" => ToggleSidebar,
+    "workbench.action.togglePanel" => TogglePanel,
+    "workbench.action.toggleMaximizedPanel" => ToggleMaximizedPanel,
+    "workbench.actions.view.problems" => ToggleProblems,
+    "workbench.action.output.toggleOutput" => ToggleOutput,
+    "workbench.debug.action.toggleRepl" => ToggleDebugConsole,
+    "workbench.view.explorer" => ShowExplorer,
+    "workbench.view.search" => ShowSearch,
+    "workbench.action.findInFiles" => ShowSearch,
+    "workbench.action.replaceInFiles" => ReplaceInFiles,
+    "workbench.view.scm" => ShowScm,
+    "workbench.view.debug" => ShowRun,
+    "workbench.view.extensions" => ShowExtensions,
+    "workbench.extensions.action.installVSIX" => InstallFromVsix,
+    "workbench.action.showCommands" => CommandPalette,
+    "workbench.action.quickOpen" => QuickOpen,
+    "workbench.action.openView" => OpenView,
+    "workbench.action.gotoLine" => GoToLine,
+    "workbench.action.gotoSymbol" => GoToSymbol,
+    "workbench.action.showAllSymbols" => GoToSymbolInWorkspace,
+    "workbench.action.navigateBack" => GoBack,
+    "workbench.action.navigateForward" => GoForward,
+    "workbench.action.navigateToLastEditLocation" => GoToLastEditLocation,
+    "workbench.action.openSettings" => OpenSettings,
+    "workbench.action.openGlobalSettings" => OpenSettings,
+    "workbench.action.openWorkspaceSettings" => OpenSettings,
+    "vscode.openFolder" => OpenFolder,
+    "workbench.action.openSettingsJson" => OpenSettingsJson,
+    "workbench.action.selectTheme" => SelectColorTheme,
+    "workbench.action.selectIconTheme" => SelectIconTheme,
+    "notifications.showList" => ShowNotifications,
+    "notifications.hideList" => HideNotifications,
+    "notifications.clearAll" => ClearAllNotifications,
+    "notifications.toggleDoNotDisturbMode" => ToggleDoNotDisturb,
+    "workbench.action.debug.start" => StartDebugging,
+    "workbench.action.debug.run" => RunWithoutDebugging,
+    "workbench.action.debug.stop" => StopDebugging,
+    "workbench.action.debug.restart" => RestartDebugging,
+    "workbench.action.debug.pause" => Pause,
+    "workbench.action.debug.stepOver" => StepOver,
+    "workbench.action.debug.stepInto" => StepInto,
+    "workbench.action.debug.stepOut" => StepOut,
+    "editor.debug.action.toggleBreakpoint" => ToggleBreakpoint,
+    "debug.addConfiguration" => OpenLaunchJson,
+    "workbench.action.terminal.toggleTerminal" => ToggleTerminal,
+    "workbench.action.terminal.new" => NewTerminal,
+    "workbench.action.terminal.split" => SplitTerminal,
+    "workbench.action.terminal.rename" => RenameTerminal,
+    "workbench.action.terminal.changeColor" => ChangeTerminalColor,
+    "workbench.action.terminal.changeIcon" => ChangeTerminalIcon,
+    "workbench.action.terminal.kill" => KillTerminal,
+    "workbench.action.terminal.unsplit" => UnsplitTerminal,
+    "workbench.action.terminal.join" => JoinTerminals,
+    "workbench.action.terminal.focusNext" => FocusNextTerminalGroup,
+    "workbench.action.terminal.focusPrevious" => FocusPreviousTerminalGroup,
+    "workbench.action.terminal.focusNextPane" => FocusNextTerminal,
+    "workbench.action.terminal.focusPreviousPane" => FocusPreviousTerminal,
+    "workbench.action.terminal.focusFind" => FindInTerminal,
+    "workbench.action.terminal.findNext" => FindNextInTerminal,
+    "workbench.action.terminal.findPrevious" => FindPreviousInTerminal,
+    "workbench.action.terminal.scrollUp" => ScrollTerminalUp,
+    "workbench.action.terminal.scrollDown" => ScrollTerminalDown,
+    "workbench.action.terminal.scrollUpPage" => ScrollTerminalUpPage,
+    "workbench.action.terminal.scrollDownPage" => ScrollTerminalDownPage,
+    "workbench.action.terminal.scrollToTop" => ScrollTerminalToTop,
+    "workbench.action.terminal.scrollToBottom" => ScrollTerminalToBottom,
+    "workbench.action.terminal.selectDefaultShell" => SelectDefaultProfile,
+    "workbench.action.terminal.sizeToContentWidth" => ToggleSizeToContentWidth,
+    "undo" => input::Undo,
+    "redo" => input::Redo,
+    "editor.action.clipboardCopyAction" => input::Copy,
+    "editor.action.clipboardCutAction" => input::Cut,
+    "editor.action.clipboardPasteAction" => input::Paste,
+    "editor.action.selectAll" => input::SelectAll,
+    "editor.action.indentLines" => input::Indent,
+    "editor.action.outdentLines" => input::Outdent,
+    "editor.action.insertCursorAbove" => gpui_kit::base::input::AddCursorAbove,
+    "editor.action.insertCursorBelow" => gpui_kit::base::input::AddCursorBelow,
+    "cursorUp" => input::MoveUp,
+    "cursorDown" => input::MoveDown,
+    "cursorLeft" => input::MoveLeft,
+    "cursorRight" => input::MoveRight,
+    "cursorHome" => input::MoveHome,
+    "cursorEnd" => input::MoveEnd,
+    "cursorTop" => input::MoveToStart,
+    "cursorBottom" => input::MoveToEnd,
+    "cursorPageUp" => input::MovePageUp,
+    "cursorPageDown" => input::MovePageDown,
+    "cursorTopSelect" => input::SelectToStart,
+    "cursorBottomSelect" => input::SelectToEnd,
+    "cursorHomeSelect" => input::SelectToStartOfLine,
+    "cursorEndSelect" => input::SelectToEndOfLine,
+    "cursorWordLeftSelect" => input::SelectToPreviousWordStart,
+    "cursorWordEndRightSelect" => input::SelectToNextWordEnd,
+    "deleteLeft" => input::Backspace,
+    "deleteRight" => input::Delete,
+    "deleteWordLeft" => input::DeleteToPreviousWordStart,
+    "deleteWordRight" => input::DeleteToNextWordEnd,
+    "deleteAllLeft" => input::DeleteToBeginningOfLine,
+    "deleteAllRight" => input::DeleteToEndOfLine,
+    "editor.action.toggleWordWrap" => ToggleWordWrap,
+    "editor.action.copyLinesUpAction" => CopyLinesUp,
+    "editor.action.copyLinesDownAction" => CopyLinesDown,
+    "editor.action.moveLinesUpAction" => MoveLinesUp,
+    "editor.action.moveLinesDownAction" => MoveLinesDown,
+    "editor.action.addSelectionToNextFindMatch" => AddNextOccurrence,
+    "editor.action.addSelectionToPreviousFindMatch" => AddPreviousOccurrence,
+    "editor.action.moveSelectionToNextFindMatch" => MoveSelectionToNextFindMatch,
+    "editor.action.selectHighlights" => SelectAllOccurrences,
+    "editor.action.smartSelect.expand" => ExpandSelection,
+    "editor.action.smartSelect.shrink" => ShrinkSelection,
+    "editor.action.commentLine" => ToggleLineComment,
+    "editor.action.addCommentLine" => AddLineComment,
+    "editor.action.removeCommentLine" => RemoveLineComment,
+    "editor.action.blockComment" => ToggleBlockComment,
+    "editor.action.formatDocument" => FormatDocument,
+    "editor.action.formatSelection" => FormatSelection,
+    "editor.action.rename" => RenameSymbol,
+    "editor.action.goToReferences" => FindAllReferences,
+    "editor.action.referenceSearch.trigger" => FindAllReferences,
+    "editor.action.triggerParameterHints" => TriggerParameterHints,
+    "editor.action.trimTrailingWhitespace" => TrimTrailingWhitespace,
+    "editor.action.indentUsingSpaces" => IndentUsingSpaces,
+    "editor.action.indentUsingTabs" => IndentUsingTabs,
+    "editor.action.changeTabDisplaySize" => ChangeTabDisplaySize,
+    "editor.action.detectIndentation" => DetectIndentation,
+    "editor.action.indentationToSpaces" => IndentationToSpaces,
+    "editor.action.indentationToTabs" => IndentationToTabs,
+    "editor.action.insertSnippet" => InsertSnippet,
+    "workbench.action.editor.changeEOL" => ChangeEol,
+    "workbench.action.editor.changeLanguageMode" => ChangeLanguageMode,
+    "workbench.action.editor.changeEncoding" => ChangeEncoding,
+};
+
 fn builtin_action(id: &str) -> Option<Box<dyn Action>> {
-    Some(match id {
-        "workbench.action.files.save" => Box::new(Save),
-        "workbench.action.files.saveAll" => Box::new(SaveAll),
-        "workbench.action.files.openFile" => Box::new(OpenFile),
-        "workbench.action.files.openFolder" => Box::new(OpenFolder),
-        "workbench.action.files.newUntitledFile" => Box::new(NewTextFile),
-        "workbench.action.closeActiveEditor" => Box::new(CloseEditor),
-        "workbench.action.closeAllEditors" => Box::new(CloseAllEditors),
-        "workbench.action.closeWindow" => Box::new(CloseWindow),
-        "workbench.action.toggleSidebarVisibility" => Box::new(ToggleSidebar),
-        "workbench.action.togglePanel" => Box::new(TogglePanel),
-        "workbench.action.terminal.toggleTerminal" => Box::new(ToggleTerminal),
-        "workbench.action.terminal.new" => Box::new(NewTerminal),
-        "workbench.actions.view.problems" => Box::new(ToggleProblems),
-        "workbench.action.output.toggleOutput" => Box::new(ToggleOutput),
-        "workbench.view.explorer" => Box::new(ShowExplorer),
-        "workbench.view.search" => Box::new(ShowSearch),
-        "workbench.view.scm" => Box::new(ShowScm),
-        "workbench.view.debug" => Box::new(ShowRun),
-        "workbench.view.extensions" => Box::new(ShowExtensions),
-        "workbench.action.showCommands" => Box::new(CommandPalette),
-        "workbench.action.quickOpen" => Box::new(QuickOpen),
-        "workbench.action.gotoLine" => Box::new(GoToLine),
-        "workbench.action.navigateBack" => Box::new(GoBack),
-        "workbench.action.navigateForward" => Box::new(GoForward),
-        "workbench.action.openSettings" => Box::new(OpenSettings),
-        "workbench.action.openSettingsJson" => Box::new(OpenSettingsJson),
-        "workbench.action.selectTheme" => Box::new(SelectColorTheme),
-        "workbench.action.selectIconTheme" => Box::new(SelectIconTheme),
-        "workbench.action.debug.start" => Box::new(StartDebugging),
-        "workbench.action.debug.stop" => Box::new(StopDebugging),
-        "editor.action.formatDocument" => Box::new(FormatDocument),
-        "editor.action.formatSelection" => Box::new(FormatSelection),
-        "editor.action.rename" => Box::new(RenameSymbol),
-        "editor.action.commentLine" => Box::new(ToggleLineComment),
-        _ => return None,
-    })
+    BUILTINS.iter().find(|b| b.0 == id).map(|b| b.1())
 }
 
 /// A status bar label, its `$(name)` codicons drawn.
@@ -1030,6 +1165,9 @@ impl Workbench {
             "defaults": defaults,
             "root": self.root,
             "extensions": extensions,
+            "builtins": (BUILTINS.iter().map(|b| b.0))
+                .chain(["vscode.open", "vscode.openWith", "workbench.action.reloadWindow"])
+                .collect::<Vec<_>>(),
         }));
         self.send_active_editor(cx);
         true
@@ -1192,6 +1330,11 @@ impl Workbench {
                 if command == "workbench.action.reloadWindow" {
                     return self.restart_extension_host(cx);
                 }
+                // ponytail: opens in this window, as if `forceNewWindow` were false.
+                if let ("vscode.openFolder", Some(path)) = (command.as_str(), &path) {
+                    self.set_root(path.clone(), cx);
+                    return self.restart_extension_host(cx);
+                }
                 let container = command.strip_prefix("workbench.view.extension.");
                 if let Some(ix) =
                     container.and_then(|c| view_containers().iter().position(|v| v.id == c))
@@ -1202,7 +1345,9 @@ impl Workbench {
                 let action = builtin_action(&command);
                 let (Some(window), true) = (
                     self.ext.window,
-                    action.is_some() || (command == "vscode.open" && path.is_some()),
+                    action.is_some()
+                        || (matches!(&*command, "vscode.open" | "vscode.openWith")
+                            && path.is_some()),
                 ) else {
                     let text = format!("command '{command}' not found");
                     return self.log("Extension Host", &text, cx);

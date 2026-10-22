@@ -181,8 +181,11 @@ there.
    extensions. `window.activeTextEditor` (its document, selection,
    `edit` and `insertSnippet`), `onDidChangeActiveTextEditor` and
    `workspace.applyEdit`. The installer ships `runtime\node.exe` (the build
-   machine's node; vsn looks there before PATH). *Left:* the rest of the
-   built-in commands.
+   machine's node; vsn looks there before PATH). Every VS Code built-in
+   command vsn has an action for (~170), `type` and `vscode.openFolder`
+   run from `executeCommand` and are listed by `getCommands`;
+   `registerTextEditorCommand` runs with the active editor and an edit
+   builder. *Left:* nothing.
 4. **LSP client** into the provider registries; `vscode-languageclient`-based
    extensions then work through the JS host.
    *Done:* `src/workbench/lsp.rs`, a client over stdio with no new

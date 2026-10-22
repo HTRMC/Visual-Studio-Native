@@ -237,6 +237,8 @@ class TextDocument {
 let settings = {};
 let defaults = {};
 let root = null;
+// VS Code's commands vsn runs itself, for getCommands.
+let builtins = [];
 // One array, as vscode-languageclient diffs folders by identity.
 let folders;
 const extensions = new Map(); // id -> { id, dir, manifest, exports, active }
@@ -258,21 +260,31 @@ const vscodeCommands = {
     commands.set(id, thisArg ? fn.bind(thisArg) : fn);
     return new Disposable(() => commands.delete(id));
   },
-  registerTextEditorCommand(id) {
-    // ponytail: no text editors reach the host yet, so these never run.
-    return new Disposable(() => commands.delete(id));
+  registerTextEditorCommand(id, fn, thisArg) {
+    // Runs with the active editor and an edit builder, applied after.
+    return vscodeCommands.registerCommand(id, (...args) => {
+      const editor = vscodeWindow.activeTextEditor;
+      return editor && editor.edit((b) => fn.call(thisArg, editor, b, ...args));
+    });
   },
   async executeCommand(id, ...args) {
     if (id === 'setContext') {
       send({ m: 'setContext', key: args[0], value: args[1] ?? null });
       return undefined;
     }
+    // What a key typed in the editor does: replace each selection.
+    const editor = vscodeWindow.activeTextEditor;
+    if (id === 'type' || id === 'default:type') {
+      return editor && editor.edit((b) => editor.selections.forEach((s) => b.replace(s, args[0]?.text ?? '')));
+    }
     const fn = commands.get(id);
     if (fn) return fn(...args);
     send({ m: 'execute', command: id, args });
     return undefined;
   },
-  async getCommands() { return [...commands.keys()]; },
+  async getCommands(filterInternal) {
+    return [...commands.keys(), ...builtins, ...(filterInternal ? [] : ['setContext', 'type'])];
+  },
 };
 
 // vsn's answers to the host's questions (quick picks, input boxes, message
@@ -1046,6 +1058,7 @@ rl.on('line', (line) => {
         settings = msg.settings || {};
         defaults = msg.defaults || {};
         root = msg.root || null;
+        builtins = msg.builtins || [];
         folders = root ? [{ uri: Uri.file(root), name: path.basename(root), index: 0 }] : undefined;
         for (const e of msg.extensions || []) extensions.set(e.id, { ...e, active: false });
         return;
