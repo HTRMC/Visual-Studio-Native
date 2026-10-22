@@ -193,6 +193,18 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
             Box::new(gpui_kit::base::input::AddCursorBelow),
         ),
         ("Undo", Box::new(input::Undo)),
+        ("Cut", Box::new(gpui_kit::base::input::Cut)),
+        ("Copy", Box::new(gpui_kit::base::input::Copy)),
+        ("Paste", Box::new(gpui_kit::base::input::Paste)),
+        ("Select All", Box::new(gpui_kit::base::input::SelectAll)),
+        (
+            "Add Selection To Next Find Match",
+            Box::new(AddNextOccurrence),
+        ),
+        (
+            "Select All Occurrences of Find Match",
+            Box::new(SelectAllOccurrences),
+        ),
         ("Redo", Box::new(input::Redo)),
         ("View: Show Explorer", Box::new(ShowExplorer)),
         ("View: Toggle Problems", Box::new(ToggleProblems)),

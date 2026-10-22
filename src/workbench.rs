@@ -115,6 +115,8 @@ actions!(
         MoveLinesUp,
         MoveLinesDown,
         ToggleLineComment,
+        AddNextOccurrence,
+        SelectAllOccurrences,
         AddLineComment,
         RemoveLineComment,
         ToggleBlockComment,
@@ -241,6 +243,12 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("alt-up", MoveLinesUp, Some("Input && mode == editor")),
         KeyBinding::new("alt-down", MoveLinesDown, Some("Input && mode == editor")),
         KeyBinding::new("ctrl-/", ToggleLineComment, Some("Input && mode == editor")),
+        KeyBinding::new("ctrl-d", AddNextOccurrence, Some("Input && mode == editor")),
+        KeyBinding::new(
+            "ctrl-shift-l",
+            SelectAllOccurrences,
+            Some("Input && mode == editor"),
+        ),
         KeyBinding::new(
             "ctrl-k ctrl-c",
             AddLineComment,
@@ -452,6 +460,14 @@ fn selected_lines(text: &str, sel: &Range<usize>) -> Range<usize> {
         false => sel.end,
     };
     line_start(sel.start)..text[last..].find('\n').map_or(text.len(), |n| last + n)
+}
+
+/// The word (letters, digits, `_`) touching byte `at` of `text`.
+fn word_around(text: &str, at: usize) -> Option<Range<usize>> {
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    let start = text[..at].trim_end_matches(word).len();
+    let end = text.len() - text[at..].trim_start_matches(word).len();
+    (start < end).then_some(start..end)
 }
 
 /// Language `lang`'s line comment token, from VS Code's language
@@ -763,6 +779,9 @@ pub struct Workbench {
     /// What had focus when a menu bar menu was opened, so its Edit and
     /// Selection entries reach that editor rather than the menu's own path.
     menu_focus: Option<FocusHandle>,
+    /// After Ctrl+D: the editor, its selection then, and where the last
+    /// match it added ends, so the next Ctrl+D searches on from there.
+    next_match: Option<(EntityId, Range<usize>, usize)>,
     debug: debug::Debug,
     /// Spawned when the Terminal tab first shows; the error if the shell didn't start.
     terminals: terminal::Terminals,
@@ -821,6 +840,7 @@ impl Workbench {
             autosave: None,
             word_wrap: word_wrap(&terminal::settings()),
             menu_focus: None,
+            next_match: None,
             debug: debug::Debug::new(window, cx),
             terminals: Default::default(),
         };
@@ -1866,6 +1886,45 @@ impl Workbench {
     // ponytail: the active selection only; VS Code moves every cursor's lines.
     fn line_op(&mut self, up: bool, copy: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.edit_lines(|text, sel| lines_moved(text, sel, up, copy), window, cx)
+    }
+
+    /// Selection > Add Next Occurrence (Ctrl+D), or with `all` Select All
+    /// Occurrences (Ctrl+Shift+L), of the active editor's selected text; an
+    /// empty selection first selects the word around the cursor.
+    // ponytail: case-sensitive substring matches, also inside other words;
+    // VS Code matches whole words after selecting one by Ctrl+D.
+    fn add_occurrences(&mut self, all: bool, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.get(self.active).filter(|d| !d.binary) else {
+            return;
+        };
+        let id = doc.editor.entity_id();
+        let last = self.next_match.take();
+        self.next_match = doc.editor.update(cx, |e, cx| {
+            let text = e.value();
+            let mut sel = e.selected_range();
+            if sel.is_empty() {
+                sel = word_around(&text, sel.start)?;
+                e.set_selected_range(sel.clone(), cx);
+                if !all {
+                    return None;
+                }
+            }
+            let needle = &text[sel.clone()];
+            if all {
+                for (at, _) in text.match_indices(needle) {
+                    e.add_selection(at..at + needle.len(), cx);
+                }
+                return None;
+            }
+            // Selections other than the first aren't readable, so remember the last.
+            let from = match last {
+                Some((i, s, end)) if i == id && s == sel => end,
+                _ => sel.end,
+            };
+            let at = (text[from..].find(needle).map(|i| from + i)).or_else(|| text.find(needle))?;
+            e.add_selection(at..at + needle.len(), cx);
+            Some((id, sel, at + needle.len()))
+        });
     }
 
     /// Toggle (`add` None), Add or Remove Line Comment on the active editor's
@@ -4313,6 +4372,12 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &MoveLinesDown, window, cx| {
                 this.line_op(false, false, window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &AddNextOccurrence, _, cx| this.add_occurrences(false, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &SelectAllOccurrences, _, cx| this.add_occurrences(true, cx)),
+            )
             .on_action(cx.listener(|this, _: &ToggleLineComment, window, cx| {
                 this.comment_lines(None, window, cx)
             }))
@@ -4639,7 +4704,9 @@ fn app_menu(
             .menu(
                 "Add Cursor Below",
                 Box::new(gpui_kit::base::input::AddCursorBelow),
-            ),
+            )
+            .menu("Add Next Occurrence", Box::new(AddNextOccurrence))
+            .menu("Select All Occurrences", Box::new(SelectAllOccurrences)),
         "View" => menu
             .menu("Command Palette...", Box::new(CommandPalette))
             .menu("Open View...", noop())
@@ -4717,8 +4784,16 @@ fn app_menu(
 mod tests {
     use super::{
         Encoding, block_toggled, comment_toggled, copy_all, copy_target, detect_indent,
-        lines_moved, with_eol,
+        lines_moved, with_eol, word_around,
     };
+
+    #[test]
+    fn word_around_cursor() {
+        assert_eq!(word_around("ab cd_é.", 4), Some(3..8));
+        assert_eq!(word_around("ab cd", 2), Some(0..2));
+        assert_eq!(word_around("ab cd", 3), Some(3..5));
+        assert_eq!(word_around("a  b", 2), None);
+    }
 
     #[test]
     fn toggle_block_comment() {

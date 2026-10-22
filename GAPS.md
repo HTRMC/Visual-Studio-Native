@@ -278,8 +278,13 @@ Differences from VS Code still to close, smallest first within each area.
 - [ ] Toggle Line/Block Comment handle the active selection only.
 - [x] The palette had no Copy/Move Line Up/Down, Add Cursor Above/Below
       or Undo/Redo commands, which VS Code lists.
-- [ ] The palette still lacks Cut/Copy/Paste, Select All, Expand/Shrink
-      Selection and Add Selection To Next Find Match (Ctrl+D) commands.
+- [x] Ctrl+D (Add Next Occurrence) and Ctrl+Shift+L (Select All
+      Occurrences) were missing; they're in the Selection menu and the
+      palette, and the palette has Cut/Copy/Paste and Select All.
+- [ ] Ctrl+D matches case-sensitive substrings, also inside other words
+      (VS Code matches whole words after selecting one), and Add Previous
+      Occurrence and Ctrl+K Ctrl+D (Move Last Selection to Next Find
+      Match) are missing.
 - [x] File > Auto Save was inert; it and "File: Toggle Auto Save" flip
       files.autoSave, and "afterDelay" saves dirty files after
       files.autoSaveDelay.
