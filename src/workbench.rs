@@ -86,7 +86,9 @@ actions!(
         ScrollTerminalToBottom,
         SelectDefaultProfile,
         NewTextFile,
+        ShowNotifications,
         HideNotifications,
+        ClearAllNotifications,
         Noop,
     ]
 );
@@ -1677,14 +1679,7 @@ impl Workbench {
                     })
                     .text_size(px(14.)),
                 )
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.center = !this.center;
-                    if this.center {
-                        this.toast = None;
-                        this.unseen = 0;
-                    }
-                    cx.notify();
-                }))
+                .on_click(cx.listener(|this, _, _, cx| this.show_center(!this.center, cx)))
                 .into_any_element(),
         );
 
@@ -1781,6 +1776,26 @@ impl Workbench {
         self.toast = Some((message, false, hide));
     }
 
+    /// Opens or closes the bell's center; opening it hides the toast and
+    /// marks every notification seen.
+    fn show_center(&mut self, show: bool, cx: &mut Context<Self>) {
+        self.center = show;
+        if show {
+            self.toast = None;
+            self.unseen = 0;
+        }
+        cx.notify();
+    }
+
+    /// Clear All Notifications, which closes the center too.
+    fn clear_notes(&mut self, cx: &mut Context<Self>) {
+        self.notes.clear();
+        self.toast = None;
+        self.unseen = 0;
+        self.center = false;
+        cx.notify();
+    }
+
     /// Clears a notification, from the center and its toast.
     fn clear_note(&mut self, message: &SharedString, cx: &mut Context<Self>) {
         let count = self.notes.len();
@@ -1851,13 +1866,10 @@ impl Workbench {
                         .gap(px(2.))
                         .text_size(px(11.))
                         .child(div().flex_1().child(header))
-                        .child(action_button("center-clear", icon::CLEAR_ALL).on_click(
-                            cx.listener(|this, _, _, cx| {
-                                this.notes.clear();
-                                this.center = false;
-                                cx.notify();
-                            }),
-                        ))
+                        .child(
+                            action_button("center-clear", icon::CLEAR_ALL)
+                                .on_click(cx.listener(|this, _, _, cx| this.clear_notes(cx))),
+                        )
                         .child(action_button("center-hide", icon::CHEVRON_DOWN).on_click(
                             cx.listener(|this, _, _, cx| {
                                 this.center = false;
@@ -2052,12 +2064,13 @@ impl Render for Workbench {
             .on_action(
                 cx.listener(|this, _: &ToggleBreakpoint, _, cx| this.toggle_breakpoint(None, cx)),
             )
+            .on_action(cx.listener(|this, _: &ShowNotifications, _, cx| this.show_center(true, cx)))
             .on_action(cx.listener(|this, _: &HideNotifications, _, cx| {
                 // The toast stays listed in the center.
-                this.center = false;
                 this.toast = None;
-                cx.notify();
+                this.show_center(false, cx);
             }))
+            .on_action(cx.listener(|this, _: &ClearAllNotifications, _, cx| this.clear_notes(cx)))
             .relative()
             .size_full()
             .font_family("Segoe UI")
