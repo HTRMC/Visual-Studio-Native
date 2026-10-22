@@ -129,6 +129,7 @@ actions!(
         CutFile,
         CopyFile,
         PasteFile,
+        FindInFolder,
     ]
 );
 
@@ -160,6 +161,7 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-x", CutFile, Some("Explorer")),
         KeyBinding::new("ctrl-c", CopyFile, Some("Explorer")),
         KeyBinding::new("ctrl-v", PasteFile, Some("Explorer")),
+        KeyBinding::new("shift-alt-f", FindInFolder, Some("Explorer")),
         KeyBinding::new("ctrl-shift-f", ShowSearch, None),
         KeyBinding::new("ctrl-shift-h", ReplaceInFiles, None),
         KeyBinding::new("ctrl-alt-enter", ReplaceAll, None),
@@ -2036,6 +2038,12 @@ impl Workbench {
                                 .on_action(cx.listener(|this, _: &PasteFile, window, cx| {
                                     this.paste_file(this.tree_cursor.clone(), window, cx)
                                 }))
+                                .on_action(cx.listener(|this, _: &FindInFolder, window, cx| {
+                                    let at = this.tree_cursor.clone().or(this.root.clone());
+                                    if let Some(dir) = at.filter(|p| p.is_dir()) {
+                                        this.find_in_folder(&dir, window, cx)
+                                    }
+                                }))
                                 // Left alone, a drag over the tree drops into the
                                 // root; the row under the mouse moves it after this.
                                 .on_drag_move(cx.listener(
@@ -3390,8 +3398,8 @@ fn reveal_path(path: &Path) {
 
 /// An explorer row's right-click menu, as VS Code's for a file or folder;
 /// the `root` one is the empty area's.
-// ponytail: no New File/Folder, Open to the Side, Find in Folder, Rename or
-// Delete yet (no inline rename, split editors or recycle bin).
+// ponytail: no New File/Folder, Open to the Side, Rename or Delete yet (no
+// inline rename, split editors or recycle bin).
 fn explorer_menu(
     menu: PopupMenu,
     wb: &WeakEntity<Workbench>,
@@ -3434,6 +3442,16 @@ fn explorer_menu(
             },
         ))
         .separator();
+    let menu = match is_dir {
+        true => menu
+            .item(item(
+                "Find in Folder...",
+                Some(Box::new(FindInFolder)),
+                |this, path, w, cx| this.find_in_folder(path, w, cx),
+            ))
+            .separator(),
+        false => menu,
+    };
     // The workspace folder itself can't be cut or copied.
     let menu = match root {
         true => menu,

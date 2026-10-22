@@ -460,6 +460,27 @@ impl Workbench {
         overrides(root, &include, &exclude).is_ok_and(|o| walks_to(root, o, path))
     }
 
+    /// The explorer's Find in Folder: Search, limited to files under `dir`.
+    pub(super) fn find_in_folder(
+        &mut self,
+        dir: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let rel = (self.root.as_deref()).and_then(|root| dir.strip_prefix(root).ok());
+        let include = match rel.map(|r| r.to_string_lossy().replace('\\', "/")) {
+            Some(r) if !r.is_empty() => format!("./{r}"),
+            _ => String::new(),
+        };
+        (self.find.include).update(cx, |s, cx| s.set_value(include, window, cx));
+        self.find.details_open = true;
+        self.sidebar = true;
+        self.view = super::View::Search;
+        self.focus_search(window, cx);
+        self.run_search(Duration::ZERO, cx);
+        cx.notify();
+    }
+
     pub(super) fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search.update(cx, |s, cx| s.focus(window, cx));
     }

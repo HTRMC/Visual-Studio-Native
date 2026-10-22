@@ -156,8 +156,8 @@ Differences from VS Code still to close, smallest first within each area.
       Folders in Explorer in the palette).
 - [ ] The explorer header's New File... and New Folder... are still inert
       (need an inline name box in the tree).
-- [ ] The explorer menu lacks New File/Folder, Open to the Side, Find in
-      Folder, Cut/Copy/Paste, Rename and Delete.
+- [ ] The explorer menu lacks New File/Folder, Open to the Side, Rename and
+      Delete.
 - [x] The right-clicked explorer row gets the focus outline (the selection
       stays put), and the keys then move on from it, as in VS Code.
 - [ ] A gpui tooltip stays on screen when its button moves away under a
@@ -241,8 +241,10 @@ Differences from VS Code still to close, smallest first within each area.
       and images only; needs CF_HDROP).
 - [x] The explorer's empty area has no right-click menu (VS Code's Paste,
       Reveal, Open in Integrated Terminal, Copy Path for the root).
-- [ ] Explorer menus lack New File/Folder and Find in Folder (VS Code puts
-      them on folder rows and the empty area).
+- [x] Explorer menus lack Find in Folder (Shift+Alt+F; VS Code puts it on
+      folder rows and the empty area).
+- [ ] The search's "files to include" box lacks VS Code's "Search Only in
+      Open Editors" toggle.
 - [x] A right-click in the explorer's empty area doesn't move the focus
       outline off the last row the way VS Code clears it.
 - [ ] The explorer handles one item at a time: no Ctrl/Shift+click
