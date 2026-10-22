@@ -292,7 +292,9 @@ Differences from VS Code still to close, smallest first within each area.
       the cursor matches whole words, case-sensitively, and a selection
       matches anywhere in any case, as in VS Code.
 - [x] Ctrl+D folded ASCII case only; "été" now finds "Été" and "ÉTÉ" too.
-- [ ] Ctrl+D ignores the find widget's Match Case / Whole Word toggles.
+- [x] Ctrl+D ignored the open find widget's Match Case; it now applies.
+- [ ] The editor's find widget lacks Whole Word and Regex toggles (gpui-base's
+      panel has Match Case only), so Ctrl+D can't follow them either.
 - [x] Ctrl+K Ctrl+D (Move Last Selection to Next Find Match) was missing;
       it's in the palette too, and Ctrl+D skips matches already selected.
 - [ ] The occurrence commands only know the selections they added; ones

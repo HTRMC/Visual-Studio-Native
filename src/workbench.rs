@@ -516,14 +516,15 @@ fn word_around(text: &str, at: usize) -> Option<Range<usize>> {
     (start < end).then_some(start..end)
 }
 
-/// Where `needle` occurs in `text`: as a whole word, case-sensitively, or
-/// anywhere in any case, which can make a match longer or shorter than it.
-fn occurrences(text: &str, needle: &str, whole: bool) -> Vec<Range<usize>> {
-    if whole {
+/// Where `needle` occurs in `text`: as a whole word, case-sensitively;
+/// anywhere, in its `case`; or anywhere in any case, which can make a match
+/// longer or shorter than it.
+fn occurrences(text: &str, needle: &str, whole: bool, case: bool) -> Vec<Range<usize>> {
+    if whole || case {
         return text
             .match_indices(needle)
             .map(|(at, _)| at..at + needle.len())
-            .filter(|r| word_around(text, r.start).as_ref() == Some(r))
+            .filter(|r| !whole || word_around(text, r.start).as_ref() == Some(r))
             .collect();
     }
     let same = |a: char, b: char| {
@@ -2134,7 +2135,10 @@ impl Workbench {
                     return Some(m);
                 }
             }
-            let found = occurrences(&text, &text[sel.clone()], m.whole);
+            // The open find widget's Match Case applies, as in VS Code.
+            let find = e.search_session();
+            let case = find.open && !find.case_insensitive;
+            let found = occurrences(&text, &text[sel.clone()], m.whole, case);
             if op == Occurrence::All {
                 for r in found {
                     e.add_selection(r, cx);
@@ -5185,14 +5189,21 @@ mod tests {
     fn find_occurrences() {
         let starts =
             |found: Vec<std::ops::Range<usize>>| found.iter().map(|r| r.start).collect::<Vec<_>>();
-        assert_eq!(starts(occurrences("a ab a_ A a", "a", true)), [0, 10]);
         assert_eq!(
-            starts(occurrences("a ab a_ A a", "a", false)),
+            starts(occurrences("a ab a_ A a", "a", true, false)),
+            [0, 10]
+        );
+        assert_eq!(
+            starts(occurrences("a ab a_ A a", "a", false, false)),
             [0, 2, 5, 8, 10]
         );
         // Folding past ASCII, and a fold that changes a match's length.
-        assert_eq!(occurrences("Été été", "été", false), [0..5, 6..11]);
-        assert_eq!(occurrences("\u{212A}m km", "km", false), [0..4, 5..7]);
+        assert_eq!(occurrences("Été été", "été", false, false), [0..5, 6..11]);
+        assert_eq!(
+            occurrences("\u{212A}m km", "km", false, false),
+            [0..4, 5..7]
+        );
+        assert_eq!(occurrences("Été été", "été", false, true), [6..11]);
     }
 
     #[test]
