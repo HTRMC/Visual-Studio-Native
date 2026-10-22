@@ -218,6 +218,40 @@ const TERMINAL: usize = 3;
 /// VS Code's default `editor.tabSize`, spaces for indents.
 const TAB_SIZE: usize = 4;
 
+/// VS Code's `editor.detectIndentation`, after its `guessIndentation`: tabs
+/// when more lines start with a tab than with spaces, else the indent step
+/// most often between neighbouring space-indented lines (2, 4, 6, 8, 3, 5,
+/// 7 winning ties in that order), else the default.
+fn detect_indent(text: &str) -> TabSize {
+    let (mut tabs, mut spaces, mut prev) = (0, 0, 0);
+    let mut steps = [0usize; 9];
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let lead = &line[..line.len() - line.trim_start_matches([' ', '\t']).len()];
+        if lead.starts_with('\t') {
+            tabs += 1;
+        } else if !lead.is_empty() {
+            spaces += 1;
+        }
+        if !lead.contains('\t') {
+            steps[lead.len().abs_diff(prev).min(8)] += 1;
+            prev = lead.len();
+        }
+    }
+    // Equal-indent neighbours say nothing about the step.
+    steps[0] = 0;
+    let step = [2, 4, 6, 8, 3, 5, 7]
+        .into_iter()
+        .fold(0, |best, s| if steps[s] > steps[best] { s } else { best });
+    TabSize {
+        tab_size: if tabs > spaces || step == 0 {
+            TAB_SIZE
+        } else {
+            step
+        },
+        hard_tabs: tabs > spaces,
+    }
+}
+
 struct Doc {
     /// `Untitled-N` for a new file that was never saved.
     path: PathBuf,
@@ -235,6 +269,8 @@ struct Doc {
     encoding: Encoding,
     /// Shows VS Code's binary placeholder instead of the editor (left empty).
     binary: bool,
+    /// Detected from the text as it opened.
+    indent: TabSize,
     untitled: bool,
 }
 
@@ -488,8 +524,10 @@ impl Workbench {
         } else {
             text.contains("\r\n")
         };
-        let editor = self.new_editor(&path, language_id(&path), text, window, cx);
+        let indent = detect_indent(&text);
+        let editor = self.new_editor(&path, language_id(&path), text, indent, window, cx);
         self.docs.push(Doc {
+            indent,
             lang: language_id(&path),
             path,
             saved: text_hash(&editor, cx),
@@ -526,8 +564,10 @@ impl Workbench {
         };
         let text = String::from_utf8_lossy(&bytes).into_owned();
         let (path, lang) = (self.docs[ix].path.clone(), self.docs[ix].lang);
-        let editor = self.new_editor(&path, lang, text, window, cx);
+        let indent = detect_indent(&text);
+        let editor = self.new_editor(&path, lang, text, indent, window, cx);
         let doc = &mut self.docs[ix];
+        doc.indent = indent;
         doc.saved = text_hash(&editor, cx);
         doc.editor = editor;
         doc.binary = false;
@@ -540,6 +580,7 @@ impl Workbench {
         path: &Path,
         lang: &str,
         text: String,
+        indent: TabSize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<EditorState> {
@@ -548,10 +589,7 @@ impl Workbench {
             EditorState::new(window, cx)
                 .language(lang)
                 .searchable(true)
-                .tab_size(TabSize {
-                    tab_size: TAB_SIZE,
-                    hard_tabs: false,
-                })
+                .tab_size(indent)
         });
         editor.update(cx, |e, cx| e.set_value(text, window, cx));
         self.attach_breakpoints(path, &editor, cx);
@@ -707,7 +745,8 @@ impl Workbench {
                     eprintln!("save {}: {err}", path.display());
                     return;
                 }
-                let editor = this.new_editor(&path, language_id(&path), text, window, cx);
+                let indent = this.docs[ix].indent;
+                let editor = this.new_editor(&path, language_id(&path), text, indent, window, cx);
                 let doc = &mut this.docs[ix];
                 doc.saved = text_hash(&editor, cx);
                 doc.lang = language_id(&path);
@@ -1930,7 +1969,13 @@ impl Workbench {
                     .child(format!("Ln {}, Col {col}", pos.line + 1))
                     .into_any_element(),
                 item("sb-indent", "Select Indentation")
-                    .child(format!("Spaces: {TAB_SIZE}"))
+                    .child(match doc.indent {
+                        TabSize {
+                            hard_tabs: true,
+                            tab_size,
+                        } => format!("Tab Size: {tab_size}"),
+                        TabSize { tab_size, .. } => format!("Spaces: {tab_size}"),
+                    })
                     .into_any_element(),
                 item("sb-enc", "Select Encoding")
                     .child(doc.encoding.label())
@@ -2715,7 +2760,16 @@ fn app_menu(
 
 #[cfg(test)]
 mod tests {
-    use super::{Encoding, with_eol};
+    use super::{Encoding, detect_indent, with_eol};
+
+    #[test]
+    fn indent() {
+        let guess = |t| (detect_indent(t).tab_size, detect_indent(t).hard_tabs);
+        assert_eq!(guess("a\n  b\n    c\n  d\n"), (2, false));
+        assert_eq!(guess("fn x() {\n    y\n        z\n}\n"), (4, false));
+        assert_eq!(guess("a\n\tb\n\t\tc\n"), (4, true));
+        assert_eq!(guess("plain\ntext\n"), (4, false));
+    }
 
     #[test]
     fn eol() {

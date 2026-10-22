@@ -123,7 +123,10 @@ Differences from VS Code still to close, smallest first within each area.
       endings; undo brings the old ones back.
 - [x] Clicking the language (or Change Language Mode) picks the editor's
       language.
-- [ ] Clicking Spaces/encoding opens their pickers.
+- [x] Indentation detected per file on open (`editor.detectIndentation`): status bar reads "Spaces: N" or "Tab Size: N".
+- [ ] Clicking Spaces/encoding opens their pickers (gpui-base has no runtime tab_size setter, so Indent Using rebuilds the editor).
+- [ ] Tab characters render zero-width: gpui-base shapes `	` as text instead of advancing to the next tab stop.
+- [ ] Status bar Col counts tabs at 4, not the file's detected tab size.
 - [ ] Change Language Mode rebuilds the editor (gpui-base's set_highlighter
       doesn't re-highlight a shown one), so undo history is lost.
 - [ ] Change Language Mode lacks VS Code's "Auto Detect" and "Configure

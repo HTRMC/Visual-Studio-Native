@@ -759,6 +759,8 @@ fn next_visible(v: usize, c: char) -> usize {
         | 127744..=128591 | 128640..=128764 | 128992..=129008 | 129280..=129535
         | 129648..=129782);
     match c {
+        // ponytail: VS Code's default tab stops, not the file's detected
+        // ones; pass the doc's indent through if Col must follow them.
         '\t' => v / TAB_SIZE * TAB_SIZE + TAB_SIZE,
         _ if wide => v + 2,
         _ => v + 1,
@@ -1636,7 +1638,8 @@ impl Workbench {
         );
         // ponytail: gpui-base's set_highlighter doesn't re-highlight a shown
         // editor, so it's rebuilt (as Save As does), dropping undo history.
-        let editor = self.new_editor(&path, id, text, window, cx);
+        let indent = self.docs[self.active].indent;
+        let editor = self.new_editor(&path, id, text, indent, window, cx);
         editor.update(cx, |e, cx| {
             e.set_cursor_position(pos, window, cx);
             e.set_scroll_offset(scroll, cx);
