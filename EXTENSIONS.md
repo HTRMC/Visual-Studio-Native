@@ -189,16 +189,17 @@ there.
    Ctrl+Shift+Space, with the active parameter in bold. Done.
 5. **WASM host.** wasmtime, a WIT world generated from the core API, and a
    sample plugin in Rust.
-   *Done:* `wit/vsn.wit` (messages, a status bar item, a log channel;
-   `activate` and `run-command` exported) and `src/workbench/wasmhost.rs`,
+   *Done:* `wit/vsn.wit` (messages, a status bar item, a log channel,
+   settings, the active document, quick picks and input boxes;
+   `activate` and `run-command` with its JSON arguments exported) and `src/workbench/wasmhost.rs`,
    one thread running every plugin, each in its own store with ~1s of fuel
    per call and 64 MB of memory, and no WASI, so no file, clock or network
    access. A core module from `wasm32-unknown-unknown` is turned into a
    component at load (`wit-component`), so a plugin needs no extra tools.
    Its messages take the JS host's path into the workbench; a trap unloads
    the plugin. `examples/hello-wasm` is a sample (wit-bindgen). *Left:*
-   providers, settings, documents and quick picks in the WIT world,
-   permissions to grant file or network access, command arguments.
+   providers and edits in the WIT world, permissions to grant file or
+   network access.
 
 ## Bun or Node
 

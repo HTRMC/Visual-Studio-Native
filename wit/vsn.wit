@@ -2,10 +2,18 @@
 /// editor, and what the editor calls in the plugin. Each plugin runs in its
 /// own store with a fuel and memory budget and no file, clock or network
 /// access.
-package vsn:plugin@0.1.0;
+package vsn:plugin@0.2.0;
 
 interface editor {
     enum severity { info, warning, error }
+
+    /// A text file open in an editor.
+    record document {
+        path: string,
+        /// VS Code's language id: "rust", "markdown", ...
+        language: string,
+        text: string,
+    }
 
     /// A notification, as `vscode.window.show*Message`.
     show-message: func(severity: severity, text: string);
@@ -13,6 +21,17 @@ interface editor {
     set-status: func(text: string);
     /// A line in the plugin's Output channel.
     log: func(text: string);
+    /// A setting's value as JSON, from settings.json or else the default in
+    /// the plugin's package.json; none when neither has it.
+    get-setting: func(key: string) -> option<string>;
+    /// The active editor's document, when it's a text file.
+    active-document: func() -> option<document>;
+    /// Asks the user to pick one of `items`: its index, or none when
+    /// dismissed. The plugin waits for the answer.
+    show-quick-pick: func(placeholder: string, items: list<string>) -> option<u32>;
+    /// Asks the user for a line of text, starting from `value`; none when
+    /// dismissed. The plugin waits for the answer.
+    show-input-box: func(placeholder: string, value: string) -> option<string>;
 }
 
 world plugin {
@@ -20,6 +39,7 @@ world plugin {
 
     /// Called once, when an activation event in package.json fires.
     export activate: func();
-    /// Runs a command the plugin contributes in package.json.
-    export run-command: func(command: string);
+    /// Runs a command the plugin contributes in package.json. `args` is a
+    /// JSON array of its arguments; a menu's file is `{"$uri": "file:///..."}`.
+    export run-command: func(command: string, args: string);
 }

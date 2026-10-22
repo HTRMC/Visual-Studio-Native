@@ -68,7 +68,7 @@ pub(super) struct Host {
     /// buttons' titles.
     pub(super) buttons: HashMap<SharedString, (u64, Vec<String>)>,
     /// The WASM host, started with the first WASM plugin.
-    wasm: Option<mpsc::Sender<wasmhost::Req>>,
+    wasm: Option<wasmhost::WasmHost>,
     wasm_generation: usize,
 }
 
@@ -88,7 +88,11 @@ impl Host {
 
     /// Answers the host's question `id`; null is cancelled.
     pub(super) fn answer(&self, id: u64, value: Value) {
-        self.send(json!({ "m": "answer", "id": id, "value": value }));
+        match (id >= wasmhost::ASKS, &self.wasm) {
+            (true, Some(wasm)) => wasm.answer(id, value),
+            (true, None) => {}
+            (false, _) => self.send(json!({ "m": "answer", "id": id, "value": value })),
+        }
     }
 
     pub fn send_settings(&self) {
@@ -114,6 +118,19 @@ fn runtimes() -> Vec<std::ffi::OsString> {
     }
     list.extend(["node", "bun"].map(Into::into));
     list
+}
+
+/// An extension's configuration defaults, by key.
+fn config_defaults(e: &Extension) -> serde_json::Map<String, Value> {
+    let mut defaults = serde_json::Map::new();
+    for c in e.contributes("configuration") {
+        for (key, prop) in c["properties"].as_object().into_iter().flatten() {
+            if !prop["default"].is_null() {
+                defaults.insert(key.clone(), prop["default"].clone());
+            }
+        }
+    }
+    defaults
 }
 
 /// A WASM plugin's module, from its manifest's `"vsn": { "wasm": ... }`.
@@ -660,12 +677,16 @@ impl Workbench {
                     if self.ext.wasm.is_none() {
                         self.start_wasm(cx);
                     }
+                    let defaults = (installed().iter().find(|e| e.id == id))
+                        .map_or_else(Default::default, config_defaults);
+                    let world = self.wasm_world(cx);
                     if let Some(host) = &self.ext.wasm {
                         host.send(wasmhost::Req::Activate {
                             id: id.clone(),
                             wasm,
-                        })
-                        .ok();
+                            defaults: defaults.into(),
+                            world,
+                        });
                     }
                 }
                 None => {
@@ -706,19 +727,34 @@ impl Workbench {
         if self.ext.out.is_none() {
             return;
         }
+        let editor = self.active_editor(cx);
+        self.ext
+            .send(json!({ "m": "activeEditor", "editor": editor }));
+    }
+
+    /// The active text editor, its file, text and selection, or null.
+    fn active_editor(&self, cx: &App) -> Value {
         let editor = (self.docs.get(self.active).filter(|d| !d.binary)).map(|d| {
             let e = d.editor.read(cx);
             let sel = e.selected_range();
             let [start, end] = [sel.start, sel.end].map(|o| e.text().offset_to_position(o));
             json!({
                 "uri": super::lsp::path_uri(&d.path),
+                "path": d.path,
                 "languageId": d.lang,
                 "text": e.value(),
                 "selection": [start, end],
             })
         });
-        self.ext
-            .send(json!({ "m": "activeEditor", "editor": editor }));
+        editor.unwrap_or_default()
+    }
+
+    /// What a WASM plugin can read of the editor during a call.
+    fn wasm_world(&self, cx: &App) -> wasmhost::World {
+        wasmhost::World {
+            settings: terminal::settings(),
+            editor: self.active_editor(cx),
+        }
     }
 
     /// Runs extension command `id`, activating its extension first.
@@ -730,7 +766,7 @@ impl Workbench {
     ) {
         self.activate_extensions(&format!("onCommand:{id}"), cx);
         // ponytail: a WASM plugin's commands are the ones it contributes; it
-        // can't register others, and gets no arguments.
+        // can't register others.
         let plugin = (installed().iter())
             .filter(|e| e.enabled && wasm_path(e).is_some())
             .find(|e| {
@@ -743,8 +779,9 @@ impl Workbench {
                 (host.send(wasmhost::Req::Run {
                     id: plugin,
                     command: id,
-                }))
-                .ok();
+                    args: args.into(),
+                    world: self.wasm_world(cx),
+                }));
             }
             (None, _, Some(_)) => {
                 self.send_active_editor(cx);
@@ -869,13 +906,7 @@ impl Workbench {
         let mut defaults = serde_json::Map::new();
         let mut extensions = Vec::new();
         for e in installed().iter().filter(|e| e.enabled) {
-            for c in e.contributes("configuration") {
-                for (key, prop) in c["properties"].as_object().into_iter().flatten() {
-                    if !prop["default"].is_null() {
-                        defaults.insert(key.clone(), prop["default"].clone());
-                    }
-                }
-            }
+            defaults.extend(config_defaults(e));
             extensions.push(json!({ "id": e.id, "dir": e.dir, "manifest": e.manifest }));
         }
         self.ext.send(json!({
@@ -1104,7 +1135,9 @@ mod tests {
         editor.add("editorTextFocus");
         editor.set("editorLangId", "markdown");
         let terminal = KeyContext::parse("Terminal terminalFocus").unwrap();
-        let eval = |when: &str, cx: &KeyContext| when_predicate(when).unwrap().eval(&[cx.clone()]);
+        let eval = |when: &str, cx: &KeyContext| {
+            when_predicate(when).unwrap().eval(std::slice::from_ref(cx))
+        };
         let md = "editorTextFocus && editorLangId == 'markdown' && !editorReadonly";
         assert!(eval(md, &editor));
         assert!(!eval(md, &terminal));
