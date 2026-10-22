@@ -2358,7 +2358,7 @@ impl Workbench {
             .as_deref()
             .and_then(|sel| self.expanded.contains(sel).then_some(sel).or(sel.parent()));
         let (click_path, cursor_path) = (path.clone(), path.clone());
-        let (wb, menu_path) = (cx.weak_entity(), path.clone());
+        let (wb, menu_path, clip) = (cx.weak_entity(), path.clone(), self.clip.is_some());
         h_flex()
             .id(ElementId::Name(path.to_string_lossy().to_string().into()))
             .on_drag(DraggedFile(path.clone()), |file, _, _, cx| {
@@ -2472,7 +2472,7 @@ impl Workbench {
                     cx.notify();
                 }),
             )
-            .context_menu(move |menu, _, _| explorer_menu(menu, &wb, &menu_path, is_dir))
+            .context_menu(move |menu, _, _| explorer_menu(menu, &wb, &menu_path, is_dir, clip))
             .into_any_element()
     }
 
@@ -3362,6 +3362,7 @@ fn explorer_menu(
     wb: &WeakEntity<Workbench>,
     path: &Path,
     is_dir: bool,
+    clip: bool,
 ) -> PopupMenu {
     type Act = fn(&mut Workbench, &Path, &mut Window, &mut Context<Workbench>);
     let item = |label: &'static str, action: Option<Box<dyn Action>>, act: Act| {
@@ -3402,11 +3403,12 @@ fn explorer_menu(
     .item(item("Copy", Some(Box::new(CopyFile)), |this, _, _, cx| {
         this.clip_file(false, cx)
     }))
-    .item(item(
-        "Paste",
-        Some(Box::new(PasteFile)),
-        |this, path, w, cx| this.paste_file(Some(path.to_path_buf()), w, cx),
-    ))
+    .item(
+        item("Paste", Some(Box::new(PasteFile)), |this, path, w, cx| {
+            this.paste_file(Some(path.to_path_buf()), w, cx)
+        })
+        .disabled(!clip),
+    )
     .separator()
     .item(item(
         "Copy Path",

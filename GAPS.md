@@ -234,9 +234,14 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Dragging in the explorer can't move files between folders.
 - [x] Ctrl+drag in the explorer doesn't copy.
 - [x] The explorer has no Cut/Copy/Paste (Ctrl+X/C/V and the row menu).
-- [ ] Explorer Paste is always enabled in the row menu (VS Code greys it out
-      with nothing copied), and files copied in Windows Explorer can't be
-      pasted into it (nor explorer items pasted out to Windows).
+- [x] Explorer Paste is always enabled in the row menu (VS Code greys it out
+      with nothing copied).
+- [ ] Files copied in Windows Explorer can't be pasted into the explorer,
+      nor explorer items pasted out to Windows (gpui's clipboard is text
+      and images only; needs CF_HDROP).
+- [ ] The explorer's empty area has no right-click menu (VS Code's New
+      File/Folder, Paste, Reveal, Open in Integrated Terminal, Find in
+      Folder for the root).
 - [ ] The explorer handles one item at a time: no Ctrl/Shift+click
       multi-select for drag, cut, copy or paste.
 - [ ] An explorer move or copy can't be undone (Ctrl+Z in the explorer), and
