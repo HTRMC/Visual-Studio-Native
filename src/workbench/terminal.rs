@@ -106,19 +106,47 @@ impl Terminal {
         (self.top() + row as usize, col)
     }
 
-    /// The link under the mouse, if any. Paths resolve against the shell's
-    /// cwd, else `root`.
-    fn link(&self, position: Point<Pixels>, root: Option<&Path>) -> Option<(u16, u16, u16, Link)> {
-        let root = self.parser.callbacks().cwd.as_deref().or(root);
+    /// A visible row, one char per cell.
+    fn row_chars(&self, row: u16) -> Vec<char> {
         let screen = self.parser.screen();
-        let (row, col) = self.cell(position, false);
-        let line: Vec<char> = (0..screen.size().1.get())
+        (0..screen.size().1.get())
             .map(|col| {
                 let cell = screen.cell(row, col);
                 cell.and_then(|c| c.contents().chars().next())
                     .unwrap_or(' ')
             })
-            .collect();
+            .collect()
+    }
+
+    /// The word under the mouse or, with `line`, its whole wrapped line.
+    fn unit_at(&self, position: Point<Pixels>, line: bool) -> ((usize, u16), (usize, u16)) {
+        let screen = self.parser.screen();
+        let (row, col) = self.cell(position, false);
+        let top = self.top();
+        if line {
+            let (rows, cols) = screen.size();
+            let (mut r0, mut r1) = (row, row);
+            while r0 > 0 && screen.row_wrapped(r0 - 1) {
+                r0 -= 1;
+            }
+            while r1 < rows.get() - 1 && screen.row_wrapped(r1) {
+                r1 += 1;
+            }
+            return ((top + r0 as usize, 0), (top + r1 as usize, cols.get()));
+        }
+        let (a, b) = word_span(&self.row_chars(row), col as usize);
+        (
+            (top + row as usize, a as u16),
+            (top + row as usize, b as u16),
+        )
+    }
+
+    /// The link under the mouse, if any. Paths resolve against the shell's
+    /// cwd, else `root`.
+    fn link(&self, position: Point<Pixels>, root: Option<&Path>) -> Option<(u16, u16, u16, Link)> {
+        let root = self.parser.callbacks().cwd.as_deref().or(root);
+        let (row, col) = self.cell(position, false);
+        let line = self.row_chars(row);
         let (a, b) = word_at(&line, col as usize)?;
         let link = link(&line[a..b].iter().collect::<String>(), root)?;
         Some((row, a as u16, b as u16, link))
@@ -1203,8 +1231,13 @@ impl Workbench {
                         t.report(0, false, ev.position);
                         return this.activate_terminal(id, window, cx);
                     }
-                    t.selection = Some(t.selection_end(ev.position)).map(|c| (c, c));
-                    t.selecting = true;
+                    // ponytail: dragging after a double or triple click
+                    // keeps the word or line; extend by whole units if missed.
+                    t.selecting = ev.click_count < 2;
+                    t.selection = Some(match ev.click_count {
+                        0 | 1 => (t.selection_end(ev.position), t.selection_end(ev.position)),
+                        n => t.unit_at(ev.position, n > 2),
+                    });
                     this.activate_terminal(id, window, cx);
                 }),
             )
@@ -1335,6 +1368,24 @@ fn text_between(
     }
     screen.set_scrollback(saved);
     text
+}
+
+/// The word around `col` for a double click, split on VS Code's default
+/// `terminal.integrated.wordSeparators`; a separator selects only itself.
+fn word_span(line: &[char], col: usize) -> (usize, usize) {
+    let sep = |c: char| " ()[]{}',\"`─‘’“”|".contains(c);
+    if line.get(col).is_none_or(|&c| sep(c)) {
+        return (col, col + 1);
+    }
+    let mut a = col;
+    while a > 0 && !sep(line[a - 1]) {
+        a -= 1;
+    }
+    let mut b = col + 1;
+    while b < line.len() && !sep(line[b]) {
+        b += 1;
+    }
+    (a, b)
 }
 
 fn sorted<T: Ord>((a, b): (T, T)) -> (T, T) {
@@ -1518,7 +1569,7 @@ mod tests {
 
     use gpui_kit::Keystroke;
 
-    use super::{Link, key_bytes, link, mouse_bytes, reflow, text_between, word_at};
+    use super::{Link, key_bytes, link, mouse_bytes, reflow, text_between, word_at, word_span};
 
     #[test]
     fn keys() {
@@ -1545,6 +1596,13 @@ mod tests {
         );
         assert_eq!(word(48).as_deref(), Some("src/main.rs:12:5"));
         assert_eq!(word(3), None);
+        let span = |col| {
+            let (a, b) = word_span(&line, col);
+            line[a..b].iter().collect::<String>()
+        };
+        assert_eq!(span(10), "https://code.visualstudio.com/docs");
+        assert_eq!(span(48), "src/main.rs:12:5:");
+        assert_eq!(span(3), " ");
 
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         assert_eq!(
