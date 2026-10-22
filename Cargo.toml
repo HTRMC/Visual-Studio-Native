@@ -33,3 +33,7 @@ wit-component = "0.262"
 
 [build-dependencies]
 embed-resource = "3"
+
+# Local fixes to gpui crates; see vendor/README.md.
+[patch.crates-io]
+gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
