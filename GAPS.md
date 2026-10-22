@@ -152,7 +152,7 @@ Differences from VS Code still to close, smallest first within each area.
 - [ ] Go menu's other navigation entries (Next/Previous Used Editor's
       Ctrl+Tab picker, Switch Group, Next/Previous Problem, Next/Previous
       Change) are missing.
-- [ ] Menus show only a chord's first key ("Ctrl+K" for Last Edit
-      Location's Ctrl+K Ctrl+Q, Save All's Ctrl+K S).
+- [x] Menus and the command palette showed only a chord's first key
+      ("Ctrl+K" for Last Edit Location's Ctrl+K Ctrl+Q, Save All's Ctrl+K S).
 - [ ] Do Not Disturb (the center's bell-slash button).
 - [ ] Notifications: several toasts stacked (only one warning exists so far).

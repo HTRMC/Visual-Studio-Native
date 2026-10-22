@@ -189,6 +189,16 @@ pub fn tip(text: &'static str) -> impl Fn(&mut Window, &mut App) -> AnyView {
     move |window, cx| component::tooltip::Tooltip::new(text).build(window, cx)
 }
 
+/// A tag per key of `action`'s binding: gpui-component's own hint shows only
+/// a chord's first key ("Ctrl+K" for Ctrl+K Ctrl+Q).
+pub fn kbds(action: &dyn Action, window: &Window) -> Vec<component::kbd::Kbd> {
+    let binding = window.highest_precedence_binding_for_action(action);
+    (binding.iter())
+        .flat_map(|b| b.keystrokes())
+        .map(|k| component::kbd::Kbd::new(k.as_keystroke().clone()))
+        .collect()
+}
+
 /// Square, hoverable toolbar button with a codicon (22x22, radius 5 like VS Code's action bar).
 pub fn action_button(id: impl Into<ElementId>, ch: char) -> Stateful<Div> {
     div()

@@ -26,7 +26,6 @@ use gpui_kit::component::{
     command::{Command, CommandItem, CommandState},
     highlighter::SyntaxHighlighter,
     input::{Position, RangeDecoration, RangeDecorationCollection, RangeDecorationStyle},
-    kbd::Kbd,
 };
 
 use super::terminal::{ANSI, COLORS, Profile, profiles, set_default_profile};
@@ -1421,10 +1420,8 @@ impl Row {
         } else {
             col::fg_muted()
         };
-        let kbd = self
-            .action
-            .as_ref()
-            .and_then(|a| Kbd::binding_for_action(a.as_ref(), None, window));
+        let kbd =
+            (self.action.as_ref()).map(|a| h_flex().gap_1().children(kbds(a.as_ref(), window)));
         h_flex()
             .flex_1()
             .gap(px(6.))

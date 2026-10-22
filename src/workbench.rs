@@ -32,7 +32,7 @@ mod search;
 mod terminal;
 
 use crate::theme::{
-    action_button, c, codicon, col, file_icon, icon, language_id, language_label, tip,
+    action_button, c, codicon, col, file_icon, icon, kbds, language_id, language_label, tip,
 };
 
 actions!(
@@ -2590,14 +2590,14 @@ fn app_menu(
             .menu("New Window", noop())
             .separator()
             .menu("Open File...", Box::new(OpenFile))
-            .menu("Open Folder...", Box::new(OpenFolder))
+            .map(|m| chord(m, "Open Folder...", OpenFolder))
             .submenu("Open Recent", window, cx, |m, _, _| {
                 m.menu("More...", Box::new(Noop))
             })
             .separator()
             .menu("Save", Box::new(Save))
             .menu("Save As...", noop())
-            .menu("Save All", Box::new(SaveAll))
+            .map(|m| chord(m, "Save All", SaveAll))
             .separator()
             .menu("Auto Save", noop())
             .submenu("Preferences", window, cx, |m, _, _| {
@@ -2668,7 +2668,7 @@ fn app_menu(
         "Go" => menu
             .menu("Back", Box::new(GoBack))
             .menu("Forward", Box::new(GoForward))
-            .menu("Last Edit Location", Box::new(GoToLastEditLocation))
+            .map(|m| chord(m, "Last Edit Location", GoToLastEditLocation))
             .separator()
             .submenu("Switch Editor", window, cx, |m, _, _| {
                 m.menu("Next Editor", Box::new(NextEditor))
@@ -2753,4 +2753,18 @@ fn action_tip(ch: char) -> &'static str {
         icon::CHEVRON_UP => "Maximize Panel Size",
         _ => "Views and More Actions...",
     }
+}
+
+/// A menu item bound to a chord, which the menu's own hint cuts to its first key.
+fn chord(menu: PopupMenu, label: &'static str, action: impl Action) -> PopupMenu {
+    let boxed = action.boxed_clone();
+    menu.menu_element(Box::new(action), move |window, _| {
+        let keys = kbds(boxed.as_ref(), window).into_iter().map(|k| {
+            // As the menu styles its own hint.
+            k.p_0().min_w_0().border_0().bg(transparent_white())
+        });
+        (h_flex().w_full().gap_3().items_center().justify_between())
+            .child(label)
+            .child(h_flex().gap_1().children(keys))
+    })
 }
