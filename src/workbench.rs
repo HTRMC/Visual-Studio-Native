@@ -22,7 +22,7 @@ use gpui_kit::component::{
     v_resizable,
 };
 use gpui_kit::{
-    base::{h_flex, v_flex},
+    base::{Scrollbar, ScrollbarMode, ScrollbarThumbStyle, h_flex, v_flex},
     prelude::FluentBuilder as _,
     *,
 };
@@ -33,7 +33,7 @@ mod search;
 mod terminal;
 
 use crate::theme::{
-    action_button, c, codicon, col, file_icon, icon, kbds, language_id, language_label, tip,
+    action_button, c, ca, codicon, col, file_icon, icon, kbds, language_id, language_label, tip,
 };
 
 actions!(
@@ -453,6 +453,8 @@ pub struct Workbench {
     /// The file and row width the breadcrumb was last scrolled for, so it
     /// can be scrolled back by hand in between.
     crumbs_at: (PathBuf, Pixels),
+    /// The mouse is over the breadcrumb, which shows its scrollbar.
+    crumbs_hover: bool,
     /// Notifications added since the center was last open: the bell's dot.
     unseen: usize,
     /// Whether the bell's notification center is open.
@@ -512,6 +514,7 @@ impl Workbench {
             notes: Vec::new(),
             crumbs: ScrollHandle::new(),
             crumbs_at: Default::default(),
+            crumbs_hover: false,
             unseen: 0,
             center: false,
             act_hover: None,
@@ -2178,7 +2181,16 @@ impl Workbench {
             )
             // Absolute, so a long path scrolls instead of widening the editor.
             .child(
-                div().relative().h(px(22.)).flex_none().child(
+                div()
+                    .id("breadcrumbs-row")
+                    .relative()
+                    .h(px(22.))
+                    .flex_none()
+                    .on_hover(cx.listener(|this, hover: &bool, _, cx| {
+                        this.crumbs_hover = *hover;
+                        cx.notify();
+                    }))
+                    .child(
                     h_flex()
                         .id("breadcrumbs")
                         .absolute()
@@ -2189,7 +2201,27 @@ impl Workbench {
                         .overflow_x_scroll()
                         .track_scroll(&self.crumbs)
                         .children(crumbs),
-                ),
+                    )
+                    // VS Code's 3px breadcrumb scrollbar, shown while the
+                    // mouse is over the row and briefly after a scroll.
+                    .child(
+                        Scrollbar::horizontal(&self.crumbs)
+                            .mode(match self.crumbs_hover {
+                                true => ScrollbarMode::Always,
+                                false => ScrollbarMode::Scrolling,
+                            })
+                            .styles(|s| {
+                                let thumb = |bg| {
+                                    move |t: ScrollbarThumbStyle| {
+                                        t.width(px(3.)).inset(px(0.)).radius(px(0.)).bg(ca(bg))
+                                    }
+                                };
+                                s.track(|t| t.width(px(3.)).bg(transparent_black()))
+                                    .thumb(thumb(0x79797966))
+                                    .thumb_hover(thumb(0x646464B3))
+                                    .thumb_active(thumb(0xBFBFBF66))
+                            }),
+                    ),
             )
             .child(
                 div().flex_1().min_h_0().map(|d| {

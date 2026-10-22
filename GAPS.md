@@ -203,8 +203,11 @@ Differences from VS Code still to close, smallest first within each area.
       the file name; VS Code scrolls it to show the end.
 - [x] The breadcrumb can be scrolled back by hand with the wheel; it
       reveals the file name only on a file switch or a width change.
-- [ ] The breadcrumb shows no thin scrollbar on hover as VS Code's does, and
-      its items aren't clickable pickers.
+- [x] The breadcrumb shows VS Code's 3px scrollbar while the mouse is over
+      it (and briefly after a scroll), when the path overflows.
+- [ ] The breadcrumb's items aren't clickable pickers.
+- [ ] The editor tab strip and the explorer tree have no scrollbars (VS Code
+      shows a 3px one under the tabs and a 10px one on the tree on hover).
 - [x] Go menu: Back/Forward (Alt+Left/Right, the title bar arrows) and
       Last Edit Location (Ctrl+K Ctrl+Q) were placeholders.
 - [ ] Go to Symbol in Workspace (Ctrl+T) is still a placeholder.
