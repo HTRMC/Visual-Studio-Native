@@ -125,16 +125,36 @@ fn wants(ext: &Extension, event: &str, root: Option<&Path>) -> bool {
             || (event == "*")
                 .then(|| e.strip_prefix("workspaceContains:"))
                 .flatten()
-                // ponytail: plain paths only; glob patterns need a walk of the folder.
-                .is_some_and(|p| {
-                    !p.contains(['*', '?']) && root.is_some_and(|r| r.join(p).exists())
-                })
+                .is_some_and(|p| root.is_some_and(|r| contains(r, p)))
     });
     listed
         || event.strip_prefix("onCommand:").is_some_and(|cmd| {
             ext.contributes("commands")
                 .any(|c| c["command"].as_str() == Some(cmd))
         })
+}
+
+/// Whether folder `root` has a file matching `pattern`, a path or a glob
+/// relative to it (`**/*.zig`).
+// ponytail: walks on the UI thread, honouring .gitignore and giving up after
+// 10,000 entries; VS Code searches in the background with a timeout.
+fn contains(root: &Path, pattern: &str) -> bool {
+    if !pattern.contains(['*', '?', '[', '{']) {
+        return root.join(pattern).exists();
+    }
+    let mut b = ignore::overrides::OverrideBuilder::new(root);
+    let anchored = format!("/{}", pattern.trim_start_matches('/'));
+    let Ok(overrides) = b.add(&anchored).map(|_| ()).and_then(|()| b.build()) else {
+        return false;
+    };
+    // Whitelisted overrides keep only the matching files, but every folder.
+    (ignore::WalkBuilder::new(root)
+        .hidden(false)
+        .overrides(overrides)
+        .build())
+    .take(10_000)
+    .filter_map(Result::ok)
+    .any(|e| e.depth() > 0 && e.file_type().is_some_and(|t| t.is_file()))
 }
 
 /// The palette's extension commands, "Category: Title" and the command id,
@@ -610,7 +630,20 @@ impl Workbench {
 
 #[cfg(test)]
 mod tests {
-    use super::status_label;
+    use super::{contains, status_label};
+
+    #[test]
+    fn workspace_contains_globs() {
+        let root = std::env::temp_dir().join("vsn-contains");
+        std::fs::create_dir_all(root.join("src/deep")).unwrap();
+        std::fs::write(root.join("src/deep/a.zig"), "").unwrap();
+        assert!(contains(&root, "**/*.zig"));
+        assert!(contains(&root, "src/deep/a.zig"));
+        assert!(contains(&root, "src/**/a.zig"));
+        assert!(!contains(&root, "*.zig"));
+        assert!(!contains(&root, "**/*.rs"));
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     #[test]
     fn splits_status_icons() {

@@ -129,9 +129,9 @@ there.
    *Done:* contributed commands in the palette as "Category: Title"
    (`%nls%` titles localized, `commandPalette` `when: false` hidden),
    contributed keybindings, configuration defaults; every activation event
-   above, plus commands contributing `onCommand` implicitly. *Left:* `menus`,
-   `when` clauses, globs in `workspaceContains`, keybindings of a newly
-   installed extension before a restart.
+   above, plus commands contributing `onCommand` implicitly, and globs in
+   `workspaceContains`. *Left:* `menus`, `when` clauses, keybindings of a
+   newly installed extension before a restart.
 3. **JS host.** The bundled runtime and the `vscode` shim; a simple Open VSX
    extension that registers commands, shows messages and adds a status bar
    item works unchanged. The Bun vs Node comparison happens here.

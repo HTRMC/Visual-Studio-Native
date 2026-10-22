@@ -484,7 +484,8 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [ ] VS Code's own commands (`vscode.open`, `workbench.action.*`) called by extensions do nothing.
 - [ ] `globalState`/`workspaceState` are in memory only; `activeTextEditor` doesn't reach the host.
 - [x] Documents reach the host (open, change, save, close).
-- [ ] `workspaceContains:` matches plain paths only, not globs.
+- [x] `workspaceContains:` matches globs (`**/*.zig`) as well as paths.
+- [ ] `workspaceContains:` globs walk the folder on the UI thread, capped at 10,000 entries; VS Code searches in the background.
 - [x] Language servers on PATH (rust-analyzer, clangd, gopls, zls, basedpyright, typescript-language-server) give squiggles, the Problems panel and the status bar counts.
 - [x] Hover, completion (as you type and Ctrl+Space) and Go to Definition (F12, Ctrl+Click, into other files) from language servers.
 - [x] Format Document (Shift+Alt+F) from language servers, as one undo step.
