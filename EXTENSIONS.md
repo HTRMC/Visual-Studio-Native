@@ -148,8 +148,10 @@ there.
    collections, `TextDocument`, `CodeActionKind` and the other provider
    types. Stubs chain, iterate and accept assignments, so unsupported API
    doesn't break activation. `showQuickPick`, `showInputBox` (the palette)
-   and message buttons (the notification's). *Left:* VS Code's built-in
-   commands, persistent mementos, `activeTextEditor`, a
+   and message buttons (the notification's). `globalState` and
+   `workspaceState` kept in JSON files under `~/.vsn`, and a per-folder
+   `storageUri`. *Left:* VS Code's built-in
+   commands, `activeTextEditor`, a
    bundled runtime in the installer (today: `runtime\` next to vsn.exe, then
    PATH).
 4. **LSP client** into the provider registries; `vscode-languageclient`-based

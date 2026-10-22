@@ -758,26 +758,41 @@ Module._resolveFilename = function (request, ...rest) {
 
 // ---- activation --------------------------------------------------------------
 
-function memento() {
-  const m = new Map();
-  return { get: (k, d) => (m.has(k) ? m.get(k) : d), update: async (k, v) => { m.set(k, v); }, keys: () => [...m.keys()], setKeysForSync() {} };
+// A Memento kept in a JSON file (VS Code uses SQLite), or in memory without one.
+function memento(file) {
+  let m = {};
+  try { if (file) m = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
+  return {
+    get: (k, d) => (Object.hasOwn(m, k) ? m[k] : d),
+    // Setting undefined removes the key, as in VS Code.
+    update: async (k, v) => {
+      if (v === undefined) delete m[k]; else m[k] = v;
+      if (!file) return;
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify(m));
+    },
+    keys: () => Object.keys(m),
+    setKeysForSync() {},
+  };
 }
 
 async function activate(id) {
   const e = extensions.get(id);
   if (!e || e.active) return;
   const storage = path.join(os.homedir(), '.vsn', 'globalStorage', id);
+  // Per folder, as VS Code's workspaceStorage/<hash>; none without a folder.
+  const hash = root && require('crypto').createHash('md5').update(root.toLowerCase()).digest('hex');
+  const local = hash && path.join(os.homedir(), '.vsn', 'workspaceStorage', hash, id);
   const context = {
     subscriptions: [],
     extensionPath: e.dir,
     extensionUri: Uri.file(e.dir),
     asAbsolutePath: (rel) => path.join(e.dir, rel),
-    // ponytail: in memory, so state is lost when vsn closes.
-    globalState: memento(),
-    workspaceState: memento(),
+    globalState: memento(path.join(storage, 'state.json')),
+    workspaceState: memento(local && path.join(local, 'state.json')),
     secrets: { get: async () => undefined, store: async () => {}, delete: async () => {}, onDidChange: never },
-    storagePath: storage, globalStoragePath: storage, logPath: storage,
-    storageUri: Uri.file(storage), globalStorageUri: Uri.file(storage), logUri: Uri.file(storage),
+    storagePath: local || undefined, globalStoragePath: storage, logPath: storage,
+    storageUri: local ? Uri.file(local) : undefined, globalStorageUri: Uri.file(storage), logUri: Uri.file(storage),
     extensionMode: 1,
     extension: vscodeExtensions.getExtension(id),
     environmentVariableCollection: stubs('environmentVariableCollection'),

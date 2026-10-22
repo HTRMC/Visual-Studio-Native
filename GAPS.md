@@ -476,6 +476,8 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [ ] Extension keybindings take effect only after a restart; ones with a `when` clause are skipped.
 - [ ] `when` clauses and `menus` (editor title, context menus) for extension commands.
 - [x] Quick pick, input box and message buttons for extensions, in the palette and the notification.
+- [x] `globalState`/`workspaceState` persist (JSON under `~/.vsn/globalStorage` and `workspaceStorage`); `storageUri` is per folder.
+- [ ] `secrets` is a stub that stores nothing; `setKeysForSync` does nothing (no settings sync).
 - [ ] Extension quick picks pick one even with `canPickMany`, `createQuickPick`/`createInputBox` are stubs, input boxes don't run `validateInput`, show `prompt` only as the placeholder, and a password box reads as cancelled; `modal` messages are toasts.
 - [x] Output channels, the extension host's console and language server logs
       show in the Output panel, picked from its channel dropdown.
