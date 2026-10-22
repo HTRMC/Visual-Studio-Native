@@ -123,8 +123,13 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Tabs have a right-click menu: Close, Close Others, Close to the
       Right, Close Saved, Close All, Copy (Relative) Path, Reveal in File
       Explorer; each is in the palette too.
-- [ ] The tab menu lacks Reveal in Explorer View, Keep Open/Pin, Split and
-      Share.
+- [x] The tab menu's Reveal in Explorer View (File: Reveal Active File in
+      Explorer View) opens the file's folders and scrolls its row in.
+- [ ] The tab menu lacks Keep Open/Pin, Split and Share.
+- [ ] The explorer doesn't follow the active editor (VS Code's
+      `explorer.autoReveal` opens folders to it on every switch).
+- [ ] The explorer's selected row hugs its name instead of spanning the
+      side bar's width.
 - [x] The explorer's files and folders have a right-click menu: Open,
       Reveal in File Explorer, Open in Integrated Terminal (a new shell in
       that folder), Copy Path, Copy Relative Path.

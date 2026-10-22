@@ -80,6 +80,10 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
             Box::new(RevealInFileExplorer),
         ),
         (
+            "File: Reveal Active File in Explorer View",
+            Box::new(RevealInExplorerView),
+        ),
+        (
             "View: Toggle Primary Side Bar Visibility",
             Box::new(ToggleSidebar),
         ),

@@ -52,6 +52,7 @@ actions!(
         CopyPath,
         CopyRelativePath,
         RevealInFileExplorer,
+        RevealInExplorerView,
         Quit,
         ToggleSidebar,
         TogglePanel,
@@ -417,6 +418,7 @@ impl Encoding {
 pub struct Workbench {
     root: Option<PathBuf>,
     expanded: HashSet<PathBuf>,
+    tree_scroll: UniformListScrollHandle,
     /// Explorer listings (folders first, then name), dropped when the watcher sees them change.
     dirs: HashMap<PathBuf, Vec<(PathBuf, bool)>>,
     watcher: Option<(notify::RecommendedWatcher, Task<()>)>,
@@ -475,6 +477,7 @@ impl Workbench {
         let mut this = Self {
             root,
             expanded: HashSet::new(),
+            tree_scroll: UniformListScrollHandle::new(),
             dirs: HashMap::new(),
             watcher: None,
             quitting: false,
@@ -1671,6 +1674,7 @@ impl Workbench {
                                     .collect::<Vec<_>>()
                             }),
                         )
+                        .track_scroll(&self.tree_scroll)
                         .flex_1()
                         .min_h_0(),
                     ),
@@ -1766,6 +1770,23 @@ impl Workbench {
             }
         });
         self.watcher = Some((watcher, task));
+    }
+
+    /// Reveal in Explorer View: the explorer shows with `path`'s folders open
+    /// and its row scrolled into view.
+    fn reveal_in_tree(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let Some(root) = self.root.clone().filter(|r| path.starts_with(r)) else {
+            return;
+        };
+        let parents = path.ancestors().skip(1).take_while(|a| *a != root);
+        self.expanded.extend(parents.map(Path::to_path_buf));
+        (self.root_open, self.sidebar, self.view) = (true, true, View::Explorer);
+        let mut rows = Vec::new();
+        self.tree_rows(&root, 0, &mut rows);
+        if let Some(ix) = rows.iter().position(|(p, ..)| p == path) {
+            self.tree_scroll.scroll_to_item(ix, ScrollStrategy::Center);
+        }
+        cx.notify();
     }
 
     /// Visible explorer rows (path, depth, is_dir), reading folders only on a cache miss.
@@ -2735,6 +2756,11 @@ impl Render for Workbench {
             .on_action(cx.listener(Self::quit))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::toggle_panel))
+            .on_action(cx.listener(|this, _: &RevealInExplorerView, _, cx| {
+                if let Some(doc) = this.docs.get(this.active) {
+                    this.reveal_in_tree(&doc.path.clone(), cx)
+                }
+            }))
             .on_action(cx.listener(|this, _: &CloseAllEditors, w, cx| {
                 this.close_editors(|_, _| true, w, cx)
             }))
@@ -3378,4 +3404,8 @@ fn editor_tab_menu(
         Some(Box::new(RevealInFileExplorer)),
         |this, ix, _, _| this.reveal_in_os(ix),
     ))
+    .item(item("Reveal in Explorer View", None, |this, ix, w, cx| {
+        this.activate(ix, w, cx);
+        this.reveal_in_tree(&this.docs[ix].path.clone(), cx)
+    }))
 }
