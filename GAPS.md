@@ -136,8 +136,12 @@ Differences from VS Code still to close, smallest first within each area.
       no file watcher and no workspace `.vscode/settings.json`.
 - [ ] Setting the default terminal profile rewrites settings.json as plain
       JSON, dropping its comments (VS Code edits the one property in place).
-- [ ] A settings.json that doesn't parse is silently ignored; VS Code shows
-      an error notification pointing at it.
+- [x] Writing the default terminal profile into a settings.json that doesn't
+      parse failed silently (VS Code: "Unable to write into user settings...").
+- [ ] That notification lacks VS Code's "Open Settings" button and error
+      severity (toasts are warnings only, without actions).
+- [ ] A settings.json that doesn't parse is ignored whole; VS Code's lenient
+      JSONC parser keeps the values it can read and underlines the errors.
 - [x] The explorer draws indent guides while the mouse is over the tree.
 - [x] The selection's guide (its folder's, or an open folder's own) is lit
       and stays shown; the others are dimmer and show on hover.

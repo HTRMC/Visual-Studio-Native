@@ -2427,7 +2427,9 @@ impl Workbench {
                 (None, None)
             }
             Some(&Pick::Profile(ix, _)) => {
-                set_default_profile(&p.profiles.as_ref().unwrap()[ix].name);
+                if let Err(err) = set_default_profile(&p.profiles.as_ref().unwrap()[ix].name) {
+                    self.warn(err, cx);
+                }
                 (None, None)
             }
             Some(Pick::Icons(icons)) => {
