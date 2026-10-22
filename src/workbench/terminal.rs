@@ -876,6 +876,15 @@ impl Workbench {
         self.search_terminal(cx);
     }
 
+    /// F3 and Shift+F3: the match below or above (`up`), opening find first
+    /// if it's closed.
+    pub(super) fn find_step(&mut self, up: bool, window: &mut Window, cx: &mut Context<Self>) {
+        match self.terminals.finding {
+            true => self.step_match(up, cx),
+            false => self.find_in_terminal(window, cx),
+        }
+    }
+
     /// Selects the match above (`up`) or below the current one, wrapping.
     fn step_match(&mut self, up: bool, cx: &mut Context<Self>) {
         let Some(t) = self.terminals.list.get_mut(self.terminals.active) else {
@@ -946,6 +955,7 @@ impl Workbench {
         Some(
             h_flex()
                 .id("terminal-find")
+                .key_context("TerminalFind")
                 .absolute()
                 .top_0()
                 .right(px(PAD_R + 4.))

@@ -75,7 +75,7 @@ Differences from VS Code still to close, smallest first within each area.
       scrollback drops its oldest lines.
 - [x] Find searches only the new output, not the whole scrollback, per
       chunk.
-- [ ] Terminal: Find Next/Previous (F3/Shift+F3) from the terminal or the
+- [x] Terminal: Find Next/Previous (F3/Shift+F3) from the terminal or the
       palette, not only Enter in find's box.
 - [ ] Dragging a tab onto the editor area moves the terminal into an editor.
 - [ ] Shell integration: command decorations, run recent command, go to

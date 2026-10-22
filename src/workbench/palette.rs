@@ -91,6 +91,8 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
             Box::new(FocusPreviousTerminal),
         ),
         ("Terminal: Focus Find", Box::new(FindInTerminal)),
+        ("Terminal: Find Next", Box::new(FindNextInTerminal)),
+        ("Terminal: Find Previous", Box::new(FindPreviousInTerminal)),
         (
             "Terminal: Toggle Size to Content Width",
             Box::new(ToggleSizeToContentWidth),
