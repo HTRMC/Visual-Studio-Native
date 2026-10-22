@@ -2219,6 +2219,15 @@ impl Render for Workbench {
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::open_file))
             .on_action(cx.listener(|this, _: &GoBack, window, cx| this.navigate(true, window, cx)))
+            // The mouse's side buttons.
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Back),
+                cx.listener(|this, _, window, cx| this.navigate(true, window, cx)),
+            )
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Forward),
+                cx.listener(|this, _, window, cx| this.navigate(false, window, cx)),
+            )
             .on_action(
                 cx.listener(|this, _: &GoForward, window, cx| this.navigate(false, window, cx)),
             )
