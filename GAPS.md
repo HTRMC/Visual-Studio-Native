@@ -9,7 +9,8 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Double-click selects a word, triple-click a line.
 - [x] Dragging after a double or triple click extends by whole words or lines.
 - [x] Shift+click extends the selection.
-- [ ] Alt+drag selects a column block.
+- [x] Alt+drag selects a column block.
+- [ ] Alt+click moves the prompt cursor to the clicked cell.
 - [x] Dragging past the top or bottom edge scrolls while selecting.
 - [ ] A drag released outside the window keeps scrolling until the mouse
       comes back (no mouse capture).

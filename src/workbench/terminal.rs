@@ -64,6 +64,8 @@ pub(super) struct Terminal {
     /// The word, or with true the line, a double or triple click selected;
     /// a drag from it extends by whole words or lines.
     unit: Option<(bool, Span)>,
+    /// Alt+drag selects the columns between the ends on each line.
+    block: bool,
     /// The mouse while dragging, and whether a timer scrolls toward it.
     drag_at: Point<Pixels>,
     autoscrolling: bool,
@@ -672,6 +674,7 @@ impl Workbench {
             selection: None,
             selecting: false,
             unit: None,
+            block: false,
             drag_at: Point::default(),
             autoscrolling: false,
             hover: None,
@@ -835,10 +838,20 @@ impl Workbench {
         let Some(t) = self.terminal(id) else {
             return false;
         };
-        let Some((a, b)) = t.selection.filter(|(a, b)| a != b).map(sorted) else {
+        let Some(((l0, c0), (l1, c1))) = t.selection.filter(|(a, b)| a != b).map(sorted) else {
             return false;
         };
-        let text = text_between(t.parser.screen_mut(), a, b);
+        let screen = t.parser.screen_mut();
+        let text = match t.block {
+            true => (l0..=l1)
+                .map(|l| text_between(screen, (l, c0.min(c1)), (l, c0.max(c1))))
+                .collect::<Vec<_>>()
+                .join(
+                    "
+",
+                ),
+            false => text_between(screen, (l0, c0), (l1, c1)),
+        };
         t.selection = None;
         cx.write_to_clipboard(ClipboardItem::new_string(text));
         cx.notify();
@@ -870,6 +883,7 @@ impl Workbench {
             let (rows, cols) = screen.size();
             let last = screen.scrollback_len() + rows.get() as usize - 1;
             t.selection = Some(((0, 0), (last, cols.get())));
+            t.block = false;
             cx.notify();
         }
     }
@@ -1193,7 +1207,7 @@ impl Workbench {
         let screen = t.parser.screen();
         let (rows, cols) = screen.size();
         let (fg0, bg0) = (c(0xCCCCCC), col::bg());
-        let selection = t.selection.map(sorted);
+        let (selection, block) = (t.selection, t.block);
         let top = t.top();
         let hover = t.hover;
         let lines = (0..rows.get()).map(|row| {
@@ -1222,7 +1236,7 @@ impl Workbench {
                     fg = fg.opacity(0.5);
                 }
                 let at = (top + row as usize, col);
-                if selection.is_some_and(|(a, b)| a <= at && at < b) {
+                if selection.is_some_and(|s| selected(s, block, at)) {
                     bg = Some(c(0x264F78));
                 }
                 let link = hover.is_some_and(|(r, a, b)| r == row && (a..b).contains(&col));
@@ -1318,6 +1332,7 @@ impl Workbench {
                         return this.activate_terminal(id, window, cx);
                     }
                     t.selecting = true;
+                    t.block = ev.modifiers.alt && ev.click_count < 2;
                     let line = ev.click_count > 2;
                     t.unit = (ev.click_count > 1).then(|| (line, t.unit_at(ev.position, line)));
                     let end = t.selection_end(ev.position);
@@ -1489,6 +1504,16 @@ fn word_span(line: &[char], col: usize) -> (usize, usize) {
         b += 1;
     }
     (a, b)
+}
+
+/// Whether the cell at `at` is in a selection, or with `block` in the
+/// columns between its ends.
+fn selected(selection: Span, block: bool, at: (usize, u16)) -> bool {
+    let ((l0, c0), (l1, c1)) = sorted(selection);
+    match block {
+        true => (l0..=l1).contains(&at.0) && (c0.min(c1)..c0.max(c1)).contains(&at.1),
+        false => (l0, c0) <= at && at < (l1, c1),
+    }
 }
 
 fn sorted<T: Ord>((a, b): (T, T)) -> (T, T) {
@@ -1672,7 +1697,9 @@ mod tests {
 
     use gpui_kit::Keystroke;
 
-    use super::{Link, key_bytes, link, mouse_bytes, reflow, text_between, word_at, word_span};
+    use super::{
+        Link, key_bytes, link, mouse_bytes, reflow, selected, text_between, word_at, word_span,
+    };
 
     #[test]
     fn keys() {
@@ -1767,5 +1794,10 @@ mod tests {
         );
         assert_eq!(text_between(screen, (1, 1), (4, 1)), "1\nl2\nabcde");
         assert_eq!(screen.scrollback(), 1);
+        // A block dragged from (1, 3) back to (3, 1) covers columns 1 and 2.
+        let block = ((1, 3), (3, 1));
+        assert!(selected(block, true, (2, 1)) && selected(block, true, (3, 2)));
+        assert!(!selected(block, true, (2, 3)) && !selected(block, true, (0, 1)));
+        assert!(selected(block, false, (2, 3)));
     }
 }
