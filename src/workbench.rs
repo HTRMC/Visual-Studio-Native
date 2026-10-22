@@ -2015,6 +2015,11 @@ impl Workbench {
         let (wb, menu_path) = (cx.weak_entity(), path.clone());
         h_flex()
             .id(ElementId::Name(path.to_string_lossy().to_string().into()))
+            .when(!is_dir, |d| {
+                d.on_drag(DraggedFile(path.clone()), |file, _, _, cx| {
+                    cx.new(|_| file.clone())
+                })
+            })
             .relative()
             .h(px(22.))
             .w_full()
@@ -2188,6 +2193,14 @@ impl Workbench {
                 .drag_over::<DraggedEditor>(|s, _, _, _| s.bg(col::drop()))
                 .on_drop(cx.listener(move |this, tab: &DraggedEditor, window, cx| {
                     this.move_doc(tab.0, ix, window, cx)
+                }))
+                .drag_over::<DraggedFile>(|s, _, _, _| s.bg(col::drop()))
+                .on_drop(cx.listener(move |this, file: &DraggedFile, window, cx| {
+                    this.open_path(file.0.clone(), window, cx);
+                    if let Some(from) = this.docs.iter().position(|d| d.path == file.0) {
+                        this.move_doc(from, ix, window, cx);
+                    }
+                    cx.stop_propagation();
                 }))
                 .context_menu({
                     let (wb, editor) = (wb.clone(), doc.editor.clone());
@@ -2997,7 +3010,14 @@ impl Render for Workbench {
             self.title = title;
         }
         let sidebar = self.render_sidebar(cx);
-        let editor = self.render_editor_group(cx);
+        // A file dragged from the explorer opens where it's dropped.
+        let editor = div()
+            .size_full()
+            .drag_over::<DraggedFile>(|s, _, _, _| s.bg(col::drop()))
+            .on_drop(cx.listener(|this, file: &DraggedFile, window, cx| {
+                this.open_path(file.0.clone(), window, cx)
+            }))
+            .child(self.render_editor_group(cx));
         let panel = self.render_panel(window, cx);
         let palette = self.render_palette(window, cx);
         let toolbar = self.render_debug_toolbar(window, cx);
@@ -3703,11 +3723,33 @@ struct DraggedEditor(usize, SharedString);
 
 impl Render for DraggedEditor {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .px(px(8.))
-            .py(px(2.))
-            .bg(col::selected())
-            .text_color(col::fg())
-            .child(self.1.clone())
+        drag_label(self.1.clone())
+    }
+}
+
+/// The name drawn under the mouse while a tab or file is dragged.
+fn drag_label(name: SharedString) -> Div {
+    div()
+        .px(px(8.))
+        .py(px(2.))
+        .bg(col::selected())
+        .text_color(col::fg())
+        .child(name)
+}
+
+/// A file dragged from the explorer.
+#[derive(Clone)]
+struct DraggedFile(PathBuf);
+
+impl Render for DraggedFile {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        drag_label(
+            self.0
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+                .into(),
+        )
     }
 }
