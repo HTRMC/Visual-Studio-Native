@@ -347,6 +347,8 @@ pub struct Workbench {
     unseen: usize,
     /// Whether the bell's notification center is open.
     center: bool,
+    /// The OS window's title, as last set.
+    title: String,
     debug: debug::Debug,
     /// Spawned when the Terminal tab first shows; the error if the shell didn't start.
     terminals: terminal::Terminals,
@@ -385,6 +387,7 @@ impl Workbench {
             crumbs: ScrollHandle::new(),
             unseen: 0,
             center: false,
+            title: String::new(),
             debug: debug::Debug::new(window, cx),
             terminals: Default::default(),
         };
@@ -398,6 +401,28 @@ impl Workbench {
                 .unwrap_or(true)
         });
         this
+    }
+
+    /// VS Code's window.title: "● {file} - {folder} - {app}", the dot while dirty.
+    fn window_title(&self) -> String {
+        let doc = self.docs.get(self.active);
+        let mut parts: Vec<String> = (doc.iter())
+            .map(|d| {
+                d.path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into()
+            })
+            .chain(self.root_name())
+            .collect();
+        parts.push("Visual Studio Native".into());
+        let dirty = if doc.is_some_and(|d| d.dirty) {
+            "● "
+        } else {
+            ""
+        };
+        format!("{dirty}{}", parts.join(" - "))
     }
 
     fn root_name(&self) -> Option<String> {
@@ -898,27 +923,8 @@ impl Workbench {
             .root_name()
             .unwrap_or_else(|| "Visual Studio Native".into());
         // VS Code's "Search {workspace} (Ctrl+P) — {window title}".
-        let tooltip: SharedString = {
-            let doc = self.docs.get(self.active);
-            let mut parts: Vec<String> = doc
-                .map(|d| {
-                    d.path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .into()
-                })
-                .into_iter()
-                .chain(self.root_name())
-                .collect();
-            parts.push("Visual Studio Native".into());
-            let dirty = if doc.is_some_and(|d| d.dirty) {
-                "● "
-            } else {
-                ""
-            };
-            format!("Search {title} (Ctrl+P) — {dirty}{}", parts.join(" - ")).into()
-        };
+        let tooltip: SharedString =
+            format!("Search {title} (Ctrl+P) — {}", self.window_title()).into();
 
         h_flex()
             .h(px(35.))
@@ -2109,6 +2115,11 @@ impl Workbench {
 
 impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let title = self.window_title();
+        if title != self.title {
+            window.set_window_title(&title);
+            self.title = title;
+        }
         let sidebar = self.render_sidebar(cx);
         let editor = self.render_editor_group(cx);
         let panel = self.render_panel(window, cx);
