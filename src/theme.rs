@@ -432,6 +432,17 @@ pub fn file_icon(path: &Path) -> AnyElement {
         .or(by_ext)
         .or_else(|| s.languages.get(language_id(path)))
         .unwrap_or(&s.default);
+    seti_glyph(id)
+}
+
+/// Seti icon for a language id, as Change Language Mode's rows show it.
+pub fn language_icon(id: &str) -> AnyElement {
+    let s = seti();
+    seti_glyph(s.languages.get(id).unwrap_or(&s.default))
+}
+
+fn seti_glyph(id: &str) -> AnyElement {
+    let s = seti();
     let (ch, color) = s
         .defs
         .get(id)

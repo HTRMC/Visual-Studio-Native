@@ -30,7 +30,9 @@ use gpui_kit::component::{
 
 use super::terminal::{ANSI, COLORS, Profile, profiles, set_default_profile, set_setting};
 use super::*;
-use crate::theme::{LANGUAGES, c, ca, codicons, col, file_icon, icon, language_label};
+use crate::theme::{
+    LANGUAGES, c, ca, codicons, col, file_icon, icon, language_icon, language_label,
+};
 
 /// Workspace files shown at once; the best matches win.
 const SHOWN: usize = 50;
@@ -1534,6 +1536,8 @@ enum RowIcon {
     None,
     File,
     Symbol(char, Hsla),
+    /// The Seti icon of a language id.
+    Lang(&'static str),
 }
 
 /// A list row like VS Code's quick pick: icon, highlighted label, dimmer
@@ -1586,6 +1590,7 @@ impl Row {
                 RowIcon::None => this,
                 RowIcon::File => this.child(file_icon(Path::new(self.label.as_ref()))),
                 RowIcon::Symbol(ch, color) => this.child(codicon(ch).text_color(color)),
+                RowIcon::Lang(id) => this.child(language_icon(id)),
             })
             .child(
                 StyledText::new(self.label.clone()).with_highlights(highlights(
@@ -2688,7 +2693,7 @@ impl Workbench {
                     let current = matches!(&p.associating, Some((_, by_name)) if by_name == id);
                     Row {
                         desc: if current { "Current Association" } else { "" }.into(),
-                        ..row(RowIcon::None, label, hits)
+                        ..row(RowIcon::Lang(id), label, hits)
                     }
                     .item()
                 }

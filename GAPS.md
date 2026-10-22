@@ -221,8 +221,9 @@ Differences from VS Code still to close, smallest first within each area.
 - [ ] Change Language Mode lacks VS Code's "Auto Detect" row (needs language
       detection) and "Configure 'X' language based settings..." (no `[lang]`
       settings here).
-- [ ] Change Language Mode's rows have no language icons (VS Code shows each
-      language's file icon).
+- [x] Change Language Mode's rows show each language's Seti icon.
+- [ ] Change Language Mode's list is the 34 built-in ids; VS Code lists every
+      registered language (~70 built in, plus extensions).
 - [x] `files.associations` (glob → language id) picks an opened file's language.
 - [ ] `files.associations` path globs match relative to the workspace root
       (VS Code: absolute path), and file icons still follow the file name.
