@@ -1376,14 +1376,22 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Every selected tab goes along, in order.
+        let ids = self.targets(src);
         let list = &mut self.terminals.list;
-        let Some(from) = list.iter().position(|t| t.id == src).filter(|_| src != dst) else {
+        if src == dst || !list.iter().any(|t| t.id == src) {
             return;
-        };
-        let mut t = list.remove(from);
-        let to = list.iter().position(|u| u.id == dst).unwrap();
-        t.group = list[to].group;
-        list.insert(to + after as usize, t);
+        }
+        let (mut moved, mut rest): (Vec<_>, Vec<_>) = std::mem::take(list)
+            .into_iter()
+            .partition(|t| t.id != dst && ids.contains(&t.id));
+        let to = rest.iter().position(|u| u.id == dst).unwrap();
+        for t in &mut moved {
+            t.group = rest[to].group;
+        }
+        let at = to + after as usize;
+        rest.splice(at..at, moved);
+        *list = rest;
         self.activate_terminal(src, window, cx);
     }
 
