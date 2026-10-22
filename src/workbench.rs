@@ -130,6 +130,7 @@ actions!(
         CopyFile,
         PasteFile,
         FindInFolder,
+        OpenSettingsJson,
     ]
 );
 
@@ -3604,6 +3605,11 @@ impl Render for Workbench {
                 this.expanded.clear();
                 cx.notify();
             }))
+            .on_action(
+                cx.listener(|this, _: &OpenSettingsJson, window, cx| {
+                    this.open_settings(window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &ShowSearch, window, cx| {
                 this.sidebar = true;
                 this.view = View::Search;

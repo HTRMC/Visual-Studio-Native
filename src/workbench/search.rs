@@ -354,11 +354,11 @@ impl Workbench {
         summary(&f.results, &include, &exclude, f.open_only)
     }
 
-    /// The empty result's Open Settings: the user settings.json, created
+    /// Open User Settings (JSON), and the empty result's Open Settings: the user settings.json, created
     /// empty if missing, as VS Code's Open User Settings (JSON) does.
     // ponytail: VS Code opens its Settings UI filtered to ".exclude"; there's
     // no Settings UI here, and search doesn't read exclude settings yet.
-    fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(path) = super::terminal::settings_path() else {
             return;
         };

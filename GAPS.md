@@ -252,6 +252,9 @@ Differences from VS Code still to close, smallest first within each area.
       Settings" and "Learn More" links.
 - [ ] Preferences > Settings (Ctrl+,) is inert, and Open Settings opens
       settings.json rather than a Settings UI filtered to ".exclude".
+- [x] The palette lacks "Preferences: Open User Settings (JSON)".
+- [ ] The palette lacks "Preferences: Open Keyboard Shortcuts" and the
+      other Preferences commands (no keybindings editor or keybindings.json).
 - [x] The "files to exclude" box lacks VS Code's "Use Exclude Settings and
       Ignore Files" toggle (the search always honours .gitignore).
 - [ ] Search and the explorer ignore the `files.exclude` and `search.exclude`
