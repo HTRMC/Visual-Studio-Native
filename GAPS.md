@@ -124,7 +124,10 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Clicking the language (or Change Language Mode) picks the editor's
       language.
 - [x] Indentation detected per file on open (`editor.detectIndentation`): status bar reads "Spaces: N" or "Tab Size: N".
-- [ ] Clicking Spaces/encoding opens their pickers (gpui-base has no runtime tab_size setter, so Indent Using rebuilds the editor).
+- [x] Clicking Spaces opens Select Action (Indent Using Spaces/Tabs, Change Tab Display Size, Detect Indentation, Convert Indentation, Trim Trailing Whitespace) and Select Tab Size for Current File.
+- [ ] Clicking the encoding opens Reopen/Save with Encoding.
+- [ ] Indentation actions are missing from the command palette (Indent Using Spaces, Convert Indentation to Tabs, ...), and Reindent Lines.
+- [ ] Changing indentation rebuilds the editor, dropping undo history (Convert/Trim can't be undone).
 - [ ] Tab characters render zero-width: gpui-base shapes `	` as text instead of advancing to the next tab stop.
 - [x] Status bar Col and Go to Line columns use the file's detected tab size.
 - [ ] Change Language Mode rebuilds the editor (gpui-base's set_highlighter

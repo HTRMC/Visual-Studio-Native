@@ -174,6 +174,29 @@ enum Pick {
     Eol(bool, Vec<usize>),
     /// A language id for Change Language Mode, its "Name (id)" row, matched offsets.
     Lang(&'static str, String, Vec<usize>),
+    /// Select Indentation's action (an index into `INDENT_ACTIONS`) or tab
+    /// size, and the matched offsets.
+    Indent(usize, Vec<usize>),
+}
+
+/// VS Code's Select Indentation actions: "change view" ones, then "convert file" ones.
+const INDENT_ACTIONS: [&str; 7] = [
+    "Indent Using Spaces",
+    "Indent Using Tabs",
+    "Change Tab Display Size",
+    "Detect Indentation from Content",
+    "Convert Indentation to Spaces",
+    "Convert Indentation to Tabs",
+    "Trim Trailing Whitespace",
+];
+
+/// Which list Select Indentation shows.
+#[derive(Clone, Copy, PartialEq)]
+enum IndentStep {
+    Action,
+    /// Select Tab Size for Current File, then indenting with tabs or spaces
+    /// (or as before, for Change Tab Display Size).
+    Size(Option<bool>),
 }
 
 /// A definition in the active editor, for `@`.
@@ -222,6 +245,8 @@ pub(super) struct Palette {
     eol: bool,
     /// Set while the palette is Change Language Mode's pick list.
     lang: bool,
+    /// Set while the palette is one of Select Indentation's pick lists.
+    indent: Option<IndentStep>,
     /// 0-based line and column from a `file:line:col` query.
     goto: Option<(u32, u32)>,
     shown: Vec<Pick>,
@@ -272,6 +297,7 @@ impl Palette {
             joining: false,
             eol: false,
             lang: false,
+            indent: None,
             goto: None,
             shown: Vec::new(),
             groups: Vec::new(),
@@ -348,6 +374,32 @@ impl Palette {
 /// The status bar's and Change End of Line Sequence's name for an ending.
 pub(super) fn eol(crlf: bool) -> &'static str {
     if crlf { "CRLF" } else { "LF" }
+}
+
+/// VS Code's Convert Indentation to Spaces/Tabs: every line's leading
+/// whitespace again at the same width, as spaces, or as tabs then spaces.
+fn reindent(text: &str, tab: usize, hard_tabs: bool) -> String {
+    (text.split_inclusive('\n'))
+        .map(|line| {
+            let body = line.trim_start_matches([' ', '\t']);
+            let width =
+                (line[..line.len() - body.len()].chars()).fold(0, |v, c| next_visible(v, c, tab));
+            match hard_tabs {
+                true => "\t".repeat(width / tab) + &" ".repeat(width % tab) + body,
+                false => " ".repeat(width) + body,
+            }
+        })
+        .collect()
+}
+
+/// VS Code's Trim Trailing Whitespace: spaces and tabs off every line's end.
+fn trim_trailing(text: &str) -> String {
+    (text.split_inclusive('\n'))
+        .map(|line| {
+            let content = line.trim_end_matches(['\r', '\n']);
+            content.trim_end_matches([' ', '\t']).to_string() + &line[content.len()..]
+        })
+        .collect()
 }
 
 /// Where the histories survive restarts: VS Code's user data folder layout
@@ -1544,6 +1596,7 @@ impl Workbench {
         p.joining = false;
         p.eol = false;
         p.lang = false;
+        p.indent = None;
         p.parse = None;
         p.state
             .update(cx, |s, cx| s.set_query(query.to_string(), window, cx));
@@ -1628,12 +1681,72 @@ impl Workbench {
         self.palette_query(String::new(), cx);
     }
 
-    /// Highlights the active editor as `id`, and the status bar names it.
-    fn set_language(&mut self, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(doc) = self.docs.get(self.active) else {
+    /// VS Code's Select Indentation (the status bar's Spaces/Tab Size): the
+    /// palette lists the indentation actions.
+    pub(super) fn select_indentation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.docs.get(self.active).is_some_and(|d| !d.binary) {
+            return;
+        }
+        self.open_palette("", window, cx);
+        self.palette.indent = Some(IndentStep::Action);
+        self.palette_query(String::new(), cx);
+    }
+
+    /// Runs Select Indentation's action `ix`, or sets the tab size it picked.
+    fn set_indent(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(step) = self.palette.indent else {
             return;
         };
-        let path = doc.path.clone();
+        let doc = &mut self.docs[self.active];
+        let mut text = None;
+        match (step, ix) {
+            (IndentStep::Size(hard_tabs), n) => {
+                doc.indent.tab_size = n;
+                doc.indent.hard_tabs = hard_tabs.unwrap_or(doc.indent.hard_tabs);
+            }
+            (_, 0..=2) => {
+                // The size list opens once this one has closed.
+                let next = [Some(false), Some(true), None][ix];
+                return cx.defer_in(window, move |this, window, cx| {
+                    this.open_palette("", window, cx);
+                    this.palette.indent = Some(IndentStep::Size(next));
+                    this.palette_query(String::new(), cx);
+                });
+            }
+            (_, 3) => doc.indent = detect_indent(&doc.editor.read(cx).value()),
+            (_, 4 | 5) => {
+                doc.indent.hard_tabs = ix == 5;
+                let old = doc.editor.read(cx).value();
+                text = Some(reindent(&old, doc.indent.tab_size, ix == 5));
+            }
+            _ => text = Some(trim_trailing(&doc.editor.read(cx).value())),
+        }
+        if let Some(text) = text {
+            doc.editor.update(cx, |e, cx| {
+                let pos = e.cursor_position();
+                e.replace_all(text, window, cx);
+                e.set_cursor_position(pos, window, cx);
+            });
+        }
+        if ix != 6 {
+            self.rebuild_editor(window, cx);
+        }
+    }
+
+    /// Highlights the active editor as `id`, and the status bar names it.
+    fn set_language(&mut self, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.get_mut(self.active) else {
+            return;
+        };
+        doc.lang = id;
+        self.rebuild_editor(window, cx);
+    }
+
+    /// Builds the active editor again for its language and indentation, at
+    /// the same place.
+    fn rebuild_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let doc = &self.docs[self.active];
+        let (path, lang, indent) = (doc.path.clone(), doc.lang, doc.indent);
         let old = doc.editor.read(cx);
         let (text, pos, scroll) = (
             old.value().to_string(),
@@ -1641,16 +1754,14 @@ impl Workbench {
             old.scroll_offset(),
         );
         // ponytail: gpui-base's set_highlighter doesn't re-highlight a shown
-        // editor, so it's rebuilt (as Save As does), dropping undo history.
-        let indent = self.docs[self.active].indent;
-        let editor = self.new_editor(&path, id, text, indent, window, cx);
+        // editor and its tab size has no setter, so it's rebuilt (as Save As
+        // does), dropping undo history.
+        let editor = self.new_editor(&path, lang, text, indent, window, cx);
         editor.update(cx, |e, cx| {
             e.set_cursor_position(pos, window, cx);
             e.set_scroll_offset(scroll, cx);
         });
-        let doc = &mut self.docs[self.active];
-        doc.lang = id;
-        doc.editor = editor;
+        self.docs[self.active].editor = editor;
         self.activate(self.active, window, cx);
     }
 
@@ -1772,6 +1883,7 @@ impl Workbench {
         p.joining = false;
         p.eol = false;
         p.lang = false;
+        p.indent = None;
         // A command may have moved focus (Show Search); only restore it when it is still ours.
         if p.focus.contains_focused(window, cx) {
             match p.restore.take() {
@@ -1830,6 +1942,45 @@ impl Workbench {
                 .position(|p| matches!(p, Pick::Lang(id, ..) if *id == current))
                 .unwrap_or(0);
             p.show(shown, Vec::new(), preselect);
+            return;
+        }
+        if let Some(step) = p.indent {
+            let q = query.trim();
+            let (shown, groups, select): (Vec<_>, _, _) = match step {
+                IndentStep::Action => {
+                    let shown: Vec<_> = (INDENT_ACTIONS.iter().enumerate())
+                        .filter_map(|(ix, label)| {
+                            Some(Pick::Indent(ix, command_matches(q, label)?))
+                        })
+                        .collect();
+                    let first = |convert: bool| {
+                        let at = shown
+                            .iter()
+                            .position(|p| matches!(p, Pick::Indent(ix, _) if (*ix > 2) == convert));
+                        at.map(|at| {
+                            (
+                                at,
+                                SharedString::from(
+                                    ["change view", "convert file"][convert as usize],
+                                ),
+                            )
+                        })
+                    };
+                    let groups = [first(false), first(true)].into_iter().flatten().collect();
+                    (shown, groups, 0)
+                }
+                IndentStep::Size(_) => {
+                    let tab = active.map_or(TAB_SIZE, |d| d.indent.tab_size);
+                    let shown: Vec<_> = (1..=8)
+                        .filter_map(|n| Some(Pick::Indent(n, command_matches(q, &n.to_string())?)))
+                        .collect();
+                    let select = shown
+                        .iter()
+                        .position(|p| matches!(p, Pick::Indent(n, _) if *n == tab.min(8)));
+                    (shown, Vec::new(), select.unwrap_or(0))
+                }
+            };
+            p.show(shown, groups, select);
             return;
         }
         if p.eol {
@@ -2088,6 +2239,10 @@ impl Workbench {
                 self.set_language(id, window, cx);
                 (None, None)
             }
+            Some(&Pick::Indent(ix, _)) => {
+                self.set_indent(ix, window, cx);
+                (None, None)
+            }
             Some(&Pick::Color(color, _)) => {
                 if let Some(id) = p.coloring {
                     self.set_terminal_color(id, color, cx);
@@ -2147,6 +2302,10 @@ impl Workbench {
             "Select End of Line Sequence"
         } else if p.lang {
             "Select Language Mode"
+        } else if p.indent == Some(IndentStep::Action) {
+            "Select Action"
+        } else if p.indent.is_some() {
+            "Select Tab Size for Current File"
         } else if p.query.starts_with('>') {
             ""
         } else {
@@ -2215,6 +2374,24 @@ impl Workbench {
                 }
                 Pick::Eol(crlf, hits) => row(RowIcon::None, eol(*crlf), hits).item(),
                 Pick::Lang(_, label, hits) => row(RowIcon::None, label, hits).item(),
+                Pick::Indent(ix, hits) if p.indent == Some(IndentStep::Action) => {
+                    row(RowIcon::None, INDENT_ACTIONS[*ix], hits).item()
+                }
+                Pick::Indent(n, hits) => {
+                    // The default editor.tabSize is VS Code's configured one.
+                    let current = self.docs.get(self.active).map(|d| d.indent.tab_size);
+                    let desc = match (*n == TAB_SIZE, current == Some(*n)) {
+                        (true, true) => "Configured Tab Size",
+                        (true, false) => "Default Tab Size",
+                        (false, true) => "Current Tab Size",
+                        _ => "",
+                    };
+                    Row {
+                        desc: desc.into(),
+                        ..row(RowIcon::None, &n.to_string(), hits)
+                    }
+                    .item()
+                }
                 Pick::Command(cmd, hits) => {
                     let (label, action) = &commands[*cmd];
                     Row {
@@ -2357,8 +2534,18 @@ mod tests {
 
     use super::{
         Pick, command_matches, defs, fuzzy_score, goto_line, highlights, prepare_query, rank_files,
-        rank_symbols, score_fuzzy, split_line, status_column,
+        rank_symbols, reindent, score_fuzzy, split_line, status_column, trim_trailing,
     };
+
+    #[test]
+    fn indentation() {
+        assert_eq!(
+            reindent("a\n\tb\n \tc\r\n", 4, false),
+            "a\n    b\n    c\r\n"
+        );
+        assert_eq!(reindent("      b\n  c", 4, true), "\t  b\n  c");
+        assert_eq!(trim_trailing("a \t\r\nb  \nc "), "a\r\nb\nc");
+    }
 
     fn ranked(query: &str, history: &[&str], files: &[&str]) -> Vec<String> {
         let own = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();

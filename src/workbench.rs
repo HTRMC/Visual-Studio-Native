@@ -1969,6 +1969,9 @@ impl Workbench {
                     .child(format!("Ln {}, Col {col}", pos.line + 1))
                     .into_any_element(),
                 item("sb-indent", "Select Indentation")
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.select_indentation(window, cx)),
+                    )
                     .child(match doc.indent {
                         TabSize {
                             hard_tabs: true,
