@@ -247,6 +247,14 @@ Differences from VS Code still to close, smallest first within each area.
 - [ ] File > New Window is inert (one window per process).
 - [x] File > Close Window was inert; it, Ctrl+Shift+W and Alt+F4 close
       the window, asking to save dirty files first.
+- [x] View > Problems, Output and Debug Console were inert; they and
+      Ctrl+Shift+M/U/Y toggle the panel on that tab.
+- [ ] Still-inert menu entries: Open Recent > More..., Preferences >
+      Keyboard Shortcuts / Themes; Edit > Toggle Line/Block Comment;
+      Selection > Expand/Shrink Selection, Copy/Move Line Up/Down, Add
+      Cursor Above/Below; View > Open View..., Editor Layout > Split
+      Up/Down, Word Wrap; Go to Symbol in Workspace...; Run > Open/Add
+      Configuration..., Run Task..., Run Build Task...; Help's entries.
 - [x] File > Auto Save was inert; it and "File: Toggle Auto Save" flip
       files.autoSave, and "afterDelay" saves dirty files after
       files.autoSaveDelay.

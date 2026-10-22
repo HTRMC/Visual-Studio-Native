@@ -63,6 +63,9 @@ actions!(
         TogglePanel,
         ToggleMaximizedPanel,
         ToggleTerminal,
+        ToggleProblems,
+        ToggleOutput,
+        ToggleDebugConsole,
         ShowExplorer,
         RefreshExplorer,
         CollapseExplorerFolders,
@@ -168,6 +171,9 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-b", ToggleSidebar, None),
         KeyBinding::new("ctrl-j", TogglePanel, None),
         KeyBinding::new("ctrl-`", ToggleTerminal, None),
+        KeyBinding::new("ctrl-shift-m", ToggleProblems, None),
+        KeyBinding::new("ctrl-shift-u", ToggleOutput, None),
+        KeyBinding::new("ctrl-shift-y", ToggleDebugConsole, None),
         KeyBinding::new("ctrl-shift-e", ShowExplorer, None),
         KeyBinding::new("ctrl-x", CutFile, Some("Explorer")),
         KeyBinding::new("ctrl-c", CopyFile, Some("Explorer")),
@@ -1592,6 +1598,14 @@ impl Workbench {
         }
         self.panel = false;
         self.focus_editor(window, cx);
+        cx.notify();
+    }
+
+    /// View > Problems / Output / Debug Console: shows the panel on tab
+    /// `ix`, or hides it when it's already showing that tab.
+    fn toggle_panel_tab(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.panel = !(self.panel && self.panel_tab == ix);
+        self.panel_tab = ix;
         cx.notify();
     }
 
@@ -3222,11 +3236,7 @@ impl Workbench {
                             .child("0")
                             .child(codicon(icon::WARNING).text_size(px(14.)))
                             .child("0")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.panel = true;
-                                this.panel_tab = 0;
-                                cx.notify();
-                            })),
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_panel_tab(0, cx))),
                     )
                     .when_some(debugging, |d, (name, _)| {
                         d.child(
@@ -3827,6 +3837,11 @@ impl Render for Workbench {
                 cx.listener(|this, _: &ToggleMaximizedPanel, _, cx| this.toggle_max_panel(cx)),
             )
             .on_action(cx.listener(Self::toggle_terminal))
+            .on_action(cx.listener(|this, _: &ToggleProblems, _, cx| this.toggle_panel_tab(0, cx)))
+            .on_action(cx.listener(|this, _: &ToggleOutput, _, cx| this.toggle_panel_tab(1, cx)))
+            .on_action(cx.listener(|this, _: &ToggleDebugConsole, _, cx| {
+                this.toggle_panel_tab(debug::DEBUG_CONSOLE, cx)
+            }))
             .on_action(cx.listener(|this, _: &ShowExplorer, window, cx| {
                 (this.sidebar, this.view) = (true, View::Explorer);
                 window.focus(&this.tree_focus, cx);
@@ -4270,9 +4285,9 @@ fn app_menu(
             .menu("Run", Box::new(ShowRun))
             .menu("Extensions", Box::new(ShowExtensions))
             .separator()
-            .menu("Problems", noop())
-            .menu("Output", noop())
-            .menu("Debug Console", noop())
+            .menu("Problems", Box::new(ToggleProblems))
+            .menu("Output", Box::new(ToggleOutput))
+            .menu("Debug Console", Box::new(ToggleDebugConsole))
             .menu("Terminal", Box::new(ToggleTerminal))
             .separator()
             .menu("Word Wrap", noop()),

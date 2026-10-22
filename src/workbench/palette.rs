@@ -177,6 +177,9 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
         (INDENT_ACTIONS[5], Box::new(IndentationToTabs)),
         (INDENT_ACTIONS[6], Box::new(TrimTrailingWhitespace)),
         ("View: Show Explorer", Box::new(ShowExplorer)),
+        ("View: Toggle Problems", Box::new(ToggleProblems)),
+        ("View: Toggle Output", Box::new(ToggleOutput)),
+        ("View: Toggle Debug Console", Box::new(ToggleDebugConsole)),
         ("File: Refresh Explorer", Box::new(RefreshExplorer)),
         (
             "View: Collapse Folders in Explorer",
