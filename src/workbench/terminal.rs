@@ -659,25 +659,182 @@ pub(super) fn set_default_profile(name: &str) -> Result<(), String> {
     set_setting(DEFAULT_PROFILE, name.into())
 }
 
-/// Sets the user setting `key` to `value`.
-// ponytail: rewrites settings.json as plain JSON, dropping its comments;
-// VS Code edits the one property in place (jsonc-parser's modify).
+/// Sets the user setting `key` to `value`, editing settings.json in place.
 pub(super) fn set_setting(key: &str, value: serde_json::Value) -> Result<(), String> {
     const UNABLE: &str = "Unable to write into user settings. Please open the user settings \
                           to correct errors/warnings in it and try again.";
     let path = settings_path().ok_or(UNABLE)?;
-    let mut settings = settings();
-    if !settings.is_object() {
-        // A settings.json that doesn't parse is left alone rather than lost.
-        if path.exists() {
-            return Err(UNABLE.into());
-        }
-        settings = serde_json::json!({});
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(_) if !path.exists() => "{}".into(),
+        Err(err) => return Err(format!("Unable to write into user settings ({err})")),
+    };
+    // A settings.json that doesn't parse is left alone rather than lost.
+    if !settings().is_object() && path.exists() {
+        return Err(UNABLE.into());
     }
-    settings[key] = value;
+    let bom = if text.starts_with('\u{feff}') {
+        "\u{feff}"
+    } else {
+        ""
+    };
+    let text = set_property(&text[bom.len()..], key, &value).ok_or(UNABLE)?;
     fs::create_dir_all(path.parent().unwrap())
-        .and_then(|_| fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()))
+        .and_then(|_| fs::write(&path, format!("{bom}{text}")))
         .map_err(|err| format!("Unable to write into user settings ({err})"))
+}
+
+/// The JSONC object `text` with its top-level `key` set to `value`, keeping
+/// its comments, order and formatting, as VS Code's jsonc-parser `modify`
+/// edits settings.json. A new key goes last, indented like the others.
+/// None if `text` isn't an object.
+fn set_property(text: &str, key: &str, value: &serde_json::Value) -> Option<String> {
+    let (close, members) = members(text)?;
+    let indent: String = match members.first() {
+        Some(&(_, at, ..)) => {
+            let line = text[..at].rfind('\n').map_or(0, |n| n + 1);
+            text[line..at]
+                .chars()
+                .take_while(|c| *c == ' ' || *c == '\t')
+                .collect()
+        }
+        None => String::new(),
+    };
+    let indent = if indent.is_empty() {
+        "    ".into()
+    } else {
+        indent
+    };
+    // serde_json indents by two spaces; nested levels follow the file's indent.
+    let pretty = serde_json::to_string_pretty(value).ok()?;
+    let json = (pretty.lines().enumerate())
+        .map(|(i, l)| {
+            let body = l.trim_start_matches(' ');
+            let level = (l.len() - body.len()) / 2 + (i > 0) as usize;
+            format!("{}{body}", indent.repeat(level))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut text = text.to_string();
+    match members.iter().rev().find(|m| m.0 == key) {
+        Some(&(_, _, start, end)) => text.replace_range(start..end, &json),
+        None => {
+            let entry = format!("{indent}{}: {json}", serde_json::to_string(key).ok()?);
+            match members.last() {
+                Some(&(.., end)) => text.insert_str(end, &format!(",\n{entry}")),
+                None => {
+                    let at = text[..close].trim_end().len();
+                    text.replace_range(at..close, &format!("\n{entry}\n"));
+                }
+            }
+        }
+    }
+    Some(text)
+}
+
+/// A JSONC object member: its key, where the key starts, and the byte range
+/// of its value.
+type Member = (String, usize, usize, usize);
+
+/// The top-level members of the JSONC object `text`, and where its closing
+/// brace is. None if `text` isn't an object.
+fn members(text: &str) -> Option<(usize, Vec<Member>)> {
+    let b = blank_comments(text).into_bytes();
+    let skip = |mut i: usize| {
+        while b.get(i).is_some_and(u8::is_ascii_whitespace) {
+            i += 1;
+        }
+        i
+    };
+    let string_end = |mut i: usize| {
+        i += 1;
+        while *b.get(i)? != b'"' {
+            i += if b[i] == b'\\' { 2 } else { 1 };
+        }
+        Some(i + 1)
+    };
+    let mut i = skip(0);
+    (b.get(i) == Some(&b'{')).then_some(())?;
+    let mut members = Vec::new();
+    loop {
+        i = skip(i + 1);
+        match b.get(i)? {
+            b'}' => return Some((i, members)),
+            b'"' => {}
+            _ => return None,
+        }
+        let key_end = string_end(i)?;
+        let key = serde_json::from_str(&text[i..key_end]).ok()?;
+        let colon = skip(key_end);
+        (b.get(colon) == Some(&b':')).then_some(())?;
+        let start = skip(colon + 1);
+        let (mut j, mut depth) = (start, 0);
+        loop {
+            match *b.get(j)? {
+                b'"' => {
+                    j = string_end(j)?;
+                    continue;
+                }
+                b'{' | b'[' => depth += 1,
+                b',' | b'}' | b']' if depth == 0 => break,
+                b'}' | b']' => depth -= 1,
+                _ => {}
+            }
+            j += 1;
+        }
+        let mut end = j;
+        while end > start && b[end - 1].is_ascii_whitespace() {
+            end -= 1;
+        }
+        members.push((key, i, start, end));
+        if b[j] != b',' {
+            return (b[j] == b'}').then_some((j, members));
+        }
+        i = j;
+    }
+}
+
+/// `text` with its comments blanked to spaces byte for byte, so offsets into
+/// it are offsets into `text`.
+fn blank_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let blank = |out: &mut String, c: char| out.extend(std::iter::repeat_n(' ', c.len_utf8()));
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => {
+                out.push(ch);
+                while let Some(ch) = chars.next() {
+                    out.push(ch);
+                    match ch {
+                        '\\' => out.extend(chars.next()),
+                        '"' => break,
+                        _ => {}
+                    }
+                }
+            }
+            '/' if chars.peek() == Some(&'/') => {
+                out.push(' ');
+                while let Some(c) = chars.next_if(|&c| c != '\n') {
+                    blank(&mut out, c);
+                }
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                out.push_str("  ");
+                let mut prev = ' ';
+                for c in chars.by_ref() {
+                    blank(&mut out, c);
+                    if prev == '*' && c == '/' {
+                        break;
+                    }
+                    prev = c;
+                }
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 impl Workbench {
@@ -2937,8 +3094,25 @@ mod tests {
 
     use super::{
         Link, at_line, cursor_moves, find_all, key_bytes, link, mouse_bytes, reflow, selected,
-        text_between, word_at, word_span, wrapped_lines,
+        set_property, text_between, word_at, word_span, wrapped_lines,
     };
+
+    #[test]
+    fn set_property_keeps_comments() {
+        let set = |t: &str, k: &str, v: serde_json::Value| set_property(t, k, &v).unwrap();
+        let text = "{\n  // font\n  \"a\": 1, /* x */\n  \"b\": \"s,}\" // end\n}\n";
+        assert_eq!(
+            set(text, "a", 2.into()),
+            "{\n  // font\n  \"a\": 2, /* x */\n  \"b\": \"s,}\" // end\n}\n"
+        );
+        assert_eq!(
+            set(text, "c", serde_json::json!({"*.x": "yaml"})),
+            "{\n  // font\n  \"a\": 1, /* x */\n  \"b\": \"s,}\",\n  \"c\": {\n    \"*.x\": \"yaml\"\n  } // end\n}\n"
+        );
+        assert_eq!(set("{}", "a", true.into()), "{\n    \"a\": true\n}");
+        assert_eq!(set("{ \"a\": [1, {}], }", "a", 3.into()), "{ \"a\": 3, }");
+        assert!(set_property("[1]", "a", &1.into()).is_none());
+    }
 
     #[test]
     fn keys() {

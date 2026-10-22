@@ -234,7 +234,13 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Undoing back to the saved text leaves the tab dirty (VS Code clears
       the dot).
 - [ ] A file changed on disk while open isn't noticed (VS Code reloads a
-      clean editor, and asks before overwriting a dirty one on save).
+      clean editor, and asks before overwriting a dirty one on save). Seen
+      with an open settings.json after Configure File Association writes it.
+- [ ] A dirty CRLF file restored by hot exit saves with LF endings.
+- [ ] No "File: Revert File" command.
+- [x] Writing a setting (default profile, file associations) rewrote
+      settings.json as plain JSON, dropping its comments; it's now edited in
+      place like VS Code's jsonc-parser `modify`.
 - [x] Enter in a CRLF file inserts a bare LF; saving now writes the file's
       one ending throughout, and the label goes by most endings.
 - [x] New untitled files start LF; VS Code's files.eol "auto" makes them
