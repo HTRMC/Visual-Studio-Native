@@ -1569,13 +1569,15 @@ impl Workbench {
 
     fn paste_terminal(&mut self, id: u64, cx: &mut Context<Self>) {
         let text = cx.read_from_clipboard().and_then(|c| c.text());
+        self.paste_text(id, text.unwrap_or_default(), cx);
+    }
+
+    /// Types `text` as a paste, bracketed when the program asked for it.
+    fn paste_text(&mut self, id: u64, text: String, cx: &mut Context<Self>) {
         let Some(t) = self.terminal(id) else {
             return;
         };
-        let text = text
-            .unwrap_or_default()
-            .replace("\r\n", "\r")
-            .replace('\n', "\r");
+        let text = text.replace("\r\n", "\r").replace('\n', "\r");
         let bytes = if t.parser.screen().bracketed_paste() {
             format!("\x1b[200~{text}\x1b[201~")
         } else {
@@ -2199,6 +2201,16 @@ impl Workbench {
                 None => d.cursor_text(),
             })
             .on_key_down(cx.listener(move |this, ev, _, cx| this.terminal_key(id, ev, cx)))
+            // A file dragged from the explorer types its path.
+            .drag_over::<DraggedFile>(|s, _, _, _| s.bg(col::drop()))
+            .on_drop(cx.listener(move |this, file: &DraggedFile, window, cx| {
+                let Some(t) = this.terminal(id) else {
+                    return;
+                };
+                let path = shell_path(&shell_name(&t.profile), &file.0);
+                this.paste_text(id, path, cx);
+                this.activate_terminal(id, window, cx);
+            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
@@ -2527,6 +2539,32 @@ fn shell_name(profile: &Profile) -> String {
     (profile.program.file_stem()).map_or("shell".into(), |s| s.to_string_lossy().into())
 }
 
+/// `path` as the shell named `shell` reads it, quoted when needed: WSL and
+/// Git Bash get it as /mnt/c/... or /c/..., like VS Code's drop does.
+fn shell_path(shell: &str, path: &Path) -> String {
+    let path = path.to_string_lossy();
+    let plain = |s: &str| {
+        s.chars()
+            .all(|c| c.is_alphanumeric() || r"/\:._-".contains(c))
+    };
+    match shell {
+        "wsl" | "bash" => {
+            let mut s = path.replace('\\', "/");
+            if let Some((drive, rest)) = s.split_once(':') {
+                let mount = if shell == "wsl" { "/mnt/" } else { "/" };
+                s = format!("{mount}{}{rest}", drive.to_lowercase());
+            }
+            match plain(&s) {
+                true => s,
+                false => format!("'{}'", s.replace('\'', r"'\''")),
+            }
+        }
+        _ if plain(&path) => path.into(),
+        "cmd" => format!("\"{path}\""),
+        _ => format!("'{}'", path.replace('\'', "''")),
+    }
+}
+
 /// Every match of `re` along the wrapped lines from `line` on, which starts
 /// one, as selection spans, oldest first.
 fn find_all(screen: &mut vt100::Screen, re: &regex::Regex, mut line: usize) -> Vec<Span> {
@@ -2844,6 +2882,18 @@ fn key_bytes(ks: &Keystroke, text: bool, app_cursor: bool) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shell_path_quotes_per_shell() {
+        use super::shell_path;
+        let p = std::path::Path::new(r"C:\a b\it's.txt");
+        assert_eq!(shell_path("pwsh", p), r"'C:\a b\it''s.txt'");
+        assert_eq!(shell_path("cmd", p), r#""C:\a b\it's.txt""#);
+        assert_eq!(shell_path("wsl", p), r"'/mnt/c/a b/it'\''s.txt'");
+        let q = std::path::Path::new(r"C:\src\main.rs");
+        assert_eq!(shell_path("bash", q), "/c/src/main.rs");
+        assert_eq!(shell_path("pwsh", q), r"C:\src\main.rs");
+    }
+
     use std::path::Path;
 
     use gpui_kit::Keystroke;

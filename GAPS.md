@@ -221,7 +221,9 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Editor tabs can't be dragged to reorder them.
 - [x] Dragging a file from the explorer onto the tab strip or editor
       doesn't open it.
-- [ ] Dragging an explorer file onto the terminal doesn't type its path.
+- [x] Dragging an explorer file onto the terminal doesn't type its path.
+- [ ] Files dragged in from Windows Explorer aren't accepted (VS Code opens
+      them in the editor, or types their paths into the terminal).
 - [ ] Dragging in the explorer can't move files between folders.
 - [x] Go menu: Back/Forward (Alt+Left/Right, the title bar arrows) and
       Last Edit Location (Ctrl+K Ctrl+Q) were placeholders.
