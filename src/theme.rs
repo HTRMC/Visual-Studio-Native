@@ -111,6 +111,8 @@ pub mod icon {
     pub const WARNING: char = '\u{EA6C}';
     pub const BELL: char = '\u{EAA2}';
     pub const BELL_DOT: char = '\u{EB9A}';
+    pub const BELL_SLASH: char = '\u{EC08}';
+    pub const BELL_SLASH_DOT: char = '\u{EC09}';
     pub const REMOTE: char = '\u{EB3A}';
     pub const ADD: char = '\u{EA60}';
     pub const TRASH: char = '\u{EA81}';

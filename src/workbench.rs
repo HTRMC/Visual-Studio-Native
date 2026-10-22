@@ -110,6 +110,7 @@ actions!(
         ShowNotifications,
         HideNotifications,
         ClearAllNotifications,
+        ToggleDoNotDisturb,
         Noop,
     ]
 );
@@ -425,6 +426,8 @@ pub struct Workbench {
     unseen: usize,
     /// Whether the bell's notification center is open.
     center: bool,
+    /// Do Not Disturb: warnings only reach the center, not a toast.
+    dnd: bool,
     /// The OS window's title, as last set.
     title: String,
     /// Go Back/Forward's history of editor locations, and the current one.
@@ -466,6 +469,7 @@ impl Workbench {
             find: search::Find::new(window, cx),
             palette: palette::Palette::new(window, cx),
             toast: None,
+            dnd: false,
             notes: Vec::new(),
             crumbs: ScrollHandle::new(),
             unseen: 0,
@@ -2054,6 +2058,7 @@ impl Workbench {
         }
         // VS Code's notificationsStatus tooltips.
         let bell_tip: SharedString = match (self.center, self.notes.len(), self.unseen) {
+            _ if self.dnd => "Do Not Disturb Mode is Enabled".into(),
             (true, ..) => "Hide Notifications".into(),
             (_, 0, _) => "No Notifications".into(),
             (_, _, 0) => "No New Notifications".into(),
@@ -2063,10 +2068,11 @@ impl Workbench {
         right.push(
             item("sb-bell", bell_tip)
                 .child(
-                    codicon(if self.unseen > 0 {
-                        icon::BELL_DOT
-                    } else {
-                        icon::BELL
+                    codicon(match (self.dnd, self.unseen > 0) {
+                        (false, false) => icon::BELL,
+                        (false, true) => icon::BELL_DOT,
+                        (true, false) => icon::BELL_SLASH,
+                        (true, true) => icon::BELL_SLASH_DOT,
                     })
                     .text_size(px(14.)),
                 )
@@ -2153,6 +2159,10 @@ impl Workbench {
             return;
         }
         self.unseen += 1;
+        // VS Code's Do Not Disturb still toasts errors, but there are none yet.
+        if self.dnd {
+            return cx.notify();
+        }
         let hide = cx.spawn(async move |this, cx| {
             loop {
                 let wait = std::time::Duration::from_secs(18);
@@ -2180,6 +2190,15 @@ impl Workbench {
         if show {
             self.toast = None;
             self.unseen = 0;
+        }
+        cx.notify();
+    }
+
+    /// Toggle Do Not Disturb Mode; turning it on hides the toast.
+    fn toggle_dnd(&mut self, cx: &mut Context<Self>) {
+        self.dnd = !self.dnd;
+        if self.dnd {
+            self.toast = None;
         }
         cx.notify();
     }
@@ -2265,14 +2284,22 @@ impl Workbench {
                         .child(div().flex_1().child(header))
                         .child(
                             action_button("center-clear", icon::CLEAR_ALL)
+                                .tooltip(tip("Clear All Notifications"))
                                 .on_click(cx.listener(|this, _, _, cx| this.clear_notes(cx))),
                         )
-                        .child(action_button("center-hide", icon::CHEVRON_DOWN).on_click(
-                            cx.listener(|this, _, _, cx| {
-                                this.center = false;
-                                cx.notify();
-                            }),
-                        )),
+                        .child(
+                            action_button("center-dnd", icon::BELL_SLASH)
+                                .tooltip(tip("Toggle Do Not Disturb Mode"))
+                                .on_click(cx.listener(|this, _, _, cx| this.toggle_dnd(cx))),
+                        )
+                        .child(
+                            action_button("center-hide", icon::CHEVRON_DOWN)
+                                .tooltip(tip("Hide Notification Center"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.center = false;
+                                    cx.notify();
+                                })),
+                        ),
                 )
                 .child(
                     v_flex()
@@ -2532,6 +2559,7 @@ impl Render for Workbench {
                 this.show_center(false, cx);
             }))
             .on_action(cx.listener(|this, _: &ClearAllNotifications, _, cx| this.clear_notes(cx)))
+            .on_action(cx.listener(|this, _: &ToggleDoNotDisturb, _, cx| this.toggle_dnd(cx)))
             .relative()
             .size_full()
             .font_family("Segoe UI")

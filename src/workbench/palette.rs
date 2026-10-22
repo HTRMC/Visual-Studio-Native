@@ -77,6 +77,10 @@ fn commands() -> Vec<(&'static str, Box<dyn Action>)> {
             "Notifications: Clear All Notifications",
             Box::new(ClearAllNotifications),
         ),
+        (
+            "Notifications: Toggle Do Not Disturb Mode",
+            Box::new(ToggleDoNotDisturb),
+        ),
         ("Terminal: Create New Terminal", Box::new(NewTerminal)),
         ("Terminal: Split Terminal", Box::new(SplitTerminal)),
         ("Terminal: Rename...", Box::new(RenameTerminal)),
