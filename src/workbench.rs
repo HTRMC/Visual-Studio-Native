@@ -1677,6 +1677,7 @@ impl Workbench {
                             }),
                         )
                         .track_scroll(&self.tree_scroll)
+                        .group("explorer-tree")
                         .flex_1()
                         .min_h_0(),
                     ),
@@ -1845,6 +1846,7 @@ impl Workbench {
         let (wb, menu_path) = (cx.weak_entity(), path.clone());
         h_flex()
             .id(ElementId::Name(path.to_string_lossy().to_string().into()))
+            .relative()
             .h(px(22.))
             .w_full()
             .pl(px(8. + depth as f32 * 8.))
@@ -1856,6 +1858,19 @@ impl Workbench {
             .border_color(transparent_black())
             .when(active, |d| d.bg(col::selected()).border_color(col::focus()))
             .when(!active, |d| d.hover(|s| s.bg(col::hover())))
+            // Indent guides under each ancestor folder's chevron, shown while
+            // the mouse is over the tree (`workbench.tree.renderIndentGuides`).
+            .children((0..depth).map(|level| {
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(px(15. + level as f32 * 8.))
+                    .w(px(1.))
+                    .bg(col::indent_guide())
+                    .invisible()
+                    .group_hover("explorer-tree", |s| s.visible())
+            }))
             .child(div().w(px(16.)).flex_none().when(is_dir, |d| {
                 d.child(codicon(if open {
                     icon::CHEVRON_DOWN

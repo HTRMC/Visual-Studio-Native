@@ -66,6 +66,9 @@ pub mod col {
     pub fn remote() -> Hsla {
         c(0x0078D4)
     }
+    pub fn indent_guide() -> Hsla {
+        c(0x585858)
+    }
     pub fn close_hover() -> Hsla {
         c(0xE81123)
     }
