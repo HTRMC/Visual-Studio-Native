@@ -58,6 +58,9 @@ pub(super) struct Terminal {
     // and shifts a standing selection up; count trimmed lines if that bites.
     selection: Option<((usize, u16), (usize, u16))>,
     selecting: bool,
+    /// The mouse while dragging, and whether a timer scrolls toward it.
+    drag_at: Point<Pixels>,
+    autoscrolling: bool,
     /// The link under the mouse: row and column range.
     hover: Option<(u16, u16, u16)>,
     /// Wheel movement not yet a whole line.
@@ -139,6 +142,21 @@ impl Terminal {
             (top + row as usize, a as u16),
             (top + row as usize, b as u16),
         )
+    }
+
+    /// Lines to scroll while a drag is above (+) or below (-) the terminal,
+    /// more the further away it is.
+    fn overshoot(&self) -> isize {
+        let b = self.bounds.get();
+        let y = self.drag_at.y;
+        let lines = |d: Pixels| 1 + (f32::from(d) / LINE_H) as isize;
+        if y < b.top() {
+            lines(b.top() - y)
+        } else if y >= b.bottom() {
+            -lines(y - b.bottom())
+        } else {
+            0
+        }
     }
 
     /// The link under the mouse, if any. Paths resolve against the shell's
@@ -636,6 +654,8 @@ impl Workbench {
             cell_w: 8.,
             selection: None,
             selecting: false,
+            drag_at: Point::default(),
+            autoscrolling: false,
             hover: None,
             scroll: 0.,
             mouse_cell: None,
@@ -932,6 +952,55 @@ impl Workbench {
         self.activate_terminal(id, window, cx);
     }
 
+    /// Extends a drag selection to the mouse, scrolling while it is above or
+    /// below the terminal.
+    fn drag_terminal(&mut self, id: u64, ev: &MouseMoveEvent, cx: &mut Context<Self>) {
+        let Some(t) = self.terminal(id) else {
+            return;
+        };
+        let Some((a, _)) = t.selection else {
+            return;
+        };
+        t.selecting = ev.pressed_button == Some(MouseButton::Left);
+        t.drag_at = ev.position;
+        t.selection = Some((a, t.selection_end(ev.position)));
+        if t.selecting && t.overshoot() != 0 && !t.autoscrolling {
+            t.autoscrolling = true;
+            cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(50))
+                        .await;
+                    let going = this.update(cx, |this, cx| this.autoscroll_terminal(id, cx));
+                    if !going.unwrap_or(false) {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
+        cx.notify();
+    }
+
+    /// One tick of scrolling toward a drag outside the terminal; false to stop.
+    fn autoscroll_terminal(&mut self, id: u64, cx: &mut Context<Self>) -> bool {
+        let Some(t) = self.terminal(id) else {
+            return false;
+        };
+        let n = t.overshoot();
+        if !t.selecting || n == 0 {
+            t.autoscrolling = false;
+            return false;
+        }
+        let screen = t.parser.screen_mut();
+        screen.set_scrollback(screen.scrollback().saturating_add_signed(n));
+        if let Some((a, _)) = t.selection {
+            t.selection = Some((a, t.selection_end(t.drag_at)));
+        }
+        cx.notify();
+        true
+    }
+
     fn terminal_release(&mut self, id: u64, ev: &MouseUpEvent) {
         let Some(t) = self.terminal(id) else {
             return;
@@ -1201,6 +1270,7 @@ impl Workbench {
         });
 
         let bounds = t.bounds.clone();
+        let (selecting, drag) = (t.selecting, wb.clone());
         div()
             .id(("terminal", id as usize))
             .relative()
@@ -1260,12 +1330,8 @@ impl Workbench {
                 if !t.selecting && t.mouse_mode(ev.modifiers) {
                     let held = ev.pressed_button.and_then(button_code);
                     t.report(held.map_or(35, |b| b + 32), false, ev.position);
-                } else if t.selecting
-                    && let Some((a, _)) = t.selection
-                {
-                    t.selecting = ev.pressed_button == Some(MouseButton::Left);
-                    t.selection = Some((a, t.selection_end(ev.position)));
-                    cx.notify();
+                } else if t.selecting {
+                    this.drag_terminal(id, ev, cx);
                 } else if ev.pressed_button.is_none() {
                     let hover = t
                         .link(ev.position, root.as_deref())
@@ -1279,6 +1345,14 @@ impl Workbench {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(move |this, ev, _, _| this.terminal_release(id, ev)),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, _| {
+                    if let Some(t) = this.terminal(id) {
+                        t.selecting = false;
+                    }
+                }),
             )
             .on_mouse_up(
                 MouseButton::Middle,
@@ -1296,7 +1370,17 @@ impl Workbench {
                             window.refresh();
                         }
                     },
-                    |_, _, _, _| {},
+                    move |b, _, window, _| {
+                        // Mouse moves outside reach only the window.
+                        if selecting {
+                            window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _, cx| {
+                                if phase == DispatchPhase::Bubble && !b.contains(&ev.position) {
+                                    drag.update(cx, |this, cx| this.drag_terminal(id, ev, cx))
+                                        .ok();
+                                }
+                            });
+                        }
+                    },
                 )
                 .absolute()
                 .size_full(),
