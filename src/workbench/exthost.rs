@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 
 use super::extensions::{Extension, installed};
 use super::palette::{Items, Picker, Rename};
+use super::wasmhost;
 use super::*;
 use crate::theme::codicons;
 
@@ -37,6 +38,8 @@ pub(super) struct StatusItem {
     args: Vec<Value>,
     right: bool,
     priority: f64,
+    /// From a WASM plugin, so it outlives a JS host restart.
+    wasm: bool,
 }
 
 #[derive(Default)]
@@ -53,6 +56,9 @@ pub(super) struct Host {
     /// Notifications with an extension's buttons: the host's question and the
     /// buttons' titles.
     pub(super) buttons: HashMap<SharedString, (u64, Vec<String>)>,
+    /// The WASM host, started with the first WASM plugin.
+    wasm: Option<mpsc::Sender<wasmhost::Req>>,
+    wasm_generation: usize,
 }
 
 impl Host {
@@ -97,6 +103,11 @@ fn runtimes() -> Vec<std::ffi::OsString> {
     }
     list.extend(["node", "bun"].map(Into::into));
     list
+}
+
+/// A WASM plugin's module, from its manifest's `"vsn": { "wasm": ... }`.
+fn wasm_path(ext: &Extension) -> Option<PathBuf> {
+    Some(ext.dir.join(ext.manifest["vsn"]["wasm"].as_str()?))
 }
 
 /// Whether `ext` activates on `event`. Startup ("*") also covers
@@ -215,19 +226,61 @@ impl Workbench {
     /// Activates the extensions waiting for `event`, starting the host for
     /// the first.
     pub(super) fn activate_extensions(&mut self, event: &str, cx: &mut Context<Self>) {
-        let ids: Vec<String> = (installed().iter())
-            .filter(|e| e.enabled && e.manifest["main"].is_string())
+        let exts: Vec<_> = (installed().iter())
+            .filter(|e| e.enabled && (e.manifest["main"].is_string() || wasm_path(e).is_some()))
             .filter(|e| !self.ext.activated.contains(&e.id))
             .filter(|e| wants(e, event, self.root.as_deref()))
-            .map(|e| e.id.clone())
+            .map(|e| (e.id.clone(), wasm_path(e)))
             .collect();
-        if ids.is_empty() || (self.ext.out.is_none() && !self.start_host(cx)) {
-            return;
-        }
-        for id in ids {
-            self.ext.send(json!({ "m": "activate", "id": id }));
+        self.activate_in_hosts(exts, cx);
+    }
+
+    /// Activates extensions in the host each runs in, a WASM module's or the
+    /// JS one, starting it if needed.
+    fn activate_in_hosts(&mut self, exts: Vec<(String, Option<PathBuf>)>, cx: &mut Context<Self>) {
+        let mut js_failed = false;
+        for (id, wasm) in exts {
+            match wasm {
+                Some(wasm) => {
+                    if self.ext.wasm.is_none() {
+                        self.start_wasm(cx);
+                    }
+                    if let Some(host) = &self.ext.wasm {
+                        host.send(wasmhost::Req::Activate {
+                            id: id.clone(),
+                            wasm,
+                        })
+                        .ok();
+                    }
+                }
+                None => {
+                    if js_failed || (self.ext.out.is_none() && !self.start_host(cx)) {
+                        js_failed = true;
+                        continue;
+                    }
+                    self.ext.send(json!({ "m": "activate", "id": id }));
+                }
+            }
             self.ext.activated.insert(id);
         }
+    }
+
+    fn start_wasm(&mut self, cx: &mut Context<Self>) {
+        let (tx, mut rx) = futures::channel::mpsc::unbounded::<Value>();
+        self.ext.wasm = Some(wasmhost::start(tx));
+        self.ext.wasm_generation += 1;
+        let generation = self.ext.wasm_generation;
+        cx.spawn(async move |this, cx| {
+            while let Some(msg) = rx.next().await {
+                let current = |this: &mut Self| this.ext.wasm_generation == generation;
+                if (this.update(cx, |this, cx| current(this).then(|| this.on_host(msg, cx))))
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        })
+        .detach();
     }
 
     /// Runs extension command `id`, activating its extension first.
@@ -238,36 +291,54 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) {
         self.activate_extensions(&format!("onCommand:{id}"), cx);
-        match self.ext.out {
-            Some(_) => self
-                .ext
-                .send(json!({ "m": "run", "command": id, "args": args })),
-            None => self.error(format!("command '{id}' not found"), cx),
+        // ponytail: a WASM plugin's commands are the ones it contributes; it
+        // can't register others, and gets no arguments.
+        let plugin = (installed().iter())
+            .filter(|e| e.enabled && wasm_path(e).is_some())
+            .find(|e| {
+                e.contributes("commands")
+                    .any(|c| c["command"].as_str() == Some(&id))
+            })
+            .map(|e| e.id.clone());
+        match (plugin, &self.ext.wasm, &self.ext.out) {
+            (Some(plugin), Some(host), _) => {
+                (host.send(wasmhost::Req::Run {
+                    id: plugin,
+                    command: id,
+                }))
+                .ok();
+            }
+            (None, _, Some(_)) => {
+                (self.ext).send(json!({ "m": "run", "command": id, "args": args }))
+            }
+            _ => self.error(format!("command '{id}' not found"), cx),
         }
     }
 
     /// Closes the host so a disabled or removed extension stops; the others
     /// activate again in a new one.
     pub(super) fn restart_extension_host(&mut self, cx: &mut Context<Self>) {
-        if self.ext.out.take().is_some() {
+        let js = self.ext.out.take().is_some();
+        let wasm = self.ext.wasm.take().is_some();
+        if js || wasm {
             self.reactivate(cx);
         }
     }
 
-    /// Starts a new host for the extensions the last one had, still enabled.
+    /// Starts new hosts for the extensions the closed ones had, still
+    /// enabled. A WASM host still running keeps its plugins.
     fn reactivate(&mut self, cx: &mut Context<Self>) {
-        self.ext.status.clear();
+        let wasm_alive = self.ext.wasm.is_some();
+        self.ext.status.retain(|i| i.wasm && wasm_alive);
         let ids = std::mem::take(&mut self.ext.activated);
-        let ids: Vec<String> = (installed().iter())
+        let (kept, exts): (Vec<_>, Vec<_>) = (installed().iter())
             .filter(|e| e.enabled && ids.contains(&e.id))
-            .map(|e| e.id.clone())
-            .collect();
-        if !ids.is_empty() && self.start_host(cx) {
-            for id in ids {
-                self.ext.send(json!({ "m": "activate", "id": id }));
-                self.ext.activated.insert(id);
-            }
-        }
+            .map(|e| (e.id.clone(), wasm_path(e)))
+            .partition(|(_, wasm)| wasm.is_some() && wasm_alive);
+        self.ext
+            .activated
+            .extend(kept.into_iter().map(|(id, _)| id));
+        self.activate_in_hosts(exts, cx);
         cx.notify();
     }
 
@@ -464,6 +535,7 @@ impl Workbench {
                         args: msg["args"].as_array().cloned().unwrap_or_default(),
                         right: msg["alignment"] == 2,
                         priority: msg["priority"].as_f64().unwrap_or_default(),
+                        wasm: msg["wasm"] == true,
                     });
                 }
                 cx.notify();
@@ -495,7 +567,7 @@ impl Workbench {
                 "Extension host terminated unexpectedly 3 times within the last 5 minutes.",
                 cx,
             );
-            self.ext.status.clear();
+            self.ext.status.retain(|i| i.wasm);
             self.lsp_host_gone(cx);
             return cx.notify();
         }

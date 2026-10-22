@@ -1,0 +1,15 @@
+{
+  "name": "hello-wasm",
+  "displayName": "Hello WASM",
+  "description": "A sample native plugin for vsn, in Rust compiled to WebAssembly.",
+  "publisher": "vsn",
+  "version": "0.1.0",
+  "activationEvents": ["onStartupFinished"],
+  "vsn": { "wasm": "hello_wasm.wasm" },
+  "contributes": {
+    "commands": [
+      { "command": "helloWasm.sayHello", "title": "Say Hello", "category": "Hello WASM" },
+      { "command": "helloWasm.loop", "title": "Loop Forever", "category": "Hello WASM" }
+    ]
+  }
+}

@@ -1,0 +1,14 @@
+[package]
+name = "hello-wasm"
+version = "0.1.0"
+edition = "2024"
+
+# Not part of vsn's workspace; build with
+# cargo build --release --target wasm32-unknown-unknown
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.63"

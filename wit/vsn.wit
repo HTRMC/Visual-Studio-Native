@@ -1,0 +1,25 @@
+/// vsn's native plugin API: what a WebAssembly plugin can call in the
+/// editor, and what the editor calls in the plugin. Each plugin runs in its
+/// own store with a fuel and memory budget and no file, clock or network
+/// access.
+package vsn:plugin@0.1.0;
+
+interface editor {
+    enum severity { info, warning, error }
+
+    /// A notification, as `vscode.window.show*Message`.
+    show-message: func(severity: severity, text: string);
+    /// The plugin's status bar item; empty text hides it. `$(name)` draws a codicon.
+    set-status: func(text: string);
+    /// A line in the plugin's Output channel.
+    log: func(text: string);
+}
+
+world plugin {
+    import editor;
+
+    /// Called once, when an activation event in package.json fires.
+    export activate: func();
+    /// Runs a command the plugin contributes in package.json.
+    export run-command: func(command: string);
+}

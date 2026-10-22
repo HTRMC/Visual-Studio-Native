@@ -26,6 +26,10 @@ unicode-segmentation = "1"
 # Open VSX: extension search and .vsix downloads.
 ureq = "3"
 vt100 = "0.18.1"
+# WebAssembly plugins (EXTENSIONS.md phase 5); wit-component turns a core module
+# into a component.
+wasmtime = { version = "50", default-features = false, features = ["anyhow", "cranelift", "runtime", "component-model", "std"] }
+wit-component = "0.262"
 
 [build-dependencies]
 embed-resource = "3"

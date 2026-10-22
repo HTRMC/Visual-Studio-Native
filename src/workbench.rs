@@ -39,6 +39,7 @@ mod output;
 mod palette;
 mod search;
 mod terminal;
+mod wasmhost;
 
 use crate::theme::{
     action_button, c, ca, codicon, col, file_icon, icon, kbds, language_id, language_label, tip,
