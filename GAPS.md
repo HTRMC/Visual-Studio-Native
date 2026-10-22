@@ -470,10 +470,9 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [ ] Open VSX results have no icons, ratings or download counts, no paging past 30, no update checks, and no `@` filters besides `@installed`.
 - [ ] Ctrl+Shift+X opens the Extensions view without focusing its search box.
 - [x] WASM plugins (`"vsn": { "wasm": ... }`) run in wasmtime with fuel and memory limits; examples/hello-wasm is a sample.
-- [ ] The WIT API has only messages, one status item, a log and contributed commands: no providers (hover, completion, ...), settings, documents, quick picks, command arguments, or file access granted on request.
 - [x] WASM plugins got no command arguments, settings, document or questions; WIT 0.2 has them.
 - [ ] A trapped WASM plugin stays unloaded until the extensions restart, and a stuck call blocks the other plugins' calls until its fuel runs out; a quick pick waits for its answer the same way.
-- [ ] WASM plugins can't register providers or edit documents.
+- [ ] The WIT API has no providers (hover, completion, ...), document edits, or file access granted on request.
 - [ ] Icon themes, brackets and indent rules from extensions.
 - [x] JS extensions run in a Node (or Bun) host: commands in the palette and keys, messages, status bar items, configuration defaults, activation events, restart on crash.
 - [x] Extension keybindings took effect only after a restart; they're rebound on install, uninstall and enable.
