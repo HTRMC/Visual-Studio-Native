@@ -428,7 +428,11 @@ Differences from VS Code still to close, smallest first within each area.
       with grips in the gaps, pill tabs and the 28px status bar.
 - [ ] Modern UI lacks its compact density, the sash hover delay, the
       auxiliary bar and panel positions other than bottom/center, and the
-      editor-tab, pane-header, menu and dialog restyles.
+      editor-tab and pane-header restyles; menus keep a 4px corner (8 in
+      VS Code) since gpui-component's popovers share the inputs' radius.
+- [x] Popups ignored Modern UI: the quick input, hovers, notifications
+      (toasts and center, at VS Code's 8/36 insets) and dialogs now take
+      its 8px corner.
 - [x] The palette lacks "Preferences: Open User Settings (JSON)".
 - [ ] The palette lacks "Preferences: Open Keyboard Shortcuts" and the
       other Preferences commands (no keybindings editor or keybindings.json).

@@ -876,7 +876,7 @@ impl Workbench {
                         .bg(c(0x202122))
                         .border_1()
                         .border_color(col::input_border())
-                        .rounded(px(4.))
+                        .rounded(popup_radius(4.))
                         .shadow_md()
                         .text_size(px(13.))
                         .text_color(col::fg())

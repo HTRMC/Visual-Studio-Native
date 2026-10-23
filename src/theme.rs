@@ -3,7 +3,10 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{Arc, LazyLock, RwLock},
+    sync::{
+        Arc, LazyLock, RwLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use gpui_kit::*;
@@ -14,6 +17,18 @@ pub fn c(hex: u32) -> Hsla {
 
 pub fn ca(hex: u32) -> Hsla {
     rgba(hex).into()
+}
+
+/// workbench.experimental.modernUI, for popups drawn outside the workbench.
+pub static MODERN: AtomicBool = AtomicBool::new(true);
+
+/// A popup's corner radius: Modern UI's cornerRadius-large (8), else `classic`.
+pub fn popup_radius(classic: f32) -> Pixels {
+    px(if MODERN.load(Ordering::Relaxed) {
+        8.
+    } else {
+        classic
+    })
 }
 
 /// The workbench's colors: Dark 2026's, or an extension color theme's

@@ -47,7 +47,7 @@ mod wasmhost;
 
 use crate::theme::{
     action_button, c, ca, codicon, col, file_icon, folder_icon, icon, kbds, language_id,
-    language_label, tip,
+    language_label, popup_radius, tip,
 };
 
 actions!(
@@ -549,7 +549,9 @@ fn word_wrap(s: &serde_json::Value) -> bool {
 
 /// workbench.experimental.modernUI, on by default as in VS Code.
 fn modern_ui(s: &serde_json::Value) -> bool {
-    s["workbench.experimental.modernUI"] != false
+    let on = s["workbench.experimental.modernUI"] != false;
+    crate::theme::MODERN.store(on, std::sync::atomic::Ordering::Relaxed);
+    on
 }
 
 fn auto_save() -> bool {
@@ -1835,7 +1837,10 @@ impl Workbench {
         self.relanguage(old, window, cx);
         let new = terminal::settings();
         let changed = |key: &str| old[key] != new[key];
-        if changed("workbench.colorTheme") || changed("workbench.iconTheme") {
+        if changed("workbench.colorTheme")
+            || changed("workbench.iconTheme")
+            || changed("workbench.experimental.modernUI")
+        {
             extensions::apply_themes(cx);
         }
         self.modern = modern_ui(&new);
@@ -2857,7 +2862,7 @@ impl Workbench {
                             anchored()
                                 .position_mode(AnchoredPositionMode::Local)
                                 .position(point(px(size), px(0.)))
-                                .child(activity_hover(tip)),
+                                .child(activity_hover(tip, size)),
                         )),
                     )
                 })
@@ -4729,6 +4734,8 @@ impl Workbench {
         if !self.center {
             return None;
         }
+        // Modern UI: notificationsDialogs.css insets and cornerRadius-large.
+        let m = self.modern;
         let header = if self.notes.is_empty() {
             "NO NEW NOTIFICATIONS"
         } else {
@@ -4737,10 +4744,10 @@ impl Workbench {
         Some(
             v_flex()
                 .absolute()
-                .right(px(11.))
-                .bottom(px(33.))
+                .right(px(if m { 8. } else { 11. }))
+                .bottom(px(if m { 36. } else { 33. }))
                 .w(px(450.))
-                .rounded(px(6.))
+                .rounded(px(if m { 8. } else { 6. }))
                 .overflow_hidden()
                 // notifications.background
                 .bg(c(0x202122))
@@ -4791,6 +4798,7 @@ impl Workbench {
     }
 
     fn render_toasts(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let modern = self.modern;
         let shown = self.toasts.len().saturating_sub(3);
         let toasts = self
             .toasts
@@ -4803,7 +4811,7 @@ impl Workbench {
                 Some(
                     self.note_row(("toast-close", i), note, cx)
                         .id(("toast", i))
-                        .rounded(px(6.))
+                        .rounded(px(if modern { 8. } else { 6. }))
                         // notifications.background
                         .bg(c(0x202122))
                         .border_1()
@@ -4829,10 +4837,10 @@ impl Workbench {
             });
         v_flex()
             .absolute()
-            .right(px(11.))
-            .bottom(px(33.))
+            .right(px(if modern { 8. } else { 11. }))
+            .bottom(px(if modern { 36. } else { 33. }))
             .w(px(450.))
-            .gap(px(8.))
+            .gap(px(if modern { 4. } else { 8. }))
             .children(toasts)
     }
 }
@@ -4847,14 +4855,15 @@ enum Severity {
 }
 
 /// VS Code's hover beside the activity bar: a box with a beak pointing back
-/// at the item, centred on its 48px row.
-fn activity_hover(text: SharedString) -> impl IntoElement {
+/// at the item, centred on its row (48px, or 36px in Modern UI).
+fn activity_hover(text: SharedString, row: f32) -> impl IntoElement {
+    let m = row < 48.;
     let (bg, border) = (c(0x202122), col::input_border());
     div()
         .relative()
         .flex()
         .items_center()
-        .h(px(48.))
+        .h(px(row))
         .child(
             div()
                 .ml(px(6.))
@@ -4863,7 +4872,8 @@ fn activity_hover(text: SharedString) -> impl IntoElement {
                 .bg(bg)
                 .border_1()
                 .border_color(border)
-                .rounded(px(4.))
+                // Modern UI: monaco-hover takes cornerRadius-large.
+                .rounded(px(if m { 8. } else { 4. }))
                 .shadow_md()
                 .text_size(px(13.))
                 .text_color(col::fg())
@@ -4890,7 +4900,7 @@ fn activity_hover(text: SharedString) -> impl IntoElement {
             )
             .absolute()
             .left_0()
-            .top(px(18.))
+            .top(px(row / 2. - 6.))
             .w(px(7.))
             .h(px(12.)),
         )
@@ -5615,10 +5625,14 @@ fn grip(h: &ResizeHandleContext, _: &mut Window, _: &mut App) -> Option<AnyEleme
             .when(vertical, |d| d.flex_col())
             .gap(px(3.))
             .children([dot(), dot(), dot()]),
-        _ => div().flex_none().bg(col::focus()).map(|d| match vertical {
-            true => d.h_full().w(px(4.)),
-            false => d.w_full().h(px(4.)),
-        }),
+        _ => div()
+            .flex_none()
+            .rounded(px(2.))
+            .bg(col::focus())
+            .map(|d| match vertical {
+                true => d.h_full().w(px(4.)),
+                false => d.w_full().h(px(4.)),
+            }),
     };
     Some(line.child(child).into_any_element())
 }

@@ -1220,6 +1220,12 @@ pub(crate) fn apply_theme(name: &str, cx: &mut App) -> bool {
 pub(crate) fn apply_themes(cx: &mut App) {
     apply_theme(&configured_theme(), cx);
     apply_icon_theme(configured_icon_theme().as_deref());
+    // Modern UI: dialogs take cornerRadius-large.
+    // ponytail: menus keep theme.radius (4), which inputs share; VS Code's are 8.
+    Theme::global_mut(cx).radius_lg = px(match super::modern_ui(&super::terminal::settings()) {
+        true => 8.,
+        false => 6.,
+    });
 }
 
 // ---- file icon themes -----------------------------------------------------

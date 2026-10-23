@@ -33,7 +33,7 @@ use gpui_kit::component::{
 use super::terminal::{ANSI, COLORS, Profile, profiles, set_default_profile, set_setting};
 use super::*;
 use crate::theme::{
-    LANGUAGES, c, ca, codicons, col, file_icon, icon, language_icon, language_label,
+    LANGUAGES, c, ca, codicons, col, file_icon, icon, language_icon, language_label, popup_radius,
 };
 
 /// Workspace files shown at once; the best matches win.
@@ -3193,7 +3193,8 @@ impl Workbench {
                 .left(relative(0.5))
                 .ml(px(-width / 2.))
                 .w(px(width))
-                .rounded(px(12.))
+                // quick-input-widget: cornerRadius-xLarge, large in Modern UI.
+                .rounded(popup_radius(12.))
                 // quickInput.background
                 .bg(c(0x202122))
                 .border_1()
