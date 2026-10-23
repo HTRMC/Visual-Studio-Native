@@ -26,7 +26,10 @@ use gpui_kit::component::{
     v_resizable,
 };
 use gpui_kit::{
-    base::{Scrollbar, ScrollbarHandle, ScrollbarMode, ScrollbarThumbStyle, h_flex, v_flex},
+    base::{
+        ResizeHandleContext, ResizeHandleState, Scrollbar, ScrollbarHandle, ScrollbarMode,
+        ScrollbarThumbStyle, h_flex, v_flex,
+    },
     prelude::FluentBuilder as _,
     *,
 };
@@ -544,6 +547,11 @@ fn word_wrap(s: &serde_json::Value) -> bool {
     s["editor.wordWrap"].as_str().is_some_and(|v| v != "off")
 }
 
+/// workbench.experimental.modernUI, on by default as in VS Code.
+fn modern_ui(s: &serde_json::Value) -> bool {
+    s["workbench.experimental.modernUI"] != false
+}
+
 fn auto_save() -> bool {
     terminal::settings()["files.autoSave"] == "afterDelay"
 }
@@ -1010,6 +1018,8 @@ pub struct Workbench {
     /// The area under the mouse whose scrollbar shows ("tabs", "crumbs",
     /// "tree").
     scroll_hover: Option<&'static str>,
+    /// workbench.experimental.modernUI: the parts float as rounded cards.
+    modern: bool,
     /// Notifications added since the center was last open: the bell's dot.
     unseen: usize,
     /// Whether the bell's notification center is open.
@@ -1091,6 +1101,7 @@ impl Workbench {
             crumbs_at: Default::default(),
             tabs_scroll: ScrollHandle::new(),
             scroll_hover: None,
+            modern: modern_ui(&terminal::settings()),
             unseen: 0,
             center: false,
             act_hover: None,
@@ -1815,13 +1826,19 @@ impl Workbench {
     }
 
     /// Applies settings.json's changes from `old`.
-    fn settings_changed(&mut self, old: &serde_json::Value, window: &mut Window, cx: &mut Context<Self>) {
+    fn settings_changed(
+        &mut self,
+        old: &serde_json::Value,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.relanguage(old, window, cx);
         let new = terminal::settings();
         let changed = |key: &str| old[key] != new[key];
         if changed("workbench.colorTheme") || changed("workbench.iconTheme") {
             extensions::apply_themes(cx);
         }
+        self.modern = modern_ui(&new);
     }
 
     /// File: Save As: asks where to save editor `ix` (an untitled one in the
@@ -2786,7 +2803,9 @@ impl Workbench {
 
     // ---- activity bar ------------------------------------------------------
 
-    fn render_activitybar(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_activitybar(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        // Modern UI: 36px items 8 apart, the active one on a 32px pill.
+        let (m, size) = (self.modern, if self.modern { 36. } else { 48. });
         let item = |id: SharedString,
                     glyph: AnyElement,
                     tip: SharedString,
@@ -2801,11 +2820,26 @@ impl Workbench {
                 .flex()
                 .items_center()
                 .justify_center()
-                .size(px(48.))
+                .flex_none()
+                .size(px(size))
                 .cursor_pointer()
                 .text_color(if active { col::fg() } else { col::fg_muted() })
                 .hover(|s| s.text_color(col::fg()))
-                .when(active, |d| {
+                .when(m, |d| {
+                    d.pb(px(4.)).child(
+                        div()
+                            .absolute()
+                            .left(px(2.))
+                            .top_0()
+                            .size(px(32.))
+                            .rounded(px(4.))
+                            .when(active, |d| d.bg(col::tab_active()))
+                            .when(!active, |d| {
+                                d.group_hover("act-item", |s| s.bg(col::hover()))
+                            }),
+                    )
+                })
+                .when(active && !m, |d| {
                     d.child(
                         div()
                             .absolute()
@@ -2822,7 +2856,7 @@ impl Workbench {
                         div().absolute().left_0().top_0().child(deferred(
                             anchored()
                                 .position_mode(AnchoredPositionMode::Local)
-                                .position(point(px(48.), px(0.)))
+                                .position(point(px(size), px(0.)))
                                 .child(activity_hover(tip)),
                         )),
                     )
@@ -2901,17 +2935,20 @@ impl Workbench {
             top.push(item(id, glyph, c.title.into(), Some(View::Ext(ix)), cx));
         }
 
-        v_flex()
-            .w(px(48.))
+        let (gap, inset) = if m { (8., 3.) } else { (0., 0.) };
+        let bar = v_flex()
+            .w(px(if m { 42. } else { 48. }))
             .flex_none()
             .h_full()
+            .items_center()
             .justify_between()
             .bg(col::bg())
-            .border_r_1()
-            .border_color(col::border())
-            .child(v_flex().children(top))
+            .when(!m, |d| d.border_r_1().border_color(col::border()))
+            .child(v_flex().pt(px(inset)).gap(px(gap)).children(top))
             .child(
                 v_flex()
+                    .pb(px(inset))
+                    .gap(px(gap))
                     .child(item(
                         "act-account".into(),
                         glyph(icon::ACCOUNT),
@@ -2926,7 +2963,24 @@ impl Workbench {
                         None,
                         cx,
                     )),
-            )
+            );
+        if !m {
+            return bar.into_any_element();
+        }
+        // The rail joins the side bar, or closes up without one.
+        let r = if self.sidebar {
+            [8., 0., 0., 8.]
+        } else {
+            [8.; 4]
+        };
+        div()
+            .flex_none()
+            .w(px(48.))
+            .h_full()
+            .pl(px(4.))
+            .pb(px(4.))
+            .child(card(bar, col::bg(), r, false))
+            .into_any_element()
     }
 
     // ---- side bar ----------------------------------------------------------
@@ -2984,15 +3038,21 @@ impl Workbench {
             items.retain(|i| i.navigation);
             view_buttons.extend(self.ext_buttons("ext-scm", items, args, cx));
         }
+        // Modern UI: a 32px title, 12px semibold, capitalized rather than upper case.
         let header = h_flex()
-            .h(px(35.))
+            .h(px(if self.modern { 32. } else { 35. }))
             .flex_none()
-            .pl(px(20.))
-            .pr(px(8.))
+            .pl(px(if self.modern { 12. } else { 20. }))
+            .pr(px(if self.modern { 4. } else { 8. }))
             .justify_between()
-            .text_size(px(11.))
+            .text_size(px(if self.modern { 12. } else { 11. }))
             .text_color(col::fg())
-            .child(title.to_uppercase())
+            .child(match self.modern {
+                true => div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(capitalize(title)),
+                false => div().child(title.to_uppercase()),
+            })
             .when(self.view == View::Run, |d| {
                 d.children(self.render_run_title(cx))
             })
@@ -4067,8 +4127,41 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
+        let m = self.modern;
         let tabs = PANEL_TABS.iter().enumerate().map(|(ix, name)| {
             let active = ix == self.panel_tab;
+            // Modern UI: sentence-case labels on a 24px pill.
+            if m {
+                return div()
+                    .id(("panel-tab", ix))
+                    .group("panel-tab")
+                    .relative()
+                    .flex()
+                    .items_center()
+                    .h_full()
+                    .px(px(10.))
+                    .cursor_pointer()
+                    .text_color(if active { col::fg() } else { col::fg_muted() })
+                    .hover(|s| s.text_color(col::fg()))
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(2.))
+                            .right(px(2.))
+                            .top(px(4.))
+                            .h(px(24.))
+                            .rounded(px(4.))
+                            .when(active, |d| d.bg(col::tab_active()))
+                            .when(!active, |d| {
+                                d.group_hover("panel-tab", |s| s.bg(col::hover()))
+                            }),
+                    )
+                    .child(div().relative().line_height(px(22.)).child(*name))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.panel_tab = ix;
+                        cx.notify();
+                    }));
+            }
             div()
                 .id(("panel-tab", ix))
                 .flex()
@@ -4126,16 +4219,15 @@ impl Workbench {
         v_flex()
             .size_full()
             .bg(col::bg())
-            .border_t_1()
-            .border_color(col::border())
+            .when(!m, |d| d.border_t_1().border_color(col::border()))
             .text_size(px(13.))
             .text_color(col::fg())
             .child(
                 h_flex()
-                    .h(px(35.))
+                    .h(px(if m { 32. } else { 35. }))
                     .flex_none()
                     .pl(px(4.))
-                    .pr(px(8.))
+                    .pr(px(if m { 4. } else { 8. }))
                     .justify_between()
                     .child(h_flex().h_full().children(tabs))
                     .child(
@@ -4211,18 +4303,20 @@ impl Workbench {
     // ---- status bar --------------------------------------------------------
 
     fn render_statusbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        /// A status bar entry with VS Code's tooltip.
-        fn item(id: &'static str, tip: impl Into<SharedString>) -> Stateful<Div> {
+        /// A status bar entry with VS Code's tooltip; Modern UI rounds it.
+        fn item(m: bool, id: &'static str, tip: impl Into<SharedString>) -> Stateful<Div> {
             let tip = tip.into();
             h_flex()
                 .id(id)
                 .h_full()
                 .px(px(5.))
+                .when(m, |d| d.rounded(px(4.)))
                 .gap(px(4.))
                 .cursor_pointer()
                 .hover(|s| s.bg(col::status_hover()).text_color(col::fg()))
                 .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
         }
+        let m = self.modern;
 
         let mut right = self.extension_status(true, cx);
         let (errors, warnings) = self.problem_counts();
@@ -4237,11 +4331,11 @@ impl Workbench {
             let col = palette::status_column(&line, pos.character as usize, doc.indent.tab_size);
             let lang = language_label(doc.lang);
             right.extend([
-                item("sb-pos", "Go to Line/Column")
+                item(m, "sb-pos", "Go to Line/Column")
                     .on_click(cx.listener(|this, _, window, cx| this.open_palette(":", window, cx)))
                     .child(format!("Ln {}, Col {col}", pos.line + 1))
                     .into_any_element(),
-                item("sb-indent", "Select Indentation")
+                item(m, "sb-indent", "Select Indentation")
                     .on_click(
                         cx.listener(|this, _, window, cx| this.select_indentation(window, cx)),
                     )
@@ -4253,15 +4347,15 @@ impl Workbench {
                         TabSize { tab_size, .. } => format!("Spaces: {tab_size}"),
                     })
                     .into_any_element(),
-                item("sb-enc", "Select Encoding")
+                item(m, "sb-enc", "Select Encoding")
                     .on_click(cx.listener(|this, _, window, cx| this.change_encoding(window, cx)))
                     .child(doc.encoding.label())
                     .into_any_element(),
-                item("sb-eol", "Select End of Line Sequence")
+                item(m, "sb-eol", "Select End of Line Sequence")
                     .on_click(cx.listener(|this, _, window, cx| this.change_eol(window, cx)))
                     .child(palette::eol(doc.crlf))
                     .into_any_element(),
-                item("sb-lang", "Select Language Mode")
+                item(m, "sb-lang", "Select Language Mode")
                     .on_click(cx.listener(|this, _, window, cx| this.change_language(window, cx)))
                     .child(codicon(icon::CODE).text_size(px(14.)))
                     .child(lang)
@@ -4278,7 +4372,7 @@ impl Workbench {
             (_, _, n) => format!("{n} New Notifications").into(),
         };
         right.push(
-            item("sb-bell", bell_tip)
+            item(m, "sb-bell", bell_tip)
                 .child(
                     codicon(match (self.palette.dnd, self.unseen > 0) {
                         (false, false) => icon::BELL,
@@ -4293,17 +4387,18 @@ impl Workbench {
         );
 
         let debugging = self.debug_status();
+        // Modern UI: 28px with the items inset 2px 12px, below the cards.
         h_flex()
-            .h(px(22.))
+            .h(px(if m { 28. } else { 22. }))
             .flex_none()
             .justify_between()
+            .when(m, |d| d.py(px(2.)).px(px(12.)))
             .bg(col::bg())
             .when(debugging.as_ref().is_some_and(|d| d.1), |d| {
                 d.bg(crate::theme::c(debug::STATUS_DEBUGGING))
                     .text_color(white())
             })
-            .border_t_1()
-            .border_color(col::border())
+            .when(!m, |d| d.border_t_1().border_color(col::border()))
             .text_size(px(12.))
             .text_color(col::fg_muted())
             .child(
@@ -4316,7 +4411,8 @@ impl Workbench {
                                 Tooltip::new("Open a Remote Window").build(window, cx)
                             })
                             .h_full()
-                            .px(px(10.))
+                            .px(px(if m { 6. } else { 10. }))
+                            .when(m, |d| d.rounded(px(4.)))
                             .bg(col::remote())
                             .text_color(white())
                             .cursor_pointer()
@@ -4324,17 +4420,17 @@ impl Workbench {
                     )
                     .when(self.root.is_some(), |d| {
                         d.child(
-                            item("sb-branch", "main, Checkout Branch/Tag...")
+                            item(m, "sb-branch", "main, Checkout Branch/Tag...")
                                 .child(codicon(icon::SOURCE_CONTROL).text_size(px(14.)))
                                 .child("main"),
                         )
                         .child(
-                            item("sb-sync", "Synchronize Changes")
+                            item(m, "sb-sync", "Synchronize Changes")
                                 .child(codicon(icon::SYNC).text_size(px(14.))),
                         )
                     })
                     .child(
-                        item("sb-problems", problems_tip)
+                        item(m, "sb-problems", problems_tip)
                             .child(codicon(icon::ERROR).text_size(px(14.)))
                             .child(errors.to_string())
                             .child(codicon(icon::WARNING).text_size(px(14.)))
@@ -4343,7 +4439,7 @@ impl Workbench {
                     )
                     .when_some(debugging, |d, (name, _)| {
                         d.child(
-                            item("sb-debug", "Select and Start Debug Configuration")
+                            item(m, "sb-debug", "Select and Start Debug Configuration")
                                 .child(codicon(icon::DEBUG_ALT_SMALL).text_size(px(14.)))
                                 .child(name)
                                 .on_click(cx.listener(|this, _, _, cx| this.show(View::Run, cx))),
@@ -4961,6 +5057,46 @@ impl Render for Workbench {
                     .drag_over::<ExternalPaths>(|s, _, _, _| s.bg(col::drop())),
             );
         let panel = self.render_panel(window, cx);
+        // Modern UI: floating cards 4px apart, a resize grip in each gap.
+        let (sidebar, editor, panel, handles) = match self.modern {
+            false => (
+                sidebar,
+                editor.into_any_element(),
+                panel.into_any_element(),
+                None,
+            ),
+            true => {
+                let (panel_shown, editor_shown) = (self.panel, !(self.panel && self.panel_max));
+                let left = if self.sidebar { 2. } else { 4. };
+                let wrap = |top: f32, bottom: f32| {
+                    div()
+                        .size_full()
+                        .pl(px(left))
+                        .pr(px(4.))
+                        .pt(px(top))
+                        .pb(px(bottom))
+                };
+                (
+                    div()
+                        .size_full()
+                        .pr(px(2.))
+                        .pb(px(4.))
+                        .child(card(sidebar, col::bg(), [0., 8., 8., 0.], true))
+                        .into_any_element(),
+                    wrap(0., if panel_shown { 2. } else { 4. })
+                        .child(card(editor, col::editor(), [8.; 4], false))
+                        .into_any_element(),
+                    wrap(if editor_shown { 2. } else { 0. }, 4.)
+                        .child(card(panel, col::bg(), [8.; 4], false))
+                        .into_any_element(),
+                    Some(Rc::new(grip) as gpui_kit::base::ResizeHandleRenderer),
+                )
+            }
+        };
+        let resizable = |group: gpui_kit::base::ResizablePanelGroup| match &handles {
+            Some(h) => group.with_handle_appearance(h.clone()),
+            None => group,
+        };
         let palette = self.render_palette(window, cx);
         let toolbar = self.render_debug_toolbar(window, cx);
         let signature = self.render_signature(cx);
@@ -5074,9 +5210,9 @@ impl Render for Workbench {
                     this.open_settings(window, cx)
                 }),
             )
-            .on_action(
-                cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings_ui("", window, cx)),
-            )
+            .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
+                this.open_settings_ui("", window, cx)
+            }))
             .on_action(cx.listener(|this, _: &ShowSearch, window, cx| {
                 this.sidebar = true;
                 this.view = View::Search;
@@ -5361,7 +5497,11 @@ impl Render for Workbench {
             .size_full()
             .font_family("Segoe UI")
             .text_size(px(13.))
-            .bg(col::editor())
+            .bg(if self.modern {
+                col::bg()
+            } else {
+                col::editor()
+            })
             .text_color(col::fg())
             .child(self.render_titlebar(window, cx))
             .child(
@@ -5370,7 +5510,7 @@ impl Render for Workbench {
                     .min_h_0()
                     .child(self.render_activitybar(cx))
                     .child(
-                        h_resizable("workbench")
+                        resizable(h_resizable("workbench"))
                             .child(
                                 resizable_panel()
                                     .size(px(300.))
@@ -5380,7 +5520,7 @@ impl Render for Workbench {
                             )
                             .child(
                                 resizable_panel().child(
-                                    v_resizable("editor-panel")
+                                    resizable(v_resizable("editor-panel"))
                                         .child(
                                             resizable_panel()
                                                 .visible(!(self.panel && self.panel_max))
@@ -5406,6 +5546,98 @@ impl Render for Workbench {
 }
 
 // ---- helpers ---------------------------------------------------------------
+
+/// A Modern UI floating card: `content` on `bg` inside a 1px border, corners
+/// `r` (tl, tr, br, bl) rounded. gpui clips to rectangles, so shell-colored
+/// pieces round the content's corners off, spilling into the 4px gutter.
+/// `seam` gives up the left border where the card meets the activity bar.
+fn card(content: impl IntoElement, bg: Hsla, r: [f32; 4], seam: bool) -> Div {
+    // A 4px border whose inner edge is the card's rounded corner.
+    let corner = |ix: usize| {
+        let (o, s, w) = (px(-4.), px(r[ix] + 4.), px(4.));
+        let d = div().absolute().size(s).border_color(col::bg());
+        match ix {
+            0 => d.top(o).left(o).border_t(w).border_l(w).rounded_tl(s),
+            1 => d.top(o).right(o).border_t(w).border_r(w).rounded_tr(s),
+            2 => d.bottom(o).right(o).border_b(w).border_r(w).rounded_br(s),
+            _ => d.bottom(o).left(o).border_b(w).border_l(w).rounded_bl(s),
+        }
+    };
+    let [tl, tr, br, bl] = r.map(px);
+    div()
+        .relative()
+        .size_full()
+        .p(px(1.))
+        .bg(bg)
+        .child(content)
+        .children((0..4).filter(|&ix| r[ix] > 0.).map(corner))
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .border_t_1()
+                .border_r_1()
+                .border_b_1()
+                .when(!seam, |d| d.border_l_1())
+                .border_color(col::border())
+                .rounded_tl(tl)
+                .rounded_tr(tr)
+                .rounded_br(br)
+                .rounded_bl(bl),
+        )
+}
+
+/// Modern UI's sash grip between cards: three dots in foreground at 40%,
+/// VS Code's 4px focus line while hovered or dragged.
+// ponytail: the line shows at once; VS Code waits workbench.sash.hoverDelay.
+fn grip(h: &ResizeHandleContext, _: &mut Window, _: &mut App) -> Option<AnyElement> {
+    let vertical = h.axis() == Axis::Horizontal;
+    let line = div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .map(|d| match vertical {
+            true => d.h_full().w(px(1.)),
+            false => d.w_full().h(px(1.)),
+        });
+    let dot = || {
+        div()
+            .flex_none()
+            .size(px(2.))
+            .rounded_full()
+            .bg(col::fg().opacity(0.4))
+    };
+    let child = match h.state() {
+        ResizeHandleState::Idle => div()
+            .flex_none()
+            .flex()
+            .when(vertical, |d| d.flex_col())
+            .gap(px(3.))
+            .children([dot(), dot(), dot()]),
+        _ => div().flex_none().bg(col::focus()).map(|d| match vertical {
+            true => d.h_full().w(px(4.)),
+            false => d.w_full().h(px(4.)),
+        }),
+    };
+    Some(line.child(child).into_any_element())
+}
+
+/// CSS's `text-transform: capitalize`: "Run and Debug" -> "Run And Debug".
+fn capitalize(s: &str) -> String {
+    let mut up = true;
+    s.chars()
+        .map(|c| {
+            let out = if up {
+                c.to_uppercase().next().unwrap_or(c)
+            } else {
+                c
+            };
+            up = c.is_whitespace();
+            out
+        })
+        .collect()
+}
 
 fn ca_white(alpha: u8) -> Hsla {
     crate::theme::ca(0xFFFFFF00 | alpha as u32)
@@ -5799,9 +6031,15 @@ fn app_menu(
 #[cfg(test)]
 mod tests {
     use super::{
-        Encoding, block_toggled, comment_toggled, copy_all, copy_target, detect_indent, expanded,
-        lines_moved, occurrences, with_eol, word_around,
+        Encoding, block_toggled, capitalize, comment_toggled, copy_all, copy_target, detect_indent,
+        expanded, lines_moved, occurrences, with_eol, word_around,
     };
+
+    #[test]
+    fn capitalized() {
+        assert_eq!(capitalize("Run and Debug"), "Run And Debug");
+        assert_eq!(capitalize("Source Control"), "Source Control");
+    }
 
     #[test]
     fn terminal_keys_reach_the_shell() {

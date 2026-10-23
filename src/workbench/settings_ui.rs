@@ -1,8 +1,8 @@
 //! The Settings editor Ctrl+, opens: VS Code's settings UI over the user
 //! settings.json, for the settings vsn honors and those extensions contribute.
 
-use std::collections::{HashMap, HashSet};
 use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::LazyLock;
 
@@ -44,7 +44,11 @@ const TOC: &[(&str, &str, usize, &[&str])] = &[
 /// depend on what's installed filled in.
 fn builtin() -> Map<String, Value> {
     let profiles: Vec<Value> = std::iter::once(Value::Null)
-        .chain(super::terminal::profiles().into_iter().map(|p| p.name.to_string().into()))
+        .chain(
+            super::terminal::profiles()
+                .into_iter()
+                .map(|p| p.name.to_string().into()),
+        )
         .collect();
     let mut themes = extensions::color_themes();
     themes.sort_by_key(|t| (t.dark, t.label.to_lowercase()));
@@ -180,20 +184,31 @@ pub(crate) struct Page {
 /// VS Code's `wordifyKey`: `files.autoSave` → "Files › Auto Save".
 pub(crate) fn wordify(key: &str) -> String {
     static RES: LazyLock<[Regex; 4]> = LazyLock::new(|| {
-        [r"\.([a-z0-9])", r"([a-z0-9])([A-Z])", r"([A-Z]+)([A-Z][a-z])", r"\b\w+\b"]
-            .map(|r| Regex::new(r).unwrap())
+        [
+            r"\.([a-z0-9])",
+            r"([a-z0-9])([A-Z])",
+            r"([A-Z]+)([A-Z][a-z])",
+            r"\b\w+\b",
+        ]
+        .map(|r| Regex::new(r).unwrap())
     });
-    let s = RES[0].replace_all(key, |c: &regex::Captures| format!(" \u{203A} {}", c[1].to_uppercase()));
+    let s = RES[0].replace_all(key, |c: &regex::Captures| {
+        format!(" \u{203A} {}", c[1].to_uppercase())
+    });
     let s = RES[1].replace_all(&s, "$1 $2");
     let s = RES[2].replace_all(&s, "$1 $2");
     let mut s = s.into_owned();
     if let Some(first) = s.chars().next().filter(char::is_ascii_lowercase) {
         s.replace_range(..1, &first.to_ascii_uppercase().to_string());
     }
-    const ACRONYMS: &[&str] = &["css", "html", "scss", "less", "json", "js", "ts", "ie", "id", "php", "scm"];
-    let s = RES[3].replace_all(&s, |c: &regex::Captures| match ACRONYMS.contains(&c[0].to_lowercase().as_str()) {
-        true => c[0].to_uppercase(),
-        false => c[0].to_string(),
+    const ACRONYMS: &[&str] = &[
+        "css", "html", "scss", "less", "json", "js", "ts", "ie", "id", "php", "scm",
+    ];
+    let s = RES[3].replace_all(&s, |c: &regex::Captures| {
+        match ACRONYMS.contains(&c[0].to_lowercase().as_str()) {
+            true => c[0].to_uppercase(),
+            false => c[0].to_string(),
+        }
     });
     let mut s = s.into_owned();
     for (from, to) in [
@@ -208,7 +223,10 @@ pub(crate) fn wordify(key: &str) -> String {
         ("re sharper", "ReSharper"),
         ("resharper", "ReSharper"),
     ] {
-        s = Regex::new(&format!(r"(?i)\b{from}\b")).unwrap().replace_all(&s, to).into_owned();
+        s = Regex::new(&format!(r"(?i)\b{from}\b"))
+            .unwrap()
+            .replace_all(&s, to)
+            .into_owned();
     }
     s
 }
@@ -222,10 +240,12 @@ fn trim_category(category: &str, group: &str) -> String {
         false => insiders.replace(group, "").into_owned(),
     };
     let parts: Vec<String> = (group.split('.'))
-        .map(|p| match p.replace('-', "").eq_ignore_ascii_case(category) {
-            true => p.replace('-', ""),
-            false => p.to_string(),
-        })
+        .map(
+            |p| match p.replace('-', "").eq_ignore_ascii_case(category) {
+                true => p.replace('-', ""),
+                false => p.to_string(),
+            },
+        )
         .collect();
     for forward in [true, false] {
         let mut parts = parts.clone();
@@ -247,7 +267,10 @@ fn trim_category(category: &str, group: &str) -> String {
 /// VS Code's `settingKeyToDisplayFormat`: the title's category and label.
 pub(crate) fn display(key: &str, group: &str) -> (String, String) {
     let (category, label) = key.rsplit_once('.').unwrap_or(("", key));
-    (wordify(&trim_category(category, &group.replace('/', "."))), wordify(label))
+    (
+        wordify(&trim_category(category, &group.replace('/', "."))),
+        wordify(label),
+    )
 }
 
 /// A setting key pattern of VS Code's TOC, `*` matching anything.
@@ -277,7 +300,14 @@ fn catalog(values: &Value) -> (Vec<Group>, Vec<Entry>) {
     let mut found: Vec<(usize, bool, f64, String, Value, String)> = Vec::new();
     let builtin = builtin();
     for (ix, key) in COMMONLY_USED.iter().enumerate() {
-        found.push((0, false, ix as f64, key.to_string(), builtin[*key].clone(), String::new()));
+        found.push((
+            0,
+            false,
+            ix as f64,
+            key.to_string(),
+            builtin[*key].clone(),
+            String::new(),
+        ));
     }
     for (key, schema) in builtin {
         // The deepest group claims it, as VS Code resolves children first.
@@ -311,19 +341,22 @@ fn catalog(values: &Value) -> (Vec<Group>, Vec<Entry>) {
                 _ => Some(title(c).unwrap_or_else(|| name.clone())).filter(|t| *t != label),
             };
             let order = c["order"].as_f64().unwrap_or(f64::MAX);
-            let id = (c["id"].as_str().map(String::from)).or_else(|| child.clone()).unwrap_or_default();
-            let props: Vec<(String, Value, String)> = (c["properties"].as_object().into_iter().flatten())
-                .map(|(key, schema)| {
-                    let desc = schema["markdownDescription"].clone();
-                    let (desc, markdown) = match desc.is_null() {
-                        true => (ext.localize(&schema["description"]), false),
-                        false => (ext.localize(&desc), true),
-                    };
-                    let mut schema = schema.clone();
-                    schema["$markdown"] = markdown.into();
-                    (key.clone(), schema, desc)
-                })
-                .collect();
+            let id = (c["id"].as_str().map(String::from))
+                .or_else(|| child.clone())
+                .unwrap_or_default();
+            let props: Vec<(String, Value, String)> =
+                (c["properties"].as_object().into_iter().flatten())
+                    .map(|(key, schema)| {
+                        let desc = schema["markdownDescription"].clone();
+                        let (desc, markdown) = match desc.is_null() {
+                            true => (ext.localize(&schema["description"]), false),
+                            false => (ext.localize(&desc), true),
+                        };
+                        let mut schema = schema.clone();
+                        schema["$markdown"] = markdown.into();
+                        (key.clone(), schema, desc)
+                    })
+                    .collect();
             children.push((child, id, order, props));
         }
         children.sort_by(|a, b| a.2.total_cmp(&b.2));
@@ -370,12 +403,18 @@ fn catalog(values: &Value) -> (Vec<Group>, Vec<Entry>) {
         (a.0.cmp(&b.0))
             .then(a.1.cmp(&b.1))
             .then(a.2.total_cmp(&b.2))
-            .then(if a.0 == 0 { Ordering::Equal } else { a.3.cmp(&b.3) })
+            .then(if a.0 == 0 {
+                Ordering::Equal
+            } else {
+                a.3.cmp(&b.3)
+            })
     });
     let link = Regex::new(r"`#([^#`\s]+)#`").unwrap();
     let entries = (found.into_iter())
         .map(|(group, _, _, key, schema, desc)| {
-            let markdown = schema["$markdown"].as_bool().unwrap_or(!schema["markdownDescription"].is_null());
+            let markdown = schema["$markdown"]
+                .as_bool()
+                .unwrap_or(!schema["markdownDescription"].is_null());
             let desc = match desc.is_empty() {
                 true => (schema["markdownDescription"].as_str())
                     .or(schema["description"].as_str())
@@ -426,7 +465,11 @@ impl Page {
                 for g in 0..self.groups.len() {
                     if has(g) {
                         rows.push(Row::Header(g));
-                        rows.extend((self.entries.iter().enumerate()).filter(|(_, e)| e.group == g).map(|(i, _)| Row::Setting(i)));
+                        rows.extend(
+                            (self.entries.iter().enumerate())
+                                .filter(|(_, e)| e.group == g)
+                                .map(|(i, _)| Row::Setting(i)),
+                        );
                     }
                 }
                 rows
@@ -434,7 +477,8 @@ impl Page {
             false => (self.entries.iter().enumerate())
                 .filter(|(_, e)| e.group != 0)
                 .filter(|(_, e)| {
-                    let text = format!("{} {}: {} {}", e.key, e.category, e.label, e.description).to_lowercase();
+                    let text = format!("{} {}: {} {}", e.key, e.category, e.label, e.description)
+                        .to_lowercase();
                     words.iter().all(|w| text.contains(w))
                 })
                 .map(|(i, _)| Row::Setting(i))
@@ -477,7 +521,12 @@ fn input_text(value: &Value) -> String {
 impl Workbench {
     /// Preferences: Open Settings (UI), searching for `query`; the open
     /// Settings editor if there is one.
-    pub(super) fn open_settings_ui(&mut self, query: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_settings_ui(
+        &mut self,
+        query: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(ix) = self.docs.iter().position(|d| d.settings.is_some()) {
             self.activate(ix, window, cx);
         } else {
@@ -497,32 +546,47 @@ impl Workbench {
             let mut inputs = HashMap::new();
             for e in &entries {
                 let number = is_type(&e.schema, "number") || is_type(&e.schema, "integer");
-                if e.schema["enum"].is_array() || inputs.contains_key(&e.key) || !(number || is_type(&e.schema, "string")) {
+                if e.schema["enum"].is_array()
+                    || inputs.contains_key(&e.key)
+                    || !(number || is_type(&e.schema, "string"))
+                {
                     continue;
                 }
                 let value = values.get(&e.key).unwrap_or(&e.schema["default"]);
                 let text = input_text(value);
                 let input = cx.new(|cx| InputState::new(window, cx).default_value(text));
                 let (key, integer) = (e.key.clone(), is_type(&e.schema, "integer"));
-                cx.subscribe_in(&input, window, move |this, input, ev: &InputEvent, window, cx| {
-                    if !matches!(ev, InputEvent::Change) {
-                        return;
-                    }
-                    let text = input.read(cx).value().to_string();
-                    let value = match (number, integer) {
-                        (false, _) => text.into(),
-                        (true, true) => match text.trim().parse::<i64>() {
-                            Ok(n) => n.into(),
-                            Err(_) => return,
-                        },
-                        (true, false) => match text.trim().parse::<f64>().ok().and_then(serde_json::Number::from_f64) {
-                            // 1000, not 1000.0.
-                            Some(n) => n.as_f64().filter(|f| f.fract() == 0.0 && f.abs() < 1e15).map_or(n.into(), |f| (f as i64).into()),
-                            None => return,
-                        },
-                    };
-                    this.set_ui_setting(&key, value, window, cx);
-                })
+                cx.subscribe_in(
+                    &input,
+                    window,
+                    move |this, input, ev: &InputEvent, window, cx| {
+                        if !matches!(ev, InputEvent::Change) {
+                            return;
+                        }
+                        let text = input.read(cx).value().to_string();
+                        let value = match (number, integer) {
+                            (false, _) => text.into(),
+                            (true, true) => match text.trim().parse::<i64>() {
+                                Ok(n) => n.into(),
+                                Err(_) => return,
+                            },
+                            (true, false) => match text
+                                .trim()
+                                .parse::<f64>()
+                                .ok()
+                                .and_then(serde_json::Number::from_f64)
+                            {
+                                // 1000, not 1000.0.
+                                Some(n) => n
+                                    .as_f64()
+                                    .filter(|f| f.fract() == 0.0 && f.abs() < 1e15)
+                                    .map_or(n.into(), |f| (f as i64).into()),
+                                None => return,
+                            },
+                        };
+                        this.set_ui_setting(&key, value, window, cx);
+                    },
+                )
                 .detach();
                 inputs.insert(e.key.clone(), input);
             }
@@ -537,7 +601,15 @@ impl Workbench {
             };
             page.filter("");
             // Binary, so saving and the editor's commands leave its empty text alone.
-            self.push_doc(PathBuf::from("Settings"), String::new(), Encoding::Utf8, true, false, window, cx);
+            self.push_doc(
+                PathBuf::from("Settings"),
+                String::new(),
+                Encoding::Utf8,
+                true,
+                false,
+                window,
+                cx,
+            );
             self.docs.last_mut().unwrap().settings = Some(Box::new(page));
         }
         let page = self.docs.iter().find_map(|d| d.settings.as_ref()).unwrap();
@@ -550,10 +622,18 @@ impl Workbench {
 
     /// Writes a setting from the Settings editor; its default removes it from
     /// settings.json, as VS Code resets it.
-    fn set_ui_setting(&mut self, key: &str, value: Value, window: &mut Window, cx: &mut Context<Self>) {
+    fn set_ui_setting(
+        &mut self,
+        key: &str,
+        value: Value,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let page = self.docs.iter().find_map(|d| d.settings.as_ref());
         let entry = page.and_then(|p| p.entries.iter().find(|e| e.key == key));
-        let default = entry.map(|e| e.schema["default"].clone()).unwrap_or_default();
+        let default = entry
+            .map(|e| e.schema["default"].clone())
+            .unwrap_or_default();
         let value = if value == default { Value::Null } else { value };
         let old = super::terminal::settings();
         if let Err(err) = super::terminal::set_setting(key, value.clone()) {
@@ -569,7 +649,9 @@ impl Workbench {
         self.settings_changed(&old, window, cx);
         // An open settings.json without changes shows the new value.
         let json = super::terminal::settings_path();
-        if let Some(ix) = (self.docs.iter()).position(|d| !d.dirty && json.as_ref() == Some(&d.path)) {
+        if let Some(ix) =
+            (self.docs.iter()).position(|d| !d.dirty && json.as_ref() == Some(&d.path))
+        {
             self.reopen(ix, self.docs[ix].encoding, window, cx);
         }
         cx.notify();
@@ -585,7 +667,11 @@ impl Workbench {
         };
         let values = Rc::new(super::terminal::settings());
         let searching = !page.search.read(cx).value().trim().is_empty();
-        let found = page.rows.iter().filter(|r| matches!(r, Row::Setting(_))).count();
+        let found = page
+            .rows
+            .iter()
+            .filter(|r| matches!(r, Row::Setting(_)))
+            .count();
         let count = match (searching, found) {
             (false, _) => String::new(),
             (true, 0) => "No Settings Found".into(),
@@ -604,8 +690,20 @@ impl Workbench {
                     .bg(col::input())
                     .px(px(6.))
                     .py(px(2.))
-                    .child(div().flex_1().child(Input::new(&page.search).appearance(false).text_size(px(13.))))
-                    .child(div().pl(px(6.)).text_size(px(11.)).text_color(col::fg_muted()).child(count)),
+                    .child(
+                        div().flex_1().child(
+                            Input::new(&page.search)
+                                .appearance(false)
+                                .text_size(px(13.)),
+                        ),
+                    )
+                    .child(
+                        div()
+                            .pl(px(6.))
+                            .text_size(px(11.))
+                            .text_color(col::fg_muted())
+                            .child(count),
+                    ),
             )
             .child(
                 h_flex().mt(px(10.)).pb(px(4.)).child(
@@ -672,13 +770,28 @@ impl Workbench {
                     true => d.font_weight(FontWeight::BOLD).text_color(c(0xFFFFFF)),
                     false => d.text_color(col::fg()).opacity(0.9),
                 })
+                .child(div().w(px(16.)).flex_none().when(parent, |d| {
+                    d.child(codicon(if expanded {
+                        icon::CHEVRON_DOWN
+                    } else {
+                        icon::CHEVRON_RIGHT
+                    }))
+                }))
                 .child(
-                    div().w(px(16.)).flex_none().when(parent, |d| {
-                        d.child(codicon(if expanded { icon::CHEVRON_DOWN } else { icon::CHEVRON_RIGHT }))
-                    }),
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .child(group.label.clone()),
                 )
-                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().child(group.label.clone()))
-                .when(searching, |d| d.child(div().text_color(col::fg_muted()).child(format!("({})", counts[g]))))
+                .when(searching, |d| {
+                    d.child(
+                        div()
+                            .text_color(col::fg_muted())
+                            .child(format!("({})", counts[g])),
+                    )
+                })
                 .on_click(cx.listener(move |this, _, _, cx| {
                     let Some(page) = this.docs.get_mut(ix).and_then(|d| d.settings.as_mut()) else {
                         return;
@@ -691,7 +804,10 @@ impl Workbench {
                         Row::Setting(e) => page.entries[*e].group == g,
                     });
                     if let Some(row) = row {
-                        page.list.scroll_to(ListOffset { item_ix: row, offset_in_item: px(0.) });
+                        page.list.scroll_to(ListOffset {
+                            item_ix: row,
+                            offset_in_item: px(0.),
+                        });
                     }
                     cx.notify();
                 }))
@@ -731,29 +847,34 @@ impl Workbench {
             .items_center()
             .text_color(col::fg())
             .child(
-                v_flex()
-                    .size_full()
-                    .max_w(px(1400.))
-                    .child(header)
-                    .child(
-                        h_flex()
-                            .flex_1()
-                            .min_h_0()
-                            .mt(px(14.))
-                            .items_start()
-                            .child(v_flex().id("settings-toc").w(px(200.)).flex_none().h_full().pl(px(24.)).overflow_y_scroll().children(toc))
-                            .child(
-                                div()
-                                    .id("settings-body")
-                                    .flex_1()
-                                    .h_full()
-                                    .min_w_0()
-                                    .relative()
-                                    .child(body.size_full())
-                                    .child(self.slider("settings", &page.list, Axis::Vertical, 8.))
-                                    .on_hover(self.hover_slider("settings", cx)),
-                            ),
-                    ),
+                v_flex().size_full().max_w(px(1400.)).child(header).child(
+                    h_flex()
+                        .flex_1()
+                        .min_h_0()
+                        .mt(px(14.))
+                        .items_start()
+                        .child(
+                            v_flex()
+                                .id("settings-toc")
+                                .w(px(200.))
+                                .flex_none()
+                                .h_full()
+                                .pl(px(24.))
+                                .overflow_y_scroll()
+                                .children(toc),
+                        )
+                        .child(
+                            div()
+                                .id("settings-body")
+                                .flex_1()
+                                .h_full()
+                                .min_w_0()
+                                .relative()
+                                .child(body.size_full())
+                                .child(self.slider("settings", &page.list, Axis::Vertical, 8.))
+                                .on_hover(self.hover_slider("settings", cx)),
+                        ),
+                ),
             )
             .into_any_element()
     }
@@ -808,7 +929,8 @@ fn setting_row(
     let set = {
         let (wb, key) = (wb.clone(), key.clone());
         move |value: Value, window: &mut Window, cx: &mut App| {
-            wb.update(cx, |this, cx| this.set_ui_setting(&key, value, window, cx)).ok();
+            wb.update(cx, |this, cx| this.set_ui_setting(&key, value, window, cx))
+                .ok();
         }
     };
     let control: AnyElement = if let Some(input) = page.inputs.get(&key) {
@@ -842,7 +964,14 @@ fn setting_row(
             .child(
                 h_flex()
                     .w_full()
-                    .child(div().flex_1().text_left().overflow_hidden().whitespace_nowrap().child(current))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_left()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .child(current),
+                    )
                     .child(codicon(icon::CHEVRON_DOWN)),
             )
             .dropdown_menu(move |mut menu, _, _| {
@@ -893,7 +1022,8 @@ fn setting_row(
             .hover(|d| d.underline())
             .child("Edit in settings.json")
             .on_click(move |_, window, cx| {
-                wb.update(cx, |this, cx| this.open_settings(window, cx)).ok();
+                wb.update(cx, |this, cx| this.open_settings(window, cx))
+                    .ok();
             })
             .into_any_element()
     };
@@ -910,15 +1040,25 @@ fn setting_row(
             .tooltip("More Actions...")
             .dropdown_menu(move |menu, _, _| {
                 let (set, id, key) = (set.clone(), key.clone(), key.clone());
-                let as_json = format!("\"{key}\": {}", serde_json::to_string_pretty(&value_or(&key, &default)).unwrap_or_default());
-                menu.item(PopupMenuItem::new("Reset Setting").on_click(move |_, window, cx| set(Value::Null, window, cx)))
-                    .separator()
-                    .item(PopupMenuItem::new("Copy Setting ID").on_click(move |_, _, cx| {
+                let as_json = format!(
+                    "\"{key}\": {}",
+                    serde_json::to_string_pretty(&value_or(&key, &default)).unwrap_or_default()
+                );
+                menu.item(
+                    PopupMenuItem::new("Reset Setting")
+                        .on_click(move |_, window, cx| set(Value::Null, window, cx)),
+                )
+                .separator()
+                .item(
+                    PopupMenuItem::new("Copy Setting ID").on_click(move |_, _, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(id.clone()))
-                    }))
-                    .item(PopupMenuItem::new("Copy Setting as JSON").on_click(move |_, _, cx| {
+                    }),
+                )
+                .item(
+                    PopupMenuItem::new("Copy Setting as JSON").on_click(move |_, _, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(as_json.clone()))
-                    }))
+                    }),
+                )
             })
     };
     let _ = cx;
@@ -929,7 +1069,15 @@ fn setting_row(
         .relative()
         .pl(px(22.))
         .pr(px(8.))
-        .child(div().absolute().left_0().top(px(8.)).invisible().group_hover(hover, |s| s.visible()).child(gear))
+        .child(
+            div()
+                .absolute()
+                .left_0()
+                .top(px(8.))
+                .invisible()
+                .group_hover(hover, |s| s.visible())
+                .child(gear),
+        )
         .child(
             v_flex()
                 .relative()
@@ -957,9 +1105,16 @@ fn setting_row(
                         .when(!entry.category.is_empty(), |d| {
                             d.child(div().opacity(0.9).child(format!("{}: ", entry.category)))
                         })
-                        .child(div().mr(px(7.)).font_weight(FontWeight::SEMIBOLD).child(entry.label.clone())),
+                        .child(
+                            div()
+                                .mr(px(7.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(entry.label.clone()),
+                        ),
                 )
-                .when(!bool_row, |d| d.child(div().mt(px(-1.)).child(description("setting-md"))))
+                .when(!bool_row, |d| {
+                    d.child(div().mt(px(-1.)).child(description("setting-md")))
+                })
                 .child(div().mt(px(if bool_row { 4. } else { 9. })).child(control)),
         )
         .into_any_element()
@@ -967,7 +1122,10 @@ fn setting_row(
 
 /// Copy Setting as JSON's value: the user's, or else the default.
 fn value_or(key: &str, default: &Value) -> Value {
-    super::terminal::settings().get(key).cloned().unwrap_or_else(|| default.clone())
+    super::terminal::settings()
+        .get(key)
+        .cloned()
+        .unwrap_or_else(|| default.clone())
 }
 
 #[cfg(test)]
@@ -982,14 +1140,29 @@ mod tests {
         };
         assert_eq!(t("files.autoSave", "commonlyUsed"), "Files: Auto Save");
         assert_eq!(t("files.autoSave", "editor/files"), "Auto Save");
-        assert_eq!(t("workbench.colorTheme", "workbench/appearance"), "Color Theme");
-        assert_eq!(t("workbench.experimental.modernUI", "workbench"), "Experimental: Modern UI");
         assert_eq!(
-            t("terminal.integrated.defaultProfile.windows", "features/terminal"),
+            t("workbench.colorTheme", "workbench/appearance"),
+            "Color Theme"
+        );
+        assert_eq!(
+            t("workbench.experimental.modernUI", "workbench"),
+            "Experimental: Modern UI"
+        );
+        assert_eq!(
+            t(
+                "terminal.integrated.defaultProfile.windows",
+                "features/terminal"
+            ),
             "Integrated › Default Profile: Windows"
         );
         assert_eq!(t("explorer.autoReveal", "features/explorer"), "Auto Reveal");
-        assert_eq!(t("rust-analyzer.cargo.features", "rust-lang.rust-analyzer"), "Cargo: Features");
-        assert_eq!(t("json.schemaDownload.enable", "commonlyUsed"), "JSON › Schema Download: Enable");
+        assert_eq!(
+            t("rust-analyzer.cargo.features", "rust-lang.rust-analyzer"),
+            "Cargo: Features"
+        );
+        assert_eq!(
+            t("json.schemaDownload.enable", "commonlyUsed"),
+            "JSON › Schema Download: Enable"
+        );
     }
 }

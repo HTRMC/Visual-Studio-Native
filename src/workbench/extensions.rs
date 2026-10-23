@@ -1002,6 +1002,13 @@ fn convert(theme: &ColorTheme) -> Option<(ThemeConfig, Colors)> {
             ])
             .unwrap_or(tint(0x22)),
         ),
+        tab_active: hsla(
+            get(&[
+                "modernTab.activeBackground",
+                "list.inactiveSelectionBackground",
+            ])
+            .unwrap_or(tint(0x22)),
+        ),
         toolbar_hover: hsla(get(&["toolbar.hoverBackground"]).unwrap_or(tint(0x10))),
         input: hsla(get(&["input.background"]).unwrap_or(bg)),
         input_border: hsla(get(&["input.border"]).unwrap_or(border)),

@@ -53,6 +53,8 @@ pub mod col {
         focus: ca(0x3994BCB3),
         hover: ca(0xFFFFFF14),
         selected: ca(0xFFFFFF22),
+        /// modernTab.activeBackground / modernActivityBarItem.activeBackground
+        tab_active: c(0x2C2D2E),
         /// editorGroup.dropBackground
         drop: ca(0x53595D80),
         /// tab.dragAndDropBorder

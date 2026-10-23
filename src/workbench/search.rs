@@ -1168,7 +1168,9 @@ impl Workbench {
                                 )
                                 .on_click(links, move |ix, window, cx| match ix {
                                     0 => {
-                                        _ = wb.update(cx, |this, cx| this.open_settings_ui(".exclude", window, cx))
+                                        _ = wb.update(cx, |this, cx| {
+                                            this.open_settings_ui(".exclude", window, cx)
+                                        })
                                     }
                                     _ => cx
                                         .open_url("https://go.microsoft.com/fwlink/?linkid=853977"),

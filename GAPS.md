@@ -423,6 +423,12 @@ Differences from VS Code still to close, smallest first within each area.
 - [ ] The Settings UI lists only the settings vsn honors plus extensions';
       it lacks the Workspace tab, @-filters, enum descriptions, Copy Setting
       as URL, and the narrow layout that hides the TOC under 700px.
+- [x] No Modern UI: `workbench.experimental.modernUI` (on by default) now
+      floats the activity bar, side bar, editor and panel as rounded cards
+      with grips in the gaps, pill tabs and the 28px status bar.
+- [ ] Modern UI lacks its compact density, the sash hover delay, the
+      auxiliary bar and panel positions other than bottom/center, and the
+      editor-tab, pane-header, menu and dialog restyles.
 - [x] The palette lacks "Preferences: Open User Settings (JSON)".
 - [ ] The palette lacks "Preferences: Open Keyboard Shortcuts" and the
       other Preferences commands (no keybindings editor or keybindings.json).
