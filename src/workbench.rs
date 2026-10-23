@@ -248,6 +248,9 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         // Shells read Alt+arrows themselves (VS Code doesn't skip them).
         KeyBinding::new("alt-left", NoAction, Some("Terminal")),
         KeyBinding::new("alt-right", NoAction, Some("Terminal")),
+        // Shells complete on Tab; gpui-kit's Root would move focus instead.
+        KeyBinding::new("tab", NoAction, Some("Terminal")),
+        KeyBinding::new("shift-tab", NoAction, Some("Terminal")),
         KeyBinding::new("f5", StartDebugging, None),
         KeyBinding::new("ctrl-f5", RunWithoutDebugging, None),
         KeyBinding::new("shift-f5", StopDebugging, None),
