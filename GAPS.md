@@ -90,6 +90,17 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Dragging one of several selected tabs moves them all.
 - [x] Dropping several selected tabs onto a terminal moves them all into
       its split group.
+- [x] Keys reach the shell as VS Code routes them: a single key goes to the
+      workbench only when its command is in `commandsToSkipShell`'s
+      defaults (Ctrl+J, Ctrl+P, F5, ...), so Ctrl+S, Ctrl+B, Tab and
+      extension keys go to the shell. Chords and Alt+F4 still go to the
+      workbench.
+- [x] VS Code's Windows send-sequences: Ctrl+Backspace `\x17` (`\x08` in
+      cmd), Ctrl+Delete `\x1bd`, Alt+arrows as Ctrl+arrows, Ctrl+Shift+2/6.
+- [x] Alt+arrows move between split panes. Shift+Insert and Ctrl+Shift+V
+      paste. Ctrl+V goes to pwsh raw. Esc clears a selection.
+- [ ] Tab focus mode (Ctrl+M) and `commandsToSkipShell` /
+      `sendKeybindingsToShell` settings.
 - [ ] Dragging a tab onto the editor area moves the terminal into an editor.
 - [ ] Shell integration: command decorations, run recent command, go to
       recent directory.

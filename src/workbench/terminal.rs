@@ -1822,15 +1822,29 @@ impl Workbench {
     fn terminal_key(&mut self, id: u64, ev: &KeyDownEvent, cx: &mut Context<Self>) {
         let ks = &ev.keystroke;
         let ctrl = ks.modifiers.control && !ks.modifiers.alt;
+        let shell = self
+            .terminal(id)
+            .map(|t| shell_name(&t.profile))
+            .unwrap_or_default();
+        let selected = self
+            .terminal(id)
+            .is_some_and(|t| t.selection.is_some_and(|(a, b)| a != b));
         // Ctrl+C copies when there's a selection, else interrupts.
         if ctrl && ks.key == "c" && self.copy_terminal(id, cx) {
-        } else if ctrl && ks.key == "v" {
+            // PSReadLine pastes Ctrl+V itself, as VS Code leaves it to pwsh.
+        } else if ctrl && !ks.modifiers.shift && ks.key == "v" && shell != "pwsh"
+            || ctrl && ks.modifiers.shift && ks.key == "v"
+            || ks.modifiers == Modifiers::shift() && ks.key == "insert"
+        {
             self.paste_terminal(id, cx);
+        } else if ks.key == "escape" && ks.modifiers == Modifiers::none() && selected {
+            self.terminal(id).unwrap().selection = None;
         } else if let Some(t) = self.terminal(id)
             && let Some(bytes) = key_bytes(
                 ks,
                 ev.prefer_character_input,
                 t.parser.screen().application_cursor(),
+                shell == "cmd",
             )
         {
             t.write(&bytes);
@@ -2201,6 +2215,8 @@ impl Workbench {
 
     fn render_one(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let wb = cx.weak_entity();
+        let list = &self.terminals.list;
+        let split = list.iter().filter(|u| u.group == list[ix].group).count() > 1;
         let t = &mut self.terminals.list[ix];
         let id = t.id;
         let font = font(FONT);
@@ -2399,10 +2415,18 @@ impl Workbench {
                 }
             }))
             .track_focus(&t.focus)
-            .key_context(match alt {
-                true => "Terminal altBuffer terminalFocus",
-                false => "Terminal terminalFocus",
-            })
+            .key_context(
+                gpui::KeyContext::parse(&format!(
+                    "Terminal terminalFocus{}{}",
+                    if alt { " altBuffer" } else { "" },
+                    if split {
+                        " terminalSplitPaneActive"
+                    } else {
+                        ""
+                    },
+                ))
+                .unwrap(),
+            )
             .map(|d| match hover {
                 Some(_) => d.cursor_pointer(),
                 None => d.cursor_text(),
@@ -3044,7 +3068,9 @@ fn ansi(color: vt100::Color, bold: bool) -> Option<Hsla> {
 }
 
 /// What a key sends to the shell, as xterm encodes it.
-fn key_bytes(ks: &Keystroke, text: bool, app_cursor: bool) -> Option<Vec<u8>> {
+/// With VS Code's send-sequence overrides on Windows: word deletes, and
+/// Alt+arrows as Ctrl+arrows for word moves.
+fn key_bytes(ks: &Keystroke, text: bool, app_cursor: bool, cmd: bool) -> Option<Vec<u8>> {
     let m = ks.modifiers;
     if let Some(ch) = &ks.key_char {
         if text || !(m.control || m.alt) {
@@ -3067,11 +3093,22 @@ fn key_bytes(ks: &Keystroke, text: bool, app_cursor: bool) -> Option<Vec<u8>> {
     let s = match ks.key.as_str() {
         "enter" => "\r".into(),
         "backspace" if m.alt => "\x1b\x7f".into(),
-        "backspace" if m.control => "\x08".into(),
+        "backspace" if m.control && cmd => "\x08".into(),
+        "backspace" if m.control => "\x17".into(),
         "backspace" => "\x7f".into(),
         "tab" if m.shift => "\x1b[Z".into(),
         "tab" => "\t".into(),
         "escape" => "\x1b".into(),
+        "delete" if m.control && !m.shift => "\x1bd".into(),
+        "up" | "down" | "right" | "left" if m.alt && !m.control && !m.shift => {
+            let end = match ks.key.as_str() {
+                "up" => 'A',
+                "down" => 'B',
+                "right" => 'C',
+                _ => 'D',
+            };
+            format!("\x1b[1;5{end}")
+        }
         "up" => cursor('A'),
         "down" => cursor('B'),
         "right" => cursor('C'),
@@ -3091,6 +3128,8 @@ fn key_bytes(ks: &Keystroke, text: bool, app_cursor: bool) -> Option<Vec<u8>> {
         },
         key if m.control => match key.as_bytes() {
             [b @ b'a'..=b'z'] => ((b - b'a' + 1) as char).to_string(),
+            [b'2' | b'@'] => "\0".into(),
+            [b'6' | b'^'] => "\x1e".into(),
             [b'['] => "\x1b".into(),
             [b'\\'] => "\x1c".into(),
             [b']'] => "\x1d".into(),
@@ -3169,7 +3208,7 @@ mod tests {
 
     #[test]
     fn keys() {
-        let key = |s: &str| key_bytes(&Keystroke::parse(s).unwrap(), false, false);
+        let key = |s: &str| key_bytes(&Keystroke::parse(s).unwrap(), false, false, false);
         assert_eq!(key("ctrl-c"), Some(b"\x03".to_vec()));
         assert_eq!(key("enter"), Some(b"\r".to_vec()));
         assert_eq!(key("ctrl-left"), Some(b"\x1b[1;5D".to_vec()));
@@ -3177,7 +3216,15 @@ mod tests {
         assert_eq!(key("f5"), Some(b"\x1b[15~".to_vec()));
         assert_eq!(key("f1"), Some(b"\x1bOP".to_vec()));
         let up = Keystroke::parse("up").unwrap();
-        assert_eq!(key_bytes(&up, false, true), Some(b"\x1bOA".to_vec()));
+        assert_eq!(key_bytes(&up, false, true, false), Some(b"\x1bOA".to_vec()));
+        // VS Code's Windows send-sequences.
+        assert_eq!(key("ctrl-backspace"), Some(b"\x17".to_vec()));
+        let bs = Keystroke::parse("ctrl-backspace").unwrap();
+        assert_eq!(key_bytes(&bs, false, false, true), Some(b"\x08".to_vec()));
+        assert_eq!(key("ctrl-delete"), Some(b"\x1bd".to_vec()));
+        assert_eq!(key("alt-up"), Some(b"\x1b[1;5A".to_vec()));
+        assert_eq!(key("ctrl-@"), Some(b"\0".to_vec()));
+        assert_eq!(key("ctrl-^"), Some(b"\x1e".to_vec()));
     }
 
     #[test]

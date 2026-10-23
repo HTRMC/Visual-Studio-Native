@@ -231,9 +231,6 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-t", GoToSymbolInWorkspace, None),
         KeyBinding::new("f12", input::GoToDefinition, Some("Input")),
         KeyBinding::new("ctrl-space", input::ShowCompletions, Some("Input")),
-        // VS Code sends these two to the shell rather than skipping it.
-        KeyBinding::new("ctrl-g", NoAction, Some("Terminal")),
-        KeyBinding::new("ctrl-shift-o", NoAction, Some("Terminal")),
         KeyBinding::new("alt-left", GoBack, None),
         KeyBinding::new("alt-right", GoForward, None),
         KeyBinding::new("ctrl-k ctrl-q", GoToLastEditLocation, None),
@@ -245,9 +242,6 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-shift-space", TriggerParameterHints, None),
         KeyBinding::new("ctrl-pagedown", NextEditor, None),
         KeyBinding::new("ctrl-pageup", PreviousEditor, None),
-        // Shells read Alt+arrows themselves (VS Code doesn't skip them).
-        KeyBinding::new("alt-left", NoAction, Some("Terminal")),
-        KeyBinding::new("alt-right", NoAction, Some("Terminal")),
         // Shells complete on Tab; gpui-kit's Root would move focus instead.
         KeyBinding::new("tab", NoAction, Some("Terminal")),
         KeyBinding::new("shift-tab", NoAction, Some("Terminal")),
@@ -354,6 +348,66 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
     ];
     // Extensions' after the built-in ones, which they override as in VS Code.
     list.extend(exthost::key_bindings(mapper));
+    // VS Code's terminal sends a key to the shell unless it's a chord or
+    // its command is in `terminal.integrated.commandsToSkipShell`'s
+    // defaults; these are vsn's actions from that list.
+    const SKIP_SHELL: &[&str] = &[
+        "TogglePanel",
+        "ToggleTerminal",
+        "CommandPalette",
+        "QuickOpen",
+        "OpenView",
+        "NewTerminal",
+        "SplitTerminal",
+        "KillTerminal",
+        "StartDebugging",
+        "RunWithoutDebugging",
+        "StopDebugging",
+        "RestartDebugging",
+        "Pause",
+        "StepOver",
+        "StepInto",
+        "StepOut",
+        "NextEditor",
+        "PreviousEditor",
+        "HideNotifications",
+    ];
+    let terminal: Rc<_> = KeyBindingContextPredicate::parse("Terminal")
+        .unwrap()
+        .into();
+    let pass: Vec<_> = (list.iter())
+        .filter(|b| {
+            b.keystrokes().len() == 1
+                && b.predicate()
+                    .is_none_or(|p| !p.to_string().contains("Terminal"))
+        })
+        .filter(|b| !SKIP_SHELL.contains(&b.action().name().rsplit("::").next().unwrap_or("")))
+        .map(|b| b.keystrokes()[0].unparse())
+        // Alt+F4 still closes the window on Windows.
+        .filter(|k| k != "alt-f4")
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .filter_map(|k| {
+            KeyBinding::load(
+                &k,
+                Box::new(NoAction),
+                Some(terminal.clone()),
+                false,
+                None,
+                mapper,
+            )
+            .ok()
+        })
+        .collect();
+    list.extend(pass);
+    // After the pass-through, which would otherwise outrank them.
+    let split = Some("Terminal && terminalSplitPaneActive");
+    list.extend([
+        KeyBinding::new("alt-left", FocusPreviousTerminal, split),
+        KeyBinding::new("alt-up", FocusPreviousTerminal, split),
+        KeyBinding::new("alt-right", FocusNextTerminal, split),
+        KeyBinding::new("alt-down", FocusNextTerminal, split),
+    ]);
     list
 }
 
@@ -5668,6 +5722,47 @@ mod tests {
         Encoding, block_toggled, comment_toggled, copy_all, copy_target, detect_indent, expanded,
         lines_moved, occurrences, with_eol, word_around,
     };
+
+    #[test]
+    fn terminal_keys_reach_the_shell() {
+        use crate::gpui::{DummyKeyboardMapper, KeyContext, Keymap, Keystroke};
+        let keymap = Keymap::new(super::key_bindings(&DummyKeyboardMapper));
+        let stack = |c| {
+            [
+                KeyContext::parse("Root").unwrap(),
+                KeyContext::parse(c).unwrap(),
+            ]
+        };
+        let action = |k: &str, c| {
+            let (b, _) = keymap.bindings_for_input(&[Keystroke::parse(k).unwrap()], &stack(c));
+            b.first()
+                .map(|b| b.action().name().rsplit("::").next().unwrap().to_string())
+        };
+        let term = "Terminal terminalFocus";
+        for k in [
+            "ctrl-s",
+            "ctrl-b",
+            "ctrl-w",
+            "ctrl-,",
+            "tab",
+            "shift-tab",
+            "ctrl-g",
+        ] {
+            assert_eq!(action(k, term), None, "{k}");
+        }
+        assert_eq!(action("ctrl-j", term).as_deref(), Some("TogglePanel"));
+        assert_eq!(action("ctrl-p", term).as_deref(), Some("QuickOpen"));
+        assert_eq!(action("f5", term).as_deref(), Some("StartDebugging"));
+        assert_eq!(action("ctrl-f", term).as_deref(), Some("FindInTerminal"));
+        assert_eq!(action("alt-f4", term).as_deref(), Some("CloseWindow"));
+        assert_eq!(action("alt-left", term), None);
+        let split = "Terminal terminalFocus terminalSplitPaneActive";
+        assert_eq!(
+            action("alt-up", split).as_deref(),
+            Some("FocusPreviousTerminal")
+        );
+        assert_eq!(action("ctrl-s", "Workbench").as_deref(), Some("Save"));
+    }
 
     #[test]
     fn expand_selection() {
