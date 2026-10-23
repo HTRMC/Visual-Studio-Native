@@ -509,6 +509,19 @@ struct Doc {
     page: Option<extensions::Page>,
 }
 
+fn session_path() -> Option<PathBuf> {
+    Some(dirs::config_dir()?.join("vsn").join("session.json"))
+}
+
+/// What [`Workbench::save_session`] last wrote: `last`, the folder open (null
+/// for none), and `editors`, each folder's open files and active one.
+pub fn session() -> serde_json::Value {
+    (session_path().and_then(|p| fs::read(p).ok()))
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}))
+}
+
 /// The encodings VS Code detects without `files.autoGuessEncoding`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 enum Encoding {
@@ -2133,6 +2146,49 @@ impl Workbench {
         self.quit(&Quit, window, cx);
     }
 
+    /// Remembers the folder and its open editors for the next start, as VS
+    /// Code's window.restoreWindows "all" reopens them.
+    // ponytail: saved on quit only, so a crash forgets the session.
+    fn save_session(&self) {
+        let Some(path) = session_path() else { return };
+        let mut s = session();
+        let files: Vec<_> = (self.docs.iter())
+            .filter(|d| !d.untitled && d.page.is_none() && d.path.is_file())
+            .collect();
+        let active = (files.iter())
+            .position(|d| self.docs.get(self.active).is_some_and(|a| a.path == d.path));
+        let key = self
+            .root
+            .as_ref()
+            .map_or(String::new(), |r| r.to_string_lossy().into_owned());
+        s["last"] = serde_json::json!(self.root);
+        s["editors"][key] = serde_json::json!({ "files": files.iter().map(|d| &d.path).collect::<Vec<_>>(), "active": active });
+        fs::create_dir_all(path.parent().unwrap()).ok();
+        fs::write(path, s.to_string()).ok();
+    }
+
+    /// Reopens the editors the root's folder had open when vsn last quit.
+    pub fn restore_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let key = self
+            .root
+            .as_ref()
+            .map_or(String::new(), |r| r.to_string_lossy().into_owned());
+        let s = session();
+        let saved = &s["editors"][key];
+        let files: Vec<PathBuf> =
+            serde_json::from_value(saved["files"].clone()).unwrap_or_default();
+        for path in files {
+            self.open_path(path, window, cx);
+        }
+        let active = saved["active"].as_u64().and_then(|ix| {
+            let path = saved["files"][ix as usize].as_str()?;
+            self.docs.iter().position(|d| d.path == Path::new(path))
+        });
+        if let Some(ix) = active {
+            self.activate(ix, window, cx);
+        }
+    }
+
     /// True when nothing is unsaved. Otherwise asks Save All / Don't Save / Cancel
     /// and quits by itself once the answer allows it.
     fn can_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
@@ -2149,6 +2205,7 @@ impl Workbench {
             })
             .collect();
         if self.quitting || dirty.is_empty() {
+            self.save_session();
             return true;
         }
         let message = match dirty.as_slice() {
@@ -2184,6 +2241,7 @@ impl Workbench {
                 }
                 // A failed save keeps its editor dirty; stay open so nothing is lost.
                 if this.docs.iter().all(|d| !d.dirty) || choice == 1 {
+                    this.save_session();
                     this.quitting = true;
                     cx.quit();
                 }

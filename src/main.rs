@@ -18,10 +18,13 @@ fn main() {
         .skip(1)
         .filter_map(|a| std::path::absolute(a).ok().filter(|p| p.exists()))
         .partition(|p| p.is_dir());
-    let root = dirs
-        .into_iter()
-        .last()
-        .or_else(|| std::env::current_dir().ok());
+    // No folder given: the one open when vsn last quit, as VS Code reopens it.
+    let session = workbench::session();
+    let root = dirs.into_iter().last().or_else(|| {
+        (session["last"].as_str())
+            .map(PathBuf::from)
+            .filter(|p| p.is_dir())
+    });
 
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
@@ -58,6 +61,7 @@ fn main() {
                 let wb = cx.new(|cx| Workbench::new(root, window, cx));
                 window.focus(&wb.read(cx).focus.clone(), cx);
                 wb.update(cx, |wb, cx| {
+                    wb.restore_session(window, cx);
                     files
                         .into_iter()
                         .for_each(|f| wb.open_recent(f, window, cx))
