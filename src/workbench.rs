@@ -38,6 +38,7 @@ mod lsp;
 mod output;
 mod palette;
 mod search;
+mod settings_ui;
 mod terminal;
 mod wasmhost;
 
@@ -507,6 +508,8 @@ struct Doc {
     wrap: Option<bool>,
     /// An extension's details instead of a file.
     page: Option<extensions::Page>,
+    /// The Settings editor, when this tab is it.
+    settings: Option<Box<settings_ui::Page>>,
 }
 
 fn session_path() -> Option<PathBuf> {
@@ -1217,6 +1220,7 @@ impl Workbench {
             untitled,
             wrap: None,
             page: None,
+            settings: None,
         });
         self.activate(self.docs.len() - 1, window, cx);
         self.open_editors_changed(cx);
@@ -1802,17 +1806,22 @@ impl Workbench {
                 let path = doc.path.clone();
                 self.lsp_saved(&path);
                 if let Some(old) = old {
-                    self.relanguage(&old, window, cx);
-                    let new = terminal::settings();
-                    let changed = |key: &str| old[key] != new[key];
-                    if changed("workbench.colorTheme") || changed("workbench.iconTheme") {
-                        extensions::apply_themes(cx);
-                    }
+                    self.settings_changed(&old, window, cx);
                 }
             }
             Err(err) => eprintln!("save {}: {err}", doc.path.display()),
         }
         cx.notify();
+    }
+
+    /// Applies settings.json's changes from `old`.
+    fn settings_changed(&mut self, old: &serde_json::Value, window: &mut Window, cx: &mut Context<Self>) {
+        self.relanguage(old, window, cx);
+        let new = terminal::settings();
+        let changed = |key: &str| old[key] != new[key];
+        if changed("workbench.colorTheme") || changed("workbench.iconTheme") {
+            extensions::apply_themes(cx);
+        }
     }
 
     /// File: Save As: asks where to save editor `ix` (an untitled one in the
@@ -3769,7 +3778,10 @@ impl Workbench {
                             .bg(col::accent()),
                     )
                 })
-                .child(file_icon(&doc.path))
+                .child(match doc.settings.is_some() {
+                    true => codicon(icon::SETTINGS).into_any_element(),
+                    false => file_icon(&doc.path).into_any_element(),
+                })
                 .child(div().flex_1().whitespace_nowrap().child(name.clone()))
                 .child(
                     div()
@@ -3951,6 +3963,15 @@ impl Workbench {
                                 let args = exthost::uri_args(path.as_deref());
                                 self.ext_buttons("ext-title", items, args, cx)
                             })
+                            .when(doc.settings.is_some(), |d| {
+                                d.child(
+                                    action_button("settings-json", icon::GO_TO_FILE)
+                                        .tooltip(tip("Open Settings (JSON)"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.open_settings(window, cx)
+                                        })),
+                                )
+                            })
                             .child(
                                 action_button("split-editor", icon::SPLIT_HORIZONTAL)
                                     .tooltip(tip("Split Editor Right")),
@@ -3975,7 +3996,7 @@ impl Workbench {
             .child(
                 div()
                     .id("breadcrumbs-row")
-                    .when(doc.page.is_some(), |d| d.hidden())
+                    .when(doc.page.is_some() || doc.settings.is_some(), |d| d.hidden())
                     .relative()
                     .h(px(22.))
                     .flex_none()
@@ -3998,6 +4019,9 @@ impl Workbench {
                 div().flex_1().min_h_0().map(|d| {
                     if doc.page.is_some() {
                         return d.child(self.render_page(self.active, cx));
+                    }
+                    if doc.settings.is_some() {
+                        return d.child(self.render_settings(self.active, cx));
                     }
                     if !doc.binary {
                         let keys = exthost::editor_keys(&doc.path, doc.lang);
@@ -5050,10 +5074,8 @@ impl Render for Workbench {
                     this.open_settings(window, cx)
                 }),
             )
-            // ponytail: no Settings UI, so Ctrl+, opens settings.json, as VS
-            // Code does with `workbench.settings.editor` set to "json".
             .on_action(
-                cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings(window, cx)),
+                cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings_ui("", window, cx)),
             )
             .on_action(cx.listener(|this, _: &ShowSearch, window, cx| {
                 this.sidebar = true;

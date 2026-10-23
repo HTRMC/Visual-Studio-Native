@@ -417,9 +417,12 @@ Differences from VS Code still to close, smallest first within each area.
       Settings" and "Learn More" links.
 - [x] Preferences > Settings (Ctrl+,) was inert; it and the palette's
       "Preferences: Open User Settings" now open settings.json.
-- [ ] No Settings UI: Ctrl+, opens settings.json (VS Code's
+- [x] No Settings UI: Ctrl+, opens settings.json (VS Code's
       `workbench.settings.editor: "json"`), and Open Settings opens it rather
       than a Settings UI filtered to ".exclude".
+- [ ] The Settings UI lists only the settings vsn honors plus extensions';
+      it lacks the Workspace tab, @-filters, enum descriptions, Copy Setting
+      as URL, and the narrow layout that hides the TOC under 700px.
 - [x] The palette lacks "Preferences: Open User Settings (JSON)".
 - [ ] The palette lacks "Preferences: Open Keyboard Shortcuts" and the
       other Preferences commands (no keybindings editor or keybindings.json).

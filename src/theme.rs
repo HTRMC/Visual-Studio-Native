@@ -87,6 +87,8 @@ pub mod icon {
     pub const EXTENSIONS: char = '\u{EAE6}';
     pub const ACCOUNT: char = '\u{EB99}';
     pub const SETTINGS_GEAR: char = '\u{EB51}';
+    pub const SETTINGS: char = '\u{EB52}';
+    pub const GO_TO_FILE: char = '\u{EA94}';
     pub const CHEVRON_RIGHT: char = '\u{EAB6}';
     pub const CHEVRON_DOWN: char = '\u{EAB4}';
     pub const CHEVRON_UP: char = '\u{EAB7}';

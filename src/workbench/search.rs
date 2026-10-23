@@ -504,10 +504,8 @@ impl Workbench {
         summary(&f.results, &include, &exclude, f.open_only)
     }
 
-    /// Open User Settings (JSON), and the empty result's Open Settings: the user settings.json, created
-    /// empty if missing, as VS Code's Open User Settings (JSON) does.
-    // ponytail: VS Code opens its Settings UI filtered to ".exclude"; there's
-    // no Settings UI here.
+    /// Open User Settings (JSON): the user settings.json, created empty if
+    /// missing, as VS Code's does.
     pub(super) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(path) = super::terminal::settings_path() else {
             return;
@@ -1170,7 +1168,7 @@ impl Workbench {
                                 )
                                 .on_click(links, move |ix, window, cx| match ix {
                                     0 => {
-                                        _ = wb.update(cx, |this, cx| this.open_settings(window, cx))
+                                        _ = wb.update(cx, |this, cx| this.open_settings_ui(".exclude", window, cx))
                                     }
                                     _ => cx
                                         .open_url("https://go.microsoft.com/fwlink/?linkid=853977"),
