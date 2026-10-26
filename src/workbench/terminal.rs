@@ -87,6 +87,8 @@ pub(super) struct Terminal {
     /// Where the grid was last laid out, to size the pty and hit-test the mouse.
     bounds: Rc<Cell<Bounds<Pixels>>>,
     cell_w: f32,
+    /// LINE_H snapped to device pixels, as gpui lays each row out.
+    line_h: f32,
     /// Drag start and end as cell boundaries (line, col), lines counted from
     /// the oldest in the scrollback, so a selection scrolls with its text.
     selection: Option<Span>,
@@ -163,7 +165,7 @@ impl Terminal {
         let at = position - self.bounds.get().origin;
         let col = (f32::from(at.x) + self.scroll_x - PAD_L) / self.cell_w;
         let col = if round { col.round() } else { col.floor() };
-        let row = (f32::from(at.y) / LINE_H).floor();
+        let row = (f32::from(at.y) / self.line_h).floor();
         (
             (row.max(0.) as u16).min(rows.get() - 1),
             (col.max(0.) as u16).min(cols.get() - !round as u16),
@@ -226,7 +228,7 @@ impl Terminal {
     fn overshoot(&self) -> isize {
         let b = self.bounds.get();
         let y = self.drag_at.y;
-        let lines = |d: Pixels| 1 + (f32::from(d) / LINE_H) as isize;
+        let lines = |d: Pixels| 1 + (f32::from(d) / self.line_h) as isize;
         if y < b.top() {
             lines(b.top() - y)
         } else if y >= b.bottom() {
@@ -928,6 +930,7 @@ impl Workbench {
             focus: cx.focus_handle(),
             bounds: Rc::default(),
             cell_w: 8.,
+            line_h: LINE_H,
             selection: None,
             selecting: false,
             unit: None,
@@ -2223,9 +2226,14 @@ impl Workbench {
         let ts = window.text_system();
         let cell_w = ts.advance(ts.resolve_font(&font), px(FONT_SIZE), 'm');
         t.cell_w = cell_w.map_or(8., |s| f32::from(s.width));
+        // gpui rounds each row's height to device pixels, half toward zero;
+        // placing rows by the unrounded height drifts from them down the grid.
+        let scale = window.scale_factor();
+        t.line_h = (LINE_H * scale - 0.5).ceil() / scale;
+        let line_h = t.line_h;
         let size = t.bounds.get().size;
         if size.width > px(0.) {
-            let rows = (f32::from(size.height) / LINE_H).floor().max(1.) as u16;
+            let rows = (f32::from(size.height) / line_h).floor().max(1.) as u16;
             let cols = (f32::from(size.width) - PAD_L - PAD_R) / t.cell_w;
             let cols = t.fixed_cols.unwrap_or(cols.floor().max(1.) as u16);
             let (r, c) = t.parser.screen().size();
@@ -2364,7 +2372,7 @@ impl Workbench {
                 }
             }
             div()
-                .h(px(LINE_H))
+                .h(px(line_h))
                 .child(StyledText::new(text).with_runs(runs))
         });
 
@@ -2375,9 +2383,9 @@ impl Workbench {
             div()
                 .absolute()
                 .left(px(PAD_L + col as f32 * t.cell_w))
-                .top(px(row as f32 * LINE_H))
+                .top(px(row as f32 * line_h))
                 .w(px(t.cell_w))
-                .h(px(LINE_H))
+                .h(px(line_h))
                 .map(|d| match focused {
                     true => d.bg(fg0).text_color(bg0).children(under),
                     false => d.border_1().border_color(fg0),
@@ -2575,7 +2583,7 @@ impl Workbench {
                 div()
                     .font_family(FONT)
                     .text_size(px(FONT_SIZE))
-                    .line_height(px(LINE_H))
+                    .line_height(px(line_h))
                     .text_color(fg0)
                     // Out of the flow, so a fixed width can't widen the panel.
                     .absolute()
