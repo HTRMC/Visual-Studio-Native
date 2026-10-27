@@ -281,7 +281,8 @@ fn builtin_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("Debug: Open 'launch.json'", Box::new(OpenLaunchJson)),
         ("Preferences: Open User Settings", Box::new(OpenSettings)),
         ("Markdown: Open Preview", Box::new(MarkdownShowPreview)),
-        ("Markdown: Open Preview to the Side", Box::new(MarkdownShowPreview)),
+        ("Markdown: Open Preview to the Side", Box::new(MarkdownShowPreviewToSide)),
+        ("Markdown: Open Source File", Box::new(MarkdownShowSource)),
         ("Preferences: Color Theme", Box::new(SelectColorTheme)),
         ("Preferences: File Icon Theme", Box::new(SelectIconTheme)),
         (

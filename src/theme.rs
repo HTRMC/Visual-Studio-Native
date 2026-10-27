@@ -106,6 +106,7 @@ pub mod icon {
     pub const SETTINGS_GEAR: char = '\u{EB51}';
     pub const SETTINGS: char = '\u{EB52}';
     pub const OPEN_PREVIEW: char = '\u{EB28}';
+    pub const FILE_CODE: char = '\u{EAE9}';
     pub const GO_TO_FILE: char = '\u{EA94}';
     pub const CHEVRON_RIGHT: char = '\u{EAB6}';
     pub const CHEVRON_DOWN: char = '\u{EAB4}';

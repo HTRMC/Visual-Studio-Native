@@ -178,6 +178,8 @@ actions!(
         OpenSettingsJson,
         OpenSettings,
         MarkdownShowPreview,
+        MarkdownShowPreviewToSide,
+        MarkdownShowSource,
         InstallFromVsix,
         SelectColorTheme,
         SelectIconTheme,
@@ -229,9 +231,8 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-shift-x", ShowExtensions, None),
         KeyBinding::new("ctrl-shift-p", CommandPalette, None),
         KeyBinding::new("ctrl-,", OpenSettings, None),
-        // ponytail: no editor groups, so "to the Side" (Ctrl+K V) opens a tab too.
         KeyBinding::new("ctrl-shift-v", MarkdownShowPreview, Some("editorLangId == markdown")),
-        KeyBinding::new("ctrl-k v", MarkdownShowPreview, Some("editorLangId == markdown")),
+        KeyBinding::new("ctrl-k v", MarkdownShowPreviewToSide, Some("editorLangId == markdown")),
         KeyBinding::new("f1", CommandPalette, None),
         KeyBinding::new("ctrl-p", QuickOpen, None),
         KeyBinding::new("ctrl-q", OpenView, None),
@@ -1041,6 +1042,8 @@ pub struct Workbench {
     act_hid: Option<Instant>,
     /// The OS window's title, as last set.
     title: String,
+    /// The Markdown file shown with its preview beside it (Ctrl+K V).
+    side_preview: Option<PathBuf>,
     /// The folder and editors as last saved by [`Self::save_session`].
     saved_session: String,
     /// Go Back/Forward's history of editor locations, and the current one.
@@ -1119,6 +1122,7 @@ impl Workbench {
             act_wait: None,
             act_hid: None,
             title: String::new(),
+            side_preview: None,
             saved_session: String::new(),
             nav: Vec::new(),
             nav_at: 0,
@@ -2193,16 +2197,29 @@ impl Workbench {
         self.quit(&Quit, window, cx);
     }
 
-    /// Markdown: Open Preview, the active Markdown file rendered in a tab of
-    /// its own that follows its edits.
-    // ponytail: no scroll sync, and relative images don't load.
-    fn markdown_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(doc) = (self.docs.get(self.active))
+    /// Markdown: Open Preview, `source` (else the active Markdown file)
+    /// rendered in a tab of its own; `side` shows it beside the file instead.
+    /// Either follows the file's edits.
+    // ponytail: the side preview splits the editor, not a second editor
+    // group; no scroll sync, and relative images don't load.
+    fn markdown_preview(
+        &mut self,
+        source: Option<PathBuf>,
+        side: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let active = (self.docs.get(self.active))
             .filter(|d| d.lang == "markdown" && d.preview.is_none())
-        else {
+            .map(|d| d.path.clone());
+        let Some(source) = source.or(active) else {
             return;
         };
-        let source = doc.path.clone();
+        if side {
+            self.open_path(source.clone(), window, cx);
+            self.side_preview = Some(source);
+            return cx.notify();
+        }
         if let Some(ix) = self.docs.iter().position(|d| d.preview.as_ref() == Some(&source)) {
             return self.activate(ix, window, cx);
         }
@@ -2211,6 +2228,44 @@ impl Workbench {
         // Binary, so saving and the editor's commands leave its empty text alone.
         self.push_doc(path, String::new(), Encoding::Utf8, true, false, window, cx);
         self.docs.last_mut().unwrap().preview = Some(source);
+    }
+
+    /// The editor with its Markdown preview beside it, which has a header to
+    /// close it in place of a second group's tab.
+    fn render_side_preview(&self, code: Div, source: &Path, cx: &mut Context<Self>) -> AnyElement {
+        let name = source.file_name().unwrap_or_default().to_string_lossy();
+        let header = h_flex()
+            .h(px(35.))
+            .flex_none()
+            .px(px(10.))
+            .gap(px(6.))
+            .text_size(px(13.))
+            .border_b_1()
+            .border_color(col::border())
+            .child(codicon(icon::OPEN_PREVIEW))
+            .child(div().flex_1().whitespace_nowrap().child(format!("Preview {name}")))
+            .child(
+                action_button("side-preview-close", icon::CLOSE)
+                    .tooltip(tip("Close"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.side_preview = None;
+                        cx.notify();
+                    })),
+            );
+        h_flex()
+            .size_full()
+            .child(div().flex_1().min_w_0().h_full().child(code))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .border_l_1()
+                    .border_color(col::border())
+                    .child(header)
+                    .child(div().flex_1().min_h_0().child(self.render_preview(usize::MAX, source, cx))),
+            )
+            .into_any_element()
     }
 
     fn render_preview(&self, ix: usize, source: &Path, cx: &App) -> AnyElement {
@@ -4081,6 +4136,24 @@ impl Workbench {
                                 let args = exthost::uri_args(path.as_deref());
                                 self.ext_buttons("ext-title", items, args, cx)
                             })
+                            .when(doc.lang == "markdown" && doc.preview.is_none() && !doc.binary, |d| {
+                                d.child(
+                                    action_button("md-preview-side", icon::OPEN_PREVIEW)
+                                        .tooltip(tip("Open Preview to the Side (Ctrl+K V)"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.markdown_preview(None, true, window, cx)
+                                        })),
+                                )
+                            })
+                            .when(doc.preview.is_some(), |d| {
+                                d.child(
+                                    action_button("md-source", icon::FILE_CODE)
+                                        .tooltip(tip("Open Source File"))
+                                        .on_click(|_, window, cx| {
+                                            window.dispatch_action(Box::new(MarkdownShowSource), cx)
+                                        }),
+                                )
+                            })
                             .when(doc.settings.is_some(), |d| {
                                 d.child(
                                     action_button("settings-json", icon::GO_TO_FILE)
@@ -4146,7 +4219,11 @@ impl Workbench {
                     }
                     if !doc.binary {
                         let keys = exthost::editor_keys(&doc.path, doc.lang);
-                        return d.key_context(keys).child(self.render_code(self.active, cx));
+                        let code = div().size_full().key_context(keys).child(self.render_code(self.active, cx));
+                        if self.side_preview.as_ref() != Some(&doc.path) {
+                            return d.child(code);
+                        }
+                        return d.child(self.render_side_preview(code, &doc.path, cx));
                     }
                     // VS Code's binary editor placeholder.
                     let ix = self.active;
@@ -4995,6 +5072,11 @@ fn explorer_menu(
             .item(item("Open", None, |this, path, w, cx| {
                 this.open_path(path.to_path_buf(), w, cx)
             }))
+            .when(language_id(path) == "markdown", |m| {
+                m.item(item("Open Preview", None, |this, path, w, cx| {
+                    this.markdown_preview(Some(path.to_path_buf()), false, w, cx)
+                }))
+            })
             .separator(),
     };
     let menu = menu
@@ -5286,7 +5368,16 @@ impl Render for Workbench {
                 this.open_settings_ui("", window, cx)
             }))
             .on_action(cx.listener(|this, _: &MarkdownShowPreview, window, cx| {
-                this.markdown_preview(window, cx)
+                this.markdown_preview(None, false, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &MarkdownShowPreviewToSide, window, cx| {
+                this.markdown_preview(None, true, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &MarkdownShowSource, window, cx| {
+                let source = this.docs.get(this.active).and_then(|d| d.preview.clone());
+                if let Some(source) = source {
+                    this.open_path(source, window, cx);
+                }
             }))
             .on_action(cx.listener(|this, _: &ShowSearch, window, cx| {
                 this.sidebar = true;
@@ -6451,7 +6542,12 @@ fn editor_tab_menu(
         .item(item("Reveal in Explorer View", None, |this, ix, w, cx| {
             this.activate(ix, w, cx);
             this.reveal_in_tree(&this.docs[ix].path.clone(), true, cx)
-        }));
+        }))
+        .when(lang == "markdown", |m| {
+            m.separator().item(item("Open Preview", None, |this, ix, w, cx| {
+                this.markdown_preview(Some(this.docs[ix].path.clone()), false, w, cx)
+            }))
+        });
     let mut focus = KeyContext::default();
     focus.set("resourceLangId", lang);
     exthost::resource_keys(&mut focus, path);
