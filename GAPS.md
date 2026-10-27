@@ -5,6 +5,8 @@ Differences from VS Code still to close, smallest first within each area.
 
 ## Terminal
 
+- [x] Spinner glyphs from a fallback font (✽ ✢) no longer bob the row.
+- [x] Opening another folder restarts the shells there.
 - [x] Select All covers the scrollback, not only the visible screen.
 - [x] Double-click selects a word, triple-click a line.
 - [x] Dragging after a double or triple click extends by whole words or lines.
@@ -107,6 +109,9 @@ Differences from VS Code still to close, smallest first within each area.
 
 ## Workbench
 
+- [x] The folder and editors are saved as they change, not only on a clean quit.
+- [ ] Markdown preview (Ctrl+Shift+V, Ctrl+K V) opens as a tab, not beside the
+      source; no scroll sync, relative images or links.
 - [x] A toast stays while the mouse is over it.
 - [x] The bell opens the notification center (clear one, Clear All, hide;
       the bell dots while some are unseen; a repeat replaces the old one).

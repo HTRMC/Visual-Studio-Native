@@ -1714,6 +1714,26 @@ impl Workbench {
         self.activate_terminal(id, window, cx);
     }
 
+    /// Kills every shell; one starts again in the workspace if any were open.
+    pub(super) fn restart_terminals(&mut self, cx: &mut Context<Self>) {
+        let ts = &mut self.terminals;
+        let any = !ts.list.is_empty();
+        ts.list.clear();
+        ts.picked.clear();
+        ts.active = 0;
+        let (this, window) = (cx.entity(), cx.active_window());
+        if let Some(window) = window.filter(|_| any) {
+            cx.defer(move |cx| {
+                window
+                    .update(cx, |_, window, cx| {
+                        this.update(cx, |this, cx| this.add_terminal(false, None, None, window, cx))
+                    })
+                    .ok();
+            });
+        }
+        cx.notify();
+    }
+
     pub(super) fn kill_active_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(t) = self.terminals.list.get(self.terminals.active) {
             self.kill_terminal(t.id, window, cx);

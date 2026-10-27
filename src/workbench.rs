@@ -22,6 +22,7 @@ use gpui_kit::component::{
     input::{self, Editor, EditorState, Input, InputEvent, InputState, RopeExt as _, TabSize},
     menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem},
     resizable_panel,
+    text::TextView,
     tooltip::Tooltip,
     v_resizable,
 };
@@ -176,6 +177,7 @@ actions!(
         FindInFolder,
         OpenSettingsJson,
         OpenSettings,
+        MarkdownShowPreview,
         InstallFromVsix,
         SelectColorTheme,
         SelectIconTheme,
@@ -227,6 +229,9 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-shift-x", ShowExtensions, None),
         KeyBinding::new("ctrl-shift-p", CommandPalette, None),
         KeyBinding::new("ctrl-,", OpenSettings, None),
+        // ponytail: no editor groups, so "to the Side" (Ctrl+K V) opens a tab too.
+        KeyBinding::new("ctrl-shift-v", MarkdownShowPreview, Some("editorLangId == markdown")),
+        KeyBinding::new("ctrl-k v", MarkdownShowPreview, Some("editorLangId == markdown")),
         KeyBinding::new("f1", CommandPalette, None),
         KeyBinding::new("ctrl-p", QuickOpen, None),
         KeyBinding::new("ctrl-q", OpenView, None),
@@ -513,6 +518,8 @@ struct Doc {
     page: Option<extensions::Page>,
     /// The Settings editor, when this tab is it.
     settings: Option<Box<settings_ui::Page>>,
+    /// The Markdown file this tab previews.
+    preview: Option<PathBuf>,
 }
 
 fn session_path() -> Option<PathBuf> {
@@ -1034,6 +1041,8 @@ pub struct Workbench {
     act_hid: Option<Instant>,
     /// The OS window's title, as last set.
     title: String,
+    /// The folder and editors as last saved by [`Self::save_session`].
+    saved_session: String,
     /// Go Back/Forward's history of editor locations, and the current one.
     nav: Vec<(PathBuf, input::Position)>,
     nav_at: usize,
@@ -1110,6 +1119,7 @@ impl Workbench {
             act_wait: None,
             act_hid: None,
             title: String::new(),
+            saved_session: String::new(),
             nav: Vec::new(),
             nav_at: 0,
             last_edit: None,
@@ -1234,6 +1244,7 @@ impl Workbench {
             wrap: None,
             page: None,
             settings: None,
+            preview: None,
         });
         self.activate(self.docs.len() - 1, window, cx);
         self.open_editors_changed(cx);
@@ -2121,7 +2132,12 @@ impl Workbench {
     }
 
     fn set_root(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let moved = self.root.as_ref() != Some(&path);
         self.root = Some(path);
+        if moved {
+            // VS Code reloads the window for a new folder, so its shells start there.
+            self.restart_terminals(cx);
+        }
         self.lsp_reset();
         self.expanded.clear();
         self.root_open = true;
@@ -2177,9 +2193,45 @@ impl Workbench {
         self.quit(&Quit, window, cx);
     }
 
+    /// Markdown: Open Preview, the active Markdown file rendered in a tab of
+    /// its own that follows its edits.
+    // ponytail: no scroll sync, and relative images don't load.
+    fn markdown_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = (self.docs.get(self.active))
+            .filter(|d| d.lang == "markdown" && d.preview.is_none())
+        else {
+            return;
+        };
+        let source = doc.path.clone();
+        if let Some(ix) = self.docs.iter().position(|d| d.preview.as_ref() == Some(&source)) {
+            return self.activate(ix, window, cx);
+        }
+        let name = source.file_name().unwrap_or_default().to_string_lossy();
+        let path = PathBuf::from(format!("Preview {name}"));
+        // Binary, so saving and the editor's commands leave its empty text alone.
+        self.push_doc(path, String::new(), Encoding::Utf8, true, false, window, cx);
+        self.docs.last_mut().unwrap().preview = Some(source);
+    }
+
+    fn render_preview(&self, ix: usize, source: &Path, cx: &App) -> AnyElement {
+        let text = match self.docs.iter().find(|d| d.path == source) {
+            Some(d) => d.editor.read(cx).value().to_string(),
+            None => fs::read_to_string(source).unwrap_or_default(),
+        };
+        // VS Code's markdown.css: 26px sides, 14px text.
+        div()
+            .id(("md-preview", ix))
+            .size_full()
+            .overflow_y_scroll()
+            .px(px(26.))
+            .py(px(16.))
+            .text_size(px(14.))
+            .child(TextView::markdown(("md-preview-text", ix), text).selectable(true))
+            .into_any_element()
+    }
+
     /// Remembers the folder and its open editors for the next start, as VS
     /// Code's window.restoreWindows "all" reopens them.
-    // ponytail: saved on quit only, so a crash forgets the session.
     fn save_session(&self) {
         let Some(path) = session_path() else { return };
         let mut s = session();
@@ -3843,9 +3895,10 @@ impl Workbench {
                             .bg(col::accent()),
                     )
                 })
-                .child(match doc.settings.is_some() {
-                    true => codicon(icon::SETTINGS).into_any_element(),
-                    false => file_icon(&doc.path).into_any_element(),
+                .child(match (doc.settings.is_some(), doc.preview.is_some()) {
+                    (true, _) => codicon(icon::SETTINGS).into_any_element(),
+                    (_, true) => codicon(icon::OPEN_PREVIEW).into_any_element(),
+                    _ => file_icon(&doc.path).into_any_element(),
                 })
                 .child(div().flex_1().whitespace_nowrap().child(name.clone()))
                 .child(
@@ -4061,7 +4114,7 @@ impl Workbench {
             .child(
                 div()
                     .id("breadcrumbs-row")
-                    .when(doc.page.is_some() || doc.settings.is_some(), |d| d.hidden())
+                    .when(doc.page.is_some() || doc.settings.is_some() || doc.preview.is_some(), |d| d.hidden())
                     .relative()
                     .h(px(22.))
                     .flex_none()
@@ -4087,6 +4140,9 @@ impl Workbench {
                     }
                     if doc.settings.is_some() {
                         return d.child(self.render_settings(self.active, cx));
+                    }
+                    if let Some(source) = &doc.preview {
+                        return d.child(self.render_preview(self.active, source, cx));
                     }
                     if !doc.binary {
                         let keys = exthost::editor_keys(&doc.path, doc.lang);
@@ -5041,6 +5097,12 @@ impl Render for Workbench {
             window.set_window_title(&title);
             self.title = title;
         }
+        // Saved as it changes, so a kill or crash still reopens it.
+        let session = format!("{:?}", (&self.root, self.docs.iter().map(|d| &d.path).collect::<Vec<_>>(), self.active));
+        if session != self.saved_session {
+            self.save_session();
+            self.saved_session = session;
+        }
         let sidebar = self.render_sidebar(cx);
         // A file dragged from the explorer opens where it's dropped; so do
         // files from Windows, and a folder from there becomes the workspace.
@@ -5222,6 +5284,9 @@ impl Render for Workbench {
             )
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
                 this.open_settings_ui("", window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &MarkdownShowPreview, window, cx| {
+                this.markdown_preview(window, cx)
             }))
             .on_action(cx.listener(|this, _: &ShowSearch, window, cx| {
                 this.sidebar = true;

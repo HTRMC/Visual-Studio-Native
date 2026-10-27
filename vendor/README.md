@@ -6,3 +6,6 @@ comment; on a gpui-kit update, copy the new version over and re-apply them.
 
 - **gpui-pre-windows 0.3.9** (`src/direct_write.rs`): tab characters advance
   to the next tab stop (every 4 spaces) instead of rendering zero-width.
+- **gpui-pre-windows 0.3.9** (`src/direct_write.rs`): a line's ascent and
+  descent come from its own font, so a taller fallback glyph doesn't move the
+  baseline.

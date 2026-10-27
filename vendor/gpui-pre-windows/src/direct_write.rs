@@ -604,13 +604,16 @@ impl DirectWriteState {
                 layout
             };
 
+            // vsn: the baseline comes from the line's own font, not the line's
+            // metrics, which grow with a taller fallback font (Segoe UI Symbol
+            // for a spinner's ✽) and so bob the whole line as glyphs change.
             let (ascent, descent) = {
-                let mut first_metrics = [DWRITE_LINE_METRICS::default(); 4];
-                let mut line_count = 0u32;
-                text_layout.GetLineMetrics(Some(&mut first_metrics), &mut line_count)?;
+                let mut m: DWRITE_FONT_METRICS1 = std::mem::zeroed();
+                self.fonts[font_runs[0].font_id.0].font_face.GetMetrics(&mut m);
+                let scale = font_size.as_f32() / m.Base.designUnitsPerEm as f32;
                 (
-                    px(first_metrics[0].baseline),
-                    px(first_metrics[0].height - first_metrics[0].baseline),
+                    px(m.Base.ascent as f32 * scale),
+                    px((m.Base.descent as f32 + m.Base.lineGap as f32) * scale),
                 )
             };
             let mut break_ligatures = true;
