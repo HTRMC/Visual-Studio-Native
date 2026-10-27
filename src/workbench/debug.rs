@@ -383,7 +383,7 @@ impl Workbench {
         (self.debug.repl).update(cx, |i, cx| i.set_placeholder("", window, cx));
         let init = json!({
             "clientID": "vscode",
-            "clientName": "Visual Studio Native",
+            "clientName": "Visual Studio Code Native",
             "adapterID": ty,
             "pathFormat": "path",
             "linesStartAt1": true,

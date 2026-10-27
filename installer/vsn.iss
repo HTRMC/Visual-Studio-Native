@@ -1,4 +1,4 @@
-; Visual Studio Native's Windows installer, after VS Code's own Inno Setup
+; Visual Studio Code Native's Windows installer, after VS Code's own Inno Setup
 ; one: a per-user install by default (no admin), with the same optional
 ; Explorer menu entries and PATH. Build it with installer\build.ps1.
 
@@ -6,7 +6,7 @@
   #error Pass /DAppVersion=x.y.z (installer\build.ps1 does)
 #endif
 
-#define AppName "Visual Studio Native"
+#define AppName "Visual Studio Code Native"
 #define AppExe "vsn.exe"
 
 [Setup]

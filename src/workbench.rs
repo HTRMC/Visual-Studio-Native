@@ -1179,7 +1179,7 @@ impl Workbench {
             })
             .chain(self.root_name())
             .collect();
-        parts.push("Visual Studio Native".into());
+        parts.push("Visual Studio Code Native".into());
         let dirty = if doc.is_some_and(|d| d.dirty) {
             "● "
         } else {
@@ -1781,7 +1781,7 @@ impl Workbench {
         );
         let answer = window.prompt(
             PromptLevel::Info,
-            "Visual Studio Native",
+            "Visual Studio Code Native",
             Some(&detail),
             &["Copy", "OK"],
             cx,
@@ -2727,7 +2727,7 @@ impl Workbench {
 
         let title = self
             .root_name()
-            .unwrap_or_else(|| "Visual Studio Native".into());
+            .unwrap_or_else(|| "Visual Studio Code Native".into());
         // VS Code's "Search {workspace} (Ctrl+P) — {window title}".
         let tooltip: SharedString =
             format!("Search {title} (Ctrl+P) — {}", self.window_title()).into();

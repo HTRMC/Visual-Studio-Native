@@ -560,7 +560,7 @@ const vscodeExtensions = {
 };
 
 const env = {
-  appName: 'Visual Studio Native', appRoot: path.dirname(process.execPath), appHost: 'desktop',
+  appName: 'Visual Studio Code Native', appRoot: path.dirname(process.execPath), appHost: 'desktop',
   language: 'en', machineId: os.hostname(), sessionId: String(process.pid), uriScheme: 'vsn',
   shell: process.env.ComSpec || '/bin/sh', uiKind: 1, remoteName: undefined, isTelemetryEnabled: false,
   onDidChangeTelemetryEnabled: never,

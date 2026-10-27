@@ -51,7 +51,7 @@ fn main() {
                 window_bounds: Some(WindowBounds::centered(size(px(1280.), px(800.)), cx)),
                 window_min_size: Some(size(px(400.), px(270.))),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("Visual Studio Native".into()),
+                    title: Some("Visual Studio Code Native".into()),
                     appears_transparent: true,
                     ..Default::default()
                 }),

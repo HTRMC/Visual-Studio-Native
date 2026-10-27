@@ -12,8 +12,8 @@ BEGIN
     BEGIN
         BLOCK "040904B0"
         BEGIN
-            VALUE "FileDescription", "Visual Studio Native"
-            VALUE "ProductName", "Visual Studio Native"
+            VALUE "FileDescription", "Visual Studio Code Native"
+            VALUE "ProductName", "Visual Studio Code Native"
             VALUE "FileVersion", "0.1.0"
             VALUE "ProductVersion", "0.1.0"
             VALUE "OriginalFilename", "vsn.exe"
