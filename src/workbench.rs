@@ -536,6 +536,23 @@ pub fn session() -> serde_json::Value {
         .unwrap_or_else(|| serde_json::json!({}))
 }
 
+/// A Markdown preview's text, rendered as VS Code's preview does.
+struct MdPreview(SharedString);
+
+impl Render for MdPreview {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        // VS Code's markdown.css: 26px sides, 14px text. Scrollable lays
+        // out only the blocks on screen, which keeps big files smooth.
+        div().size_full().text_size(px(14.)).child(
+            TextView::markdown("md-preview-text", self.0.clone())
+                .scrollable(true)
+                .selectable(true)
+                .px(px(26.))
+                .pt(px(16.)),
+        )
+    }
+}
+
 /// The encodings VS Code detects without `files.autoGuessEncoding`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 enum Encoding {
@@ -1044,6 +1061,9 @@ pub struct Workbench {
     title: String,
     /// The Markdown file shown with its preview beside it (Ctrl+K V).
     side_preview: Option<PathBuf>,
+    /// Each previewed Markdown file's rendered text, by its path.
+    // ponytail: kept after its preview closes; drop them if many files pile up.
+    previews: HashMap<PathBuf, Entity<MdPreview>>,
     /// The folder and editors as last saved by [`Self::save_session`].
     saved_session: String,
     /// Go Back/Forward's history of editor locations, and the current one.
@@ -1123,6 +1143,7 @@ impl Workbench {
             act_hid: None,
             title: String::new(),
             side_preview: None,
+            previews: HashMap::new(),
             saved_session: String::new(),
             nav: Vec::new(),
             nav_at: 0,
@@ -1389,6 +1410,13 @@ impl Workbench {
                     let (path, dirty) = (doc.path.clone(), doc.dirty);
                     if dirty && auto_save() {
                         this.schedule_autosave(window, cx);
+                    }
+                    if let Some(preview) = this.previews.get(&path) {
+                        let text = editor.read(cx).value();
+                        preview.update(cx, |p, cx| {
+                            p.0 = text;
+                            cx.notify();
+                        });
                     }
                     this.last_edit = Some((path.clone(), editor.read(cx).cursor_position()));
                     this.refresh_search_file(&path, cx);
@@ -2215,6 +2243,13 @@ impl Workbench {
         let Some(source) = source.or(active) else {
             return;
         };
+        if !self.previews.contains_key(&source) {
+            let text = match self.docs.iter().find(|d| d.path == source) {
+                Some(d) => d.editor.read(cx).value(),
+                None => fs::read_to_string(&source).unwrap_or_default().into(),
+            };
+            self.previews.insert(source.clone(), cx.new(|_| MdPreview(text)));
+        }
         if side {
             self.open_path(source.clone(), window, cx);
             self.side_preview = Some(source);
@@ -2263,26 +2298,18 @@ impl Workbench {
                     .border_l_1()
                     .border_color(col::border())
                     .child(header)
-                    .child(div().flex_1().min_h_0().child(self.render_preview(usize::MAX, source, cx))),
+                    .child(div().flex_1().min_h_0().child(self.render_preview(source))),
             )
             .into_any_element()
     }
 
-    fn render_preview(&self, ix: usize, source: &Path, cx: &App) -> AnyElement {
-        let text = match self.docs.iter().find(|d| d.path == source) {
-            Some(d) => d.editor.read(cx).value().to_string(),
-            None => fs::read_to_string(source).unwrap_or_default(),
-        };
-        // VS Code's markdown.css: 26px sides, 14px text.
-        div()
-            .id(("md-preview", ix))
-            .size_full()
-            .overflow_y_scroll()
-            .px(px(26.))
-            .py(px(16.))
-            .text_size(px(14.))
-            .child(TextView::markdown(("md-preview-text", ix), text).selectable(true))
-            .into_any_element()
+    /// Cached, so the workbench redrawing (a cursor blink, a scroll) reuses
+    /// the laid-out document until its text changes.
+    fn render_preview(&self, source: &Path) -> AnyElement {
+        match self.previews.get(source) {
+            Some(p) => p.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
+            None => div().into_any_element(),
+        }
     }
 
     /// Remembers the folder and its open editors for the next start, as VS
@@ -4215,7 +4242,7 @@ impl Workbench {
                         return d.child(self.render_settings(self.active, cx));
                     }
                     if let Some(source) = &doc.preview {
-                        return d.child(self.render_preview(self.active, source, cx));
+                        return d.child(self.render_preview(source));
                     }
                     if !doc.binary {
                         let keys = exthost::editor_keys(&doc.path, doc.lang);

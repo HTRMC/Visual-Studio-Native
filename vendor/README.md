@@ -9,3 +9,5 @@ comment; on a gpui-kit update, copy the new version over and re-apply them.
 - **gpui-pre-windows 0.3.9** (`src/direct_write.rs`): a line's ascent and
   descent come from its own font, so a taller fallback glyph doesn't move the
   baseline.
+- **gpui-base 0.8.0** (`src/scrollbar.rs`): a scrollbar thumb drag redraws on
+  every mouse move on Windows instead of throttling through a coarse timer.

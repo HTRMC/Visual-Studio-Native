@@ -109,6 +109,7 @@ Differences from VS Code still to close, smallest first within each area.
 
 ## Workbench
 
+- [x] Dragging a scrollbar thumb redraws every frame, not ~60 times a second.
 - [x] The folder and editors are saved as they change, not only on a clean quit.
 - [ ] Markdown preview: Ctrl+K V and the title button split the editor rather
       than opening a second group; no scroll sync, relative images or links.
