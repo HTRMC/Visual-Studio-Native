@@ -18,8 +18,22 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Dragging past the top or bottom edge scrolls while selecting.
 - [x] A drag released outside the window keeps scrolling until the mouse
       comes back (gpui captures the mouse, so the release still arrives).
-- [ ] Right-click copies the selection or pastes, without a menu
-      (`terminal.integrated.rightClickBehavior` is "copyPaste" on Windows).
+- [x] Right-click copies the selection or pastes, without a menu
+      (`terminal.integrated.rightClickBehavior` is "copyPaste" on Windows);
+      Shift+right-click opens the menu. "paste", "nothing" and "default"
+      work too.
+- [ ] `rightClickBehavior` "selectWord" opens the menu without selecting
+      the word first.
+- [x] Middle-click pastes when `terminal.integrated.middleClickBehavior` is
+      "paste".
+- [x] Pasting several lines asks first, as VS Code's
+      `enableMultiLinePasteWarning` (auto skips it under bracketed paste and
+      for one trailing newline): Paste, Paste as one line, Cancel, with a
+      3-line preview.
+- [ ] The multi-line paste dialog has no "Do not ask me again" checkbox.
+- [x] Ctrl+V went raw to pwsh only; Windows PowerShell (powershell.exe) gets
+      `\x16` for PSReadLine too, and with no text on the clipboard, paste
+      falls back to the path of a file copied in the explorer.
 - [x] Links wrapped onto the next row are cut at the row end.
 - [x] A wrapped link or triple-clicked line half scrolled off the top or
       bottom is cut at the screen edge.
@@ -213,6 +227,13 @@ Differences from VS Code still to close, smallest first within each area.
       (need an inline name box in the tree).
 - [ ] The explorer menu lacks New File/Folder, Open to the Side, Rename and
       Delete.
+- [x] Reveal in File Explorer ran `explorer /select,` which, with a space
+      in the path, opened Documents and opened a new window each time. It
+      now uses SHOpenFolderAndSelectItems (as Electron's
+      `showItemInFolder`), which reuses a window already on that folder.
+- [x] Shift+Alt+R and Shift+Alt+C with the explorer focused acted on the
+      active editor; they now act on the explorer's focused row, as in VS
+      Code (and Reveal with no editor open reveals the folder).
 - [x] The right-clicked explorer row gets the focus outline (the selection
       stays put), and the keys then move on from it, as in VS Code.
 - [ ] A gpui tooltip stays on screen when its button moves away under a
@@ -483,6 +504,16 @@ Differences from VS Code still to close, smallest first within each area.
 - [ ] Go menu's other navigation entries (Next/Previous Used Editor's
       Ctrl+Tab picker, Switch Group, Next/Previous Problem, Next/Previous
       Change) are missing.
+- [ ] Missing editor commands and keys: Delete Line (Ctrl+Shift+K), Insert
+      Line Below/Above (Ctrl+Enter, Ctrl+Shift+Enter), Expand Line
+      Selection (Ctrl+L), Cursor Undo (Ctrl+U), Go to Bracket
+      (Ctrl+Shift+\), Change All Occurrences (Ctrl+F2), Change Language
+      Mode (Ctrl+K M).
+- [ ] No folding (gutter chevrons, Ctrl+Shift+[ / ], Ctrl+K Ctrl+0/J).
+- [ ] No minimap and no sticky scroll.
+- [ ] No zoom (Ctrl+= / Ctrl+- / Ctrl+0, `window.zoomLevel`).
+- [ ] No Zen Mode (Ctrl+K Z), Open Recent picker (Ctrl+R) or Close Folder
+      (Ctrl+K F).
 - [x] Menus and the command palette showed only a chord's first key
       ("Ctrl+K" for Last Edit Location's Ctrl+K Ctrl+Q, Save All's Ctrl+K S).
 - [x] Do Not Disturb (the center's bell-slash button, Notifications: Toggle Do Not Disturb Mode): the bell turns bell-slash and warnings skip the toast.

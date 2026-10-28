@@ -2157,9 +2157,12 @@ impl Workbench {
     }
 
     /// Reveal in File Explorer: opens the file's folder with it selected.
+    /// With no editor open it reveals the folder, as VS Code does.
     fn reveal_in_os(&mut self, ix: usize) {
-        if let Some(doc) = self.docs.get(ix).filter(|d| !d.untitled) {
-            reveal_path(&doc.path);
+        match self.docs.get(ix) {
+            Some(doc) if !doc.untitled => reveal_path(&doc.path),
+            Some(_) => {}
+            None => self.root.iter().for_each(|root| reveal_path(root)),
         }
     }
 
@@ -3438,6 +3441,26 @@ impl Workbench {
                                 }))
                                 .on_action(cx.listener(|this, _: &PasteFile, window, cx| {
                                     this.paste_file(this.tree_cursor.clone(), window, cx)
+                                }))
+                                // VS Code's file commands take the explorer's
+                                // focused row over the active editor.
+                                .on_action(cx.listener(|this, _: &RevealInFileExplorer, _, cx| {
+                                    match &this.tree_cursor {
+                                        Some(path) => reveal_path(path),
+                                        None => cx.propagate(),
+                                    }
+                                }))
+                                .on_action(cx.listener(|this, _: &CopyPath, _, cx| {
+                                    match this.tree_cursor.clone() {
+                                        Some(path) => this.copy_file_path(&path, false, cx),
+                                        None => cx.propagate(),
+                                    }
+                                }))
+                                .on_action(cx.listener(|this, _: &CopyRelativePath, _, cx| {
+                                    match this.tree_cursor.clone() {
+                                        Some(path) => this.copy_file_path(&path, true, cx),
+                                        None => cx.propagate(),
+                                    }
                                 }))
                                 .on_action(cx.listener(|this, _: &FindInFolder, window, cx| {
                                     let at = this.tree_cursor.clone().or(this.root.clone());
@@ -5141,12 +5164,68 @@ fn activity_hover(text: SharedString, row: f32) -> impl IntoElement {
         )
 }
 
+/// Opens File Explorer on `path`'s folder with it selected, as Electron's
+/// `shell.showItemInFolder` does for VS Code: SHOpenFolderAndSelectItems
+/// reuses a window already on that folder, and takes paths with spaces that
+/// `explorer /select,` (quoted whole by Command) turns into Documents.
 fn reveal_path(path: &Path) {
-    let select = format!("/select,{}", path.display());
-    std::process::Command::new("explorer.exe")
-        .arg(select)
-        .spawn()
-        .ok();
+    use std::{ffi::c_void, os::windows::ffi::OsStrExt as _, ptr::null_mut};
+    #[link(name = "ole32")]
+    unsafe extern "system" {
+        fn CoInitializeEx(reserved: *mut c_void, coinit: u32) -> i32;
+        fn CoUninitialize();
+        fn CoTaskMemFree(mem: *mut c_void);
+    }
+    #[link(name = "shell32")]
+    unsafe extern "system" {
+        fn SHParseDisplayName(
+            name: *const u16,
+            ctx: *mut c_void,
+            pidl: *mut *mut c_void,
+            sfgao_in: u32,
+            sfgao_out: *mut u32,
+        ) -> i32;
+        fn SHOpenFolderAndSelectItems(
+            folder: *const c_void,
+            count: u32,
+            items: *const *const c_void,
+            flags: u32,
+        ) -> i32;
+    }
+    let path = path.to_path_buf();
+    // The shell may block on a slow folder; Electron runs it off the UI thread.
+    std::thread::spawn(move || {
+        let parse = |p: &Path| {
+            let wide: Vec<u16> = p.as_os_str().encode_wide().chain([0]).collect();
+            let mut pidl = null_mut();
+            // SAFETY: `wide` is NUL-terminated; `pidl` receives an ID list we free.
+            let hr = unsafe { SHParseDisplayName(wide.as_ptr(), null_mut(), &mut pidl, 0, null_mut()) };
+            (hr >= 0).then_some(pidl)
+        };
+        // SAFETY: COM is initialized and uninitialized on this thread only;
+        // each ID list from `parse` is freed once.
+        unsafe {
+            CoInitializeEx(null_mut(), 0x2); // COINIT_APARTMENTTHREADED
+            let dir = path.parent().unwrap_or(&path);
+            let shown = match (parse(dir), parse(&path)) {
+                (Some(folder), Some(item)) => {
+                    let hr = SHOpenFolderAndSelectItems(folder, 1, &(item as *const _), 0);
+                    CoTaskMemFree(folder);
+                    CoTaskMemFree(item);
+                    hr >= 0
+                }
+                (folder, item) => {
+                    folder.into_iter().chain(item).for_each(|p| CoTaskMemFree(p));
+                    false
+                }
+            };
+            CoUninitialize();
+            // Electron opens the folder when the item can't be selected.
+            if !shown && dir.is_dir() {
+                std::process::Command::new("explorer.exe").arg(dir).spawn().ok();
+            }
+        }
+    });
 }
 
 /// An explorer row's right-click menu, as VS Code's for a file or folder;
@@ -5833,8 +5912,10 @@ impl Render for Workbench {
 
 /// A Modern UI floating card: `content` on `bg` inside a 1px border, corners
 /// `r` (tl, tr, br, bl) rounded. gpui clips to rectangles, so shell-colored
-/// pieces round the content's corners off, spilling into the 4px gutter.
-/// `seam` gives up the left border where the card meets the activity bar.
+/// pieces round the content's corners off. They're clipped to the card, or
+/// their spill paints over what's beside it, such as the title bar's hovered
+/// close button. `seam` gives up the left border where the card meets the
+/// activity bar.
 fn card(content: impl IntoElement, bg: Hsla, r: [f32; 4], seam: bool) -> Div {
     // A 4px border whose inner edge is the card's rounded corner.
     let corner = |ix: usize| {
@@ -5854,7 +5935,13 @@ fn card(content: impl IntoElement, bg: Hsla, r: [f32; 4], seam: bool) -> Div {
         .p(px(1.))
         .bg(bg)
         .child(content)
-        .children((0..4).filter(|&ix| r[ix] > 0.).map(corner))
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .overflow_hidden()
+                .children((0..4).filter(|&ix| r[ix] > 0.).map(corner)),
+        )
         .child(
             div()
                 .absolute()

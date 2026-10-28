@@ -120,6 +120,40 @@ fn builtin() -> Map<String, Value> {
             "default": null,
             "markdownDescription": "The default terminal profile on Windows.",
         },
+        "terminal.integrated.enableMultiLinePasteWarning": {
+            "type": "string",
+            "enum": ["auto", "always", "never"],
+            "markdownEnumDescriptions": [
+                "Enable the warning but do not show it when:\n\n- Bracketed paste mode is enabled (the shell supports multi-line paste natively)\n- The paste is handled by the shell's readline (in the case of pwsh)",
+                "Always show the warning if the text contains a new line.",
+                "Never show the warning.",
+            ],
+            "default": "auto",
+            "markdownDescription": "Controls whether to show a warning dialog when pasting multiple lines into the terminal.",
+        },
+        "terminal.integrated.rightClickBehavior": {
+            "type": "string",
+            "enum": ["default", "copyPaste", "paste", "selectWord", "nothing"],
+            "enumDescriptions": [
+                "Show the context menu.",
+                "Copy when there is a selection, otherwise paste.",
+                "Paste on right click.",
+                "Select the word under the cursor and show the context menu.",
+                "Do nothing and pass event to terminal.",
+            ],
+            "default": "copyPaste",
+            "description": "Controls how terminal reacts to right click.",
+        },
+        "terminal.integrated.middleClickBehavior": {
+            "type": "string",
+            "enum": ["default", "paste"],
+            "enumDescriptions": [
+                "The platform default to focus the terminal. On Linux this will also paste the selection.",
+                "Paste on middle click.",
+            ],
+            "default": "default",
+            "description": "Controls how terminal reacts to middle click.",
+        },
         "workbench.colorTheme": {
             "type": "string",
             "enum": theme_ids,

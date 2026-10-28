@@ -1798,9 +1798,55 @@ impl Workbench {
         true
     }
 
-    fn paste_terminal(&mut self, id: u64, cx: &mut Context<Self>) {
-        let text = cx.read_from_clipboard().and_then(|c| c.text());
-        self.paste_text(id, text.unwrap_or_default(), cx);
+    /// Paste into Active Terminal: the clipboard's text, else the path of a
+    /// file copied in the explorer, as VS Code's falls back to its copied
+    /// resources. Several lines ask first, as `shouldPasteTerminalText` does.
+    // ponytail: gpui's prompt has no "Do not ask me again" checkbox; the
+    // setting can be set to "never" by hand.
+    fn paste_terminal(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let text = (cx.read_from_clipboard().and_then(|c| c.text()))
+            .filter(|t| !t.is_empty())
+            .or_else(|| self.clip.as_ref().map(|(p, _)| p.display().to_string()));
+        let (Some(text), Some(t)) = (text, self.terminal(id)) else {
+            return;
+        };
+        let bracketed = t.parser.screen().bracketed_paste();
+        let setting = &settings()["terminal.integrated.enableMultiLinePasteWarning"];
+        if let Some(text) = unasked_paste(&text, setting, bracketed) {
+            return self.paste_text(id, text, cx);
+        }
+        let lines: Vec<&str> = text.split('\n').map(|l| l.trim_end_matches('\r')).collect();
+        let mut detail = "Preview:".to_string();
+        for line in lines.iter().take(3) {
+            detail.push('\n');
+            match line.char_indices().nth(30) {
+                Some((at, _)) => detail.extend([&line[..at], "…"]),
+                None => detail.push_str(line),
+            }
+        }
+        if lines.len() > 3 {
+            detail.push_str("\n…");
+        }
+        let message = format!(
+            "Are you sure you want to paste {} lines of text into the terminal?",
+            lines.len()
+        );
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &message,
+            Some(&detail),
+            &["Paste", "Paste as one line", "Cancel"],
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            let text = match answer.await {
+                Ok(0) => text,
+                Ok(1) => text.replace("\r\n", "").replace('\n', ""),
+                _ => return,
+            };
+            this.update(cx, |this, cx| this.paste_text(id, text, cx)).ok();
+        })
+        .detach();
     }
 
     /// Types `text` as a paste, bracketed when the program asked for it.
@@ -1842,24 +1888,36 @@ impl Workbench {
         }
     }
 
-    fn terminal_key(&mut self, id: u64, ev: &KeyDownEvent, cx: &mut Context<Self>) {
+    fn terminal_key(
+        &mut self,
+        id: u64,
+        ev: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let ks = &ev.keystroke;
         let ctrl = ks.modifiers.control && !ks.modifiers.alt;
         let shell = self
             .terminal(id)
-            .map(|t| shell_name(&t.profile))
+            .map(|t| shell_name(&t.profile).to_ascii_lowercase())
             .unwrap_or_default();
         let selected = self
             .terminal(id)
             .is_some_and(|t| t.selection.is_some_and(|(a, b)| a != b));
+        // PSReadLine pastes Ctrl+V itself (multi-line, without a warning), as
+        // VS Code leaves it to pwsh and Windows PowerShell; but it reads only
+        // text, so a copied file's path is pasted here.
+        let psreadline = |cx: &mut Context<Self>| {
+            ["pwsh", "powershell"].contains(&shell.as_str())
+                && (cx.read_from_clipboard().and_then(|c| c.text())).is_some_and(|t| !t.is_empty())
+        };
         // Ctrl+C copies when there's a selection, else interrupts.
         if ctrl && ks.key == "c" && self.copy_terminal(id, cx) {
-            // PSReadLine pastes Ctrl+V itself, as VS Code leaves it to pwsh.
-        } else if ctrl && !ks.modifiers.shift && ks.key == "v" && shell != "pwsh"
+        } else if ctrl && !ks.modifiers.shift && ks.key == "v" && !psreadline(cx)
             || ctrl && ks.modifiers.shift && ks.key == "v"
             || ks.modifiers == Modifiers::shift() && ks.key == "insert"
         {
-            self.paste_terminal(id, cx);
+            self.paste_terminal(id, window, cx);
         } else if ks.key == "escape" && ks.modifiers == Modifiers::none() && selected {
             self.terminal(id).unwrap().selection = None;
         } else if let Some(t) = self.terminal(id)
@@ -1936,11 +1994,30 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(t) = self.terminal(id)
-            && t.mouse_mode(ev.modifiers)
+        let Some(t) = self.terminal(id) else {
+            return;
+        };
+        if t.mouse_mode(ev.modifiers)
             && let Some(button) = button_code(ev.button)
         {
             t.report(button, false, ev.position);
+            cx.stop_propagation();
+        } else if ev.button == MouseButton::Middle {
+            if settings()["terminal.integrated.middleClickBehavior"] == "paste" {
+                self.paste_terminal(id, window, cx);
+            }
+        // Shift+right-click always opens the menu, as in VS Code.
+        } else if ev.button == MouseButton::Right && !ev.modifiers.shift {
+            // VS Code's default on Windows is "copyPaste": copy the
+            // selection, else paste, with no menu.
+            let behavior = settings()["terminal.integrated.rightClickBehavior"].clone();
+            match behavior.as_str().unwrap_or("copyPaste") {
+                "copyPaste" if self.copy_terminal(id, cx) => {}
+                "copyPaste" | "paste" => self.paste_terminal(id, window, cx),
+                "nothing" => {}
+                // ponytail: "selectWord" opens the menu without selecting.
+                _ => return self.activate_terminal(id, window, cx),
+            }
             cx.stop_propagation();
         }
         self.activate_terminal(id, window, cx);
@@ -2459,7 +2536,9 @@ impl Workbench {
                 Some(_) => d.cursor_pointer(),
                 None => d.cursor_text(),
             })
-            .on_key_down(cx.listener(move |this, ev, _, cx| this.terminal_key(id, ev, cx)))
+            .on_key_down(
+                cx.listener(move |this, ev, window, cx| this.terminal_key(id, ev, window, cx)),
+            )
             // A file dragged from the explorer types its path.
             .drag_over::<DraggedFile>(|s, _, _, _| s.bg(col::drop()))
             .on_drop(cx.listener(move |this, file: &DraggedFile, window, cx| {
@@ -2645,7 +2724,7 @@ impl Workbench {
                 .item(item("Copy", |this, id, _, cx| {
                     this.copy_terminal(id, cx);
                 }))
-                .item(item("Paste", |this, id, _, cx| this.paste_terminal(id, cx)))
+                .item(item("Paste", |this, id, w, cx| this.paste_terminal(id, w, cx)))
                 .item(item("Select All", |this, id, _, cx| {
                     this.select_all_terminal(id, cx)
                 }))
@@ -2810,6 +2889,25 @@ fn tab_icon(t: &Terminal) -> Div {
 /// A terminal's name until it is renamed: its program's, like `pwsh`.
 fn shell_name(profile: &Profile) -> String {
     (profile.program.file_stem()).map_or("shell".into(), |s| s.to_string_lossy().into())
+}
+
+/// The text to paste without asking, as VS Code's `shouldPasteTerminalText`
+/// decides from `enableMultiLinePasteWarning` (`setting`); None to ask.
+/// One line never asks; "auto" doesn't when the shell takes bracketed
+/// pastes, and drops a lone trailing line break so the command doesn't run.
+fn unasked_paste(text: &str, setting: &serde_json::Value, bracketed: bool) -> Option<String> {
+    let lines: Vec<&str> = text.split('\n').map(|l| l.trim_end_matches('\r')).collect();
+    let mode = match setting {
+        serde_json::Value::String(s) if ["always", "never"].contains(&s.as_str()) => s.as_str(),
+        serde_json::Value::Bool(false) => "never",
+        _ => "auto",
+    };
+    match lines[..] {
+        [_] => Some(text.into()),
+        _ if mode == "never" || mode == "auto" && bracketed => Some(text.into()),
+        [first, rest] if mode == "auto" && rest.trim().is_empty() => Some(first.into()),
+        _ => None,
+    }
 }
 
 /// `path` as the shell named `shell` reads it, quoted when needed: WSL and
@@ -3201,6 +3299,22 @@ mod tests {
         let q = std::path::Path::new(r"C:\src\main.rs");
         assert_eq!(shell_path("bash", q), "/c/src/main.rs");
         assert_eq!(shell_path("pwsh", q), r"C:\src\main.rs");
+    }
+
+    #[test]
+    fn multi_line_paste_asks_as_vs_code() {
+        use super::unasked_paste;
+        use serde_json::{Value, json};
+        let auto = Value::Null;
+        assert_eq!(unasked_paste("dir", &json!("always"), false).as_deref(), Some("dir"));
+        assert_eq!(unasked_paste("a\r\nb", &auto, false), None);
+        assert_eq!(unasked_paste("a\nb", &auto, true).as_deref(), Some("a\nb"));
+        assert_eq!(unasked_paste("a\nb", &json!("always"), true), None);
+        assert_eq!(unasked_paste("a\nb", &json!("never"), false).as_deref(), Some("a\nb"));
+        assert_eq!(unasked_paste("a\nb", &json!(false), false).as_deref(), Some("a\nb"));
+        // A copied command's trailing line break is dropped, not run.
+        assert_eq!(unasked_paste("rm x\r\n", &auto, false).as_deref(), Some("rm x"));
+        assert_eq!(unasked_paste("rm x\n", &json!("always"), false), None);
     }
 
     use std::path::Path;
