@@ -541,8 +541,8 @@ pub fn session() -> serde_json::Value {
 
 type PartFn = fn(&mut Workbench, &mut Window, &mut Context<Workbench>) -> AnyElement;
 
-/// A slice of the workbench (title, activity and status bars, sidebar,
-/// editor, panel) as a cached view of its own. A redraw that starts in one,
+/// A slice of the workbench (activity and status bars, sidebar, editor,
+/// panel) as a cached view of its own. A redraw that starts in one,
 /// like an editor scroll or cursor blink, reuses the others' last frame
 /// instead of rebuilding the whole window.
 struct Part {
@@ -5775,12 +5775,9 @@ impl Render for Workbench {
                 col::editor()
             })
             .text_color(col::fg())
-            .child(self.part_sized(
-                "titlebar",
-                StyleRefinement::default().w_full().h(px(35.)).flex_none(),
-                |wb, window, cx| wb.render_titlebar(window, cx).into_any_element(),
-                cx,
-            ))
+            // Not a cached Part: gpui's reused frames drop the window control
+            // areas, which leaves the caption buttons and drag area dead.
+            .child(self.render_titlebar(window, cx))
             .child(
                 h_flex()
                     .flex_1()

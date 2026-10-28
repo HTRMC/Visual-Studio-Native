@@ -110,7 +110,7 @@ Differences from VS Code still to close, smallest first within each area.
 ## Workbench
 
 - [x] Dragging a scrollbar thumb redraws every frame, not ~60 times a second.
-- [x] The title, activity and status bars, sidebar, editor and panel are
+- [x] The activity and status bars, sidebar, editor and panel are
       cached views: a redraw in one (scroll, cursor blink) reuses the rest.
 - [x] Large files (over 20MB or 300K lines, as VS Code): no highlighting,
       language server, extension host sync or whole-text work per edit; a
