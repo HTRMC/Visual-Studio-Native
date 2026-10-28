@@ -213,15 +213,17 @@ impl DisplayMap {
     }
 
     /// Update text (incremental or full)
+    // vsn: the inserted text's length, not a Rope of it: building one per
+    // edit took 0.4s for a 1GB file's first load.
     pub fn on_text_changed(
         &mut self,
         changed_text: &Rope,
         range: &Range<usize>,
-        new_text: &Rope,
+        new_len: usize,
         cx: &mut App,
     ) {
         self.wrap_map
-            .on_text_changed(changed_text, range, new_text, cx);
+            .on_text_changed(changed_text, range, new_len, cx);
         self.rebuild_fold_projection();
     }
 

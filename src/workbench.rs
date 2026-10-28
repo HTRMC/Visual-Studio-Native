@@ -444,7 +444,8 @@ const TAB_SIZE: usize = 4;
 fn detect_indent(text: &str) -> TabSize {
     let (mut tabs, mut spaces, mut prev) = (0, 0, 0);
     let mut steps = [0usize; 9];
-    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+    // The first 10000 lines, as VS Code's guess reads.
+    for line in text.lines().take(10_000).filter(|l| !l.trim().is_empty()) {
         let lead = &line[..line.len() - line.trim_start_matches([' ', '\t']).len()];
         if lead.starts_with('\t') {
             tabs += 1;
@@ -521,6 +522,8 @@ struct Doc {
     settings: Option<Box<settings_ui::Page>>,
     /// The Markdown file this tab previews.
     preview: Option<PathBuf>,
+    /// Over VS Code's large file limits: see [`is_large`].
+    large: bool,
 }
 
 fn session_path() -> Option<PathBuf> {
@@ -534,6 +537,28 @@ pub fn session() -> serde_json::Value {
         .and_then(|b| serde_json::from_slice(&b).ok())
         .filter(serde_json::Value::is_object)
         .unwrap_or_else(|| serde_json::json!({}))
+}
+
+type PartFn = fn(&mut Workbench, &mut Window, &mut Context<Workbench>) -> AnyElement;
+
+/// A slice of the workbench (title, activity and status bars, sidebar,
+/// editor, panel) as a cached view of its own. A redraw that starts in one,
+/// like an editor scroll or cursor blink, reuses the others' last frame
+/// instead of rebuilding the whole window.
+struct Part {
+    wb: WeakEntity<Workbench>,
+    render: PartFn,
+}
+
+impl Render for Part {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let render = self.render;
+        // Laid out as a root of its own: the column stretches the slice
+        // across, as its parent's flex did before it was cached.
+        div().size_full().flex().flex_col().children(
+            self.wb.update(cx, |wb, cx| render(wb, window, cx)).ok(),
+        )
+    }
 }
 
 /// A Markdown preview's text, rendered as VS Code's preview does.
@@ -581,6 +606,12 @@ fn modern_ui(s: &serde_json::Value) -> bool {
 
 fn auto_save() -> bool {
     terminal::settings()["files.autoSave"] == "afterDelay"
+}
+
+/// VS Code's large file limits (20MB or 300K lines): no highlighting,
+/// language server or extension sync, and no whole-text work per edit.
+fn is_large(text: &str) -> bool {
+    text.len() > 20 << 20 || text.bytes().filter(|&b| b == b'\n').nth(300_000).is_some()
 }
 
 fn text_hash(editor: &Entity<EditorState>, cx: &App) -> u64 {
@@ -1061,6 +1092,8 @@ pub struct Workbench {
     title: String,
     /// The Markdown file shown with its preview beside it (Ctrl+K V).
     side_preview: Option<PathBuf>,
+    /// The workbench slices as cached views; see [`Part`].
+    parts: HashMap<&'static str, Entity<Part>>,
     /// Each previewed Markdown file's rendered text, by its path.
     // ponytail: kept after its preview closes; drop them if many files pile up.
     previews: HashMap<PathBuf, Entity<MdPreview>>,
@@ -1144,6 +1177,7 @@ impl Workbench {
             title: String::new(),
             side_preview: None,
             previews: HashMap::new(),
+            parts: HashMap::new(),
             saved_session: String::new(),
             nav: Vec::new(),
             nav_at: 0,
@@ -1228,7 +1262,15 @@ impl Workbench {
         let Ok(bytes) = fs::read(&path) else {
             return;
         };
-        let decoded = Encoding::decode(&bytes);
+        // The encoding comes from the head alone; plain UTF-8 is then taken
+        // as is, without a copy (0.25s on 1GB).
+        let decoded = Encoding::decode(&bytes[..bytes.len().min(512)]).map(|(_, e)| match e {
+            Encoding::Utf8 => match String::from_utf8(bytes) {
+                Ok(text) => (text, e),
+                Err(err) => (e.decode_as(err.as_bytes()), e),
+            },
+            e => (e.decode_as(&bytes), e),
+        });
         let binary = decoded.is_none();
         let (text, encoding) = decoded.unwrap_or_default();
         self.push_doc(path, text, encoding, binary, false, window, cx);
@@ -1252,13 +1294,15 @@ impl Workbench {
             text.contains("\r\n")
         };
         let indent = detect_indent(&text);
+        let large = is_large(&text);
         let lang = self.file_language(&path);
         let editor = self.new_editor(&path, lang, text, indent, self.word_wrap, window, cx);
         self.docs.push(Doc {
             indent,
             lang,
             path,
-            saved: text_hash(&editor, cx),
+            // A large file isn't hashed: any edit marks it dirty.
+            saved: if large { 0 } else { text_hash(&editor, cx) },
             editor,
             dirty: false,
             crlf,
@@ -1270,6 +1314,7 @@ impl Workbench {
             page: None,
             settings: None,
             preview: None,
+            large,
         });
         self.activate(self.docs.len() - 1, window, cx);
         self.open_editors_changed(cx);
@@ -1368,7 +1413,12 @@ impl Workbench {
         if let Some(config) = extensions::editing(lang) {
             gpui_kit::base::input::set_language_config(editor_language(lang), config, cx);
         }
-        let lang = editor_language(lang);
+        // VS Code doesn't tokenize a large file; highlighting 1GB grew
+        // without bound.
+        let lang = match is_large(&text) {
+            true => "text".into(),
+            false => editor_language(lang),
+        };
         let editor = cx.new(|cx| {
             EditorState::new(window, cx)
                 .language(lang)
@@ -1390,13 +1440,14 @@ impl Workbench {
                     && let Some(doc) = this.docs.iter_mut().find(|d| &d.editor == editor)
                 {
                     // ponytail: hashes the whole text per edit; keep a saved
-                    // undo version instead if huge files lag.
-                    doc.dirty = text_hash(editor, cx) != doc.saved;
+                    // undo version instead if huge files lag. A large file
+                    // skips it (and the endings count) and stays dirty.
+                    doc.dirty = doc.large || text_hash(editor, cx) != doc.saved;
                     // Most endings decide, as Enter inserts a bare LF and undoing
                     // Change End of Line Sequence brings the old endings back.
                     let text = editor.read(cx).text();
                     let breaks = text.lines_len() - 1;
-                    if breaks > 0 {
+                    if breaks > 0 && !doc.large {
                         let crs: usize = (text.chunks())
                             .map(|c| c.bytes().filter(|&b| b == b'\r').count())
                             .sum();
@@ -2310,6 +2361,30 @@ impl Workbench {
             Some(p) => p.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
             None => div().into_any_element(),
         }
+    }
+
+    /// Workbench slice `name`, drawn by `render` in a cached [`Part`].
+    fn part(&mut self, name: &'static str, render: PartFn, cx: &mut Context<Self>) -> AnyElement {
+        self.part_sized(name, StyleRefinement::default().size_full(), render, cx)
+    }
+
+    /// [`Self::part`] laid out by `style`, which a cached view needs up front.
+    fn part_sized(
+        &mut self,
+        name: &'static str,
+        style: StyleRefinement,
+        render: PartFn,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let wb = cx.entity();
+        let part = self.parts.entry(name).or_insert_with(|| {
+            cx.new(|cx| {
+                // Any workbench change redraws it, as before it was cached.
+                cx.observe(&wb, |_, _, cx| cx.notify()).detach();
+                Part { wb: wb.downgrade(), render }
+            })
+        });
+        part.clone().cached(style).into_any_element()
     }
 
     /// Remembers the folder and its open editors for the next start, as VS
@@ -5212,7 +5287,7 @@ impl Render for Workbench {
             self.save_session();
             self.saved_session = session;
         }
-        let sidebar = self.render_sidebar(cx);
+        let sidebar = self.part("sidebar", |wb, _, cx| wb.render_sidebar(cx), cx);
         // A file dragged from the explorer opens where it's dropped; so do
         // files from Windows, and a folder from there becomes the workspace.
         let editor = div()
@@ -5224,7 +5299,7 @@ impl Render for Workbench {
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                 this.drop_paths(paths.paths(), None, window, cx)
             }))
-            .child(self.render_editor_group(cx))
+            .child(self.part("editor", |wb, _, cx| wb.render_editor_group(cx), cx))
             // The highlight goes over the editor, below the tab strip (whose
             // tabs light up on their own).
             .child(
@@ -5237,7 +5312,11 @@ impl Render for Workbench {
                     .drag_over::<DraggedFile>(|s, _, _, _| s.bg(col::drop()))
                     .drag_over::<ExternalPaths>(|s, _, _, _| s.bg(col::drop())),
             );
-        let panel = self.render_panel(window, cx);
+        let panel = self.part(
+            "panel",
+            |wb, window, cx| wb.render_panel(window, cx).into_any_element(),
+            cx,
+        );
         // Modern UI: floating cards 4px apart, a resize grip in each gap.
         let (sidebar, editor, panel, handles) = match self.modern {
             false => (
@@ -5696,12 +5775,22 @@ impl Render for Workbench {
                 col::editor()
             })
             .text_color(col::fg())
-            .child(self.render_titlebar(window, cx))
+            .child(self.part_sized(
+                "titlebar",
+                StyleRefinement::default().w_full().h(px(35.)).flex_none(),
+                |wb, window, cx| wb.render_titlebar(window, cx).into_any_element(),
+                cx,
+            ))
             .child(
                 h_flex()
                     .flex_1()
                     .min_h_0()
-                    .child(self.render_activitybar(cx))
+                    .child(self.part_sized(
+                        "activitybar",
+                        StyleRefinement::default().h_full().w(px(48.)).flex_none(),
+                        |wb, _, cx| wb.render_activitybar(cx),
+                        cx,
+                    ))
                     .child(
                         resizable(h_resizable("workbench"))
                             .child(
@@ -5730,7 +5819,12 @@ impl Render for Workbench {
                             ),
                     ),
             )
-            .child(self.render_statusbar(cx))
+            .child(self.part_sized(
+                "statusbar",
+                StyleRefinement::default().w_full().h(px(if self.modern { 28. } else { 22. })).flex_none(),
+                |wb, _, cx| wb.render_statusbar(cx).into_any_element(),
+                cx,
+            ))
             .children(toolbar)
             .child(self.render_toasts(cx))
             .children(self.render_center(cx))

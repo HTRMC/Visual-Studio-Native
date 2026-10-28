@@ -119,6 +119,15 @@ pub(crate) struct LineItem {
 }
 
 impl LineItem {
+    /// vsn: a line soft wrap leaves whole.
+    fn unwrapped(len: usize) -> Self {
+        Self {
+            len,
+            indent: 0,
+            wrapped_lines: smallvec::smallvec![0..len],
+        }
+    }
+
     /// Get the bytes length of this line.
     #[inline]
     pub(crate) fn len(&self) -> usize {
@@ -341,7 +350,11 @@ impl TextWrapper {
 
         self.font = font;
         self.font_size = font_size;
-        self.update_all(&self.text.clone(), cx);
+        // vsn: unwrapped lines don't depend on the font, and an uninitialized
+        // wrapper is built by `prepare_if_need`; a rebuild took seconds on 1GB.
+        if self._initialized && self.wrap_width.is_some() {
+            self.update_all(&self.text.clone(), cx);
+        }
     }
 
     pub(crate) fn prepare_if_need(&mut self, text: &Rope, cx: &mut App) -> bool {
@@ -366,9 +379,15 @@ impl TextWrapper {
         &mut self,
         changed_text: &Rope,
         range: &Range<usize>,
-        new_text: &Rope,
+        new_len: usize,
         cx: &mut App,
     ) {
+        // vsn: before the first prepaint only the text is kept;
+        // `prepare_if_need` builds the lines once, with the real font.
+        if !self._initialized {
+            self.text = changed_text.clone();
+            return;
+        }
         let mut line_wrapper = cx
             .text_system()
             .line_wrapper(self.font.clone(), self.font_size);
@@ -380,7 +399,7 @@ impl TextWrapper {
         self._update(
             changed_text,
             range,
-            new_text,
+            new_len,
             &mut |line_str, wrap_width, line_start| {
                 let mut fragments = Vec::new();
                 let mut offset = 0;
@@ -509,7 +528,7 @@ impl TextWrapper {
             self.update(
                 &text,
                 &(start..end),
-                &Rope::from(text.slice(start..end).to_string()),
+                end - start,
                 cx,
             );
         }
@@ -519,7 +538,7 @@ impl TextWrapper {
         &mut self,
         changed_text: &Rope,
         range: &Range<usize>,
-        new_text: &Rope,
+        new_len: usize,
         wrap_line: &mut F,
     ) where
         F: FnMut(&str, Pixels, usize) -> Vec<gpui::Boundary>,
@@ -534,14 +553,37 @@ impl TextWrapper {
         // To add the new lines.
         let new_start_row = changed_text.offset_to_point(range.start).row;
         let new_end_row = changed_text
-            .offset_to_point(range.start + new_text.len())
+            .offset_to_point(range.start + new_len)
             .row;
 
         let mut new_lines = Vec::with_capacity(new_end_row.saturating_sub(new_start_row) + 1);
         let wrap_width = self.wrap_width;
 
+        // vsn: unwrapped lines need only their lengths: one pass over the
+        // text's chunks, not a rope lookup per line (seconds on a 1GB file).
+        let rows = match wrap_width {
+            Some(_) => new_start_row..=new_end_row,
+            None => {
+                let start = changed_text.line_start_offset(new_start_row);
+                let end = changed_text.line_end_offset(new_end_row);
+                let mut len = 0;
+                for chunk in changed_text.slice(start..end).chunks() {
+                    let mut from = 0;
+                    for nl in memchr::memchr_iter(b'\n', chunk.as_bytes()) {
+                        new_lines.push(LineItem::unwrapped(len + nl - from));
+                        (len, from) = (0, nl + 1);
+                    }
+                    len += chunk.len() - from;
+                }
+                new_lines.push(LineItem::unwrapped(len));
+                #[allow(clippy::reversed_empty_ranges)]
+                let none = 1..=0;
+                none
+            }
+        };
+
         // line not contains `\n`.
-        for row in new_start_row..=new_end_row {
+        for row in rows {
             let line = changed_text.slice_line(row);
             let mut wrapped_lines = SmallVec::<[Range<usize>; 1]>::new();
             let mut prev_boundary_ix = 0;
@@ -619,7 +661,7 @@ impl TextWrapper {
     ///
     /// If the `text` is the same as the current text, do nothing.
     fn update_all(&mut self, text: &Rope, cx: &mut App) {
-        self.update(text, &(0..text.len()), &text, cx);
+        self.update(text, &(0..text.len()), text.len(), cx);
     }
 
     /// Return display point (with soft wrap) from the given byte offset in the text.
@@ -1144,8 +1186,7 @@ mod tests {
             for value in ["abcd的", "abcd的s", "abcd的ss", "abcd的s", "abcd的"] {
                 let text = Rope::from(value);
                 let start = previous.len().min(text.len());
-                let inserted = Rope::from(text.slice(start..).to_string());
-                wrapper.update(&text, &(start..previous.len()), &inserted, cx);
+                wrapper.update(&text, &(start..previous.len()), text.len() - start, cx);
                 let expected = if value.ends_with('s') {
                     vec![0..prefix.len(), prefix.len()..value.len()]
                 } else {
@@ -1183,7 +1224,7 @@ mod tests {
                 assert!(shaped_width(value, &font, font_size, cx) > width);
                 let text = Rope::from(value);
                 let mut wrapper = TextWrapper::new(font.clone(), font_size, Some(width));
-                wrapper.update(&text, &(0..0), &text, cx);
+                wrapper.update(&text, &(0..0), text.len(), cx);
                 assert_eq!(
                     wrapper.line(0).unwrap().wrapped_lines.as_slice(),
                     [0..prefix.len(), prefix.len()..value.len()]
@@ -1208,11 +1249,10 @@ mod tests {
         for value in ["abcd的", "abcd的s", "abcd的ss", "abcd的s", "abcd的"] {
             let text = Rope::from(value);
             let start = previous.len().min(text.len());
-            let inserted = Rope::from(text.slice(start..).to_string());
             wrapper._update(
                 &text,
                 &(start..previous.len()),
-                &inserted,
+                text.len() - start,
                 &mut |line, width, _| {
                     measured_wrap_boundaries(line, width, WrappingIndent::None, measure)
                 },
@@ -1285,7 +1325,7 @@ mod tests {
             assert_eq!(actual_lines, expected_lines);
         }
 
-        wrapper._update(&text, &(0..text.len()), &text, &mut fake_wrap_line);
+        wrapper._update(&text, &(0..text.len()), text.len(), &mut fake_wrap_line);
         assert_eq!(wrapper.lines_count(), 4);
         assert_wrapper_lines(
             &text,
@@ -1302,7 +1342,7 @@ mod tests {
         let range = text.len()..text.len();
         let new_text = "New text";
         text.replace(range.clone(), new_text);
-        wrapper._update(&text, &range, &Rope::from(new_text), &mut fake_wrap_line);
+        wrapper._update(&text, &range, new_text.len(), &mut fake_wrap_line);
         assert_eq!(
             text.to_string(),
             "Hello, 世界!\r\nThis is second line.\nThis is third line.\n这里是第 4 行。New text"
@@ -1324,7 +1364,7 @@ mod tests {
         let range = 0..5;
         let new_text = "AAA";
         text.replace(range.clone(), new_text);
-        wrapper._update(&text, &range, &Rope::from(new_text), &mut fake_wrap_line);
+        wrapper._update(&text, &range, new_text.len(), &mut fake_wrap_line);
         assert_eq!(
             text.to_string(),
             "AAA, 世界!\r\nThis is second line.\nThis is third line.\n这里是第 4 行。New text"
@@ -1346,7 +1386,7 @@ mod tests {
         let end_offset = text.line_end_offset(1);
         let range = start_offset..end_offset + 1;
         text.replace(range.clone(), "");
-        wrapper._update(&text, &range, &Rope::from(""), &mut fake_wrap_line);
+        wrapper._update(&text, &range, 0, &mut fake_wrap_line);
         assert_eq!(
             text.to_string(),
             "AAA, 世界!\r\nThis is third line.\n这里是第 4 行。New text"
@@ -1366,7 +1406,7 @@ mod tests {
         let range = text.line_start_offset(0)..text.line_end_offset(1) + 1;
         let new_text = "This is a new line.\nThis is new line 2.\n";
         text.replace(range.clone(), new_text);
-        wrapper._update(&text, &range, &Rope::from(new_text), &mut fake_wrap_line);
+        wrapper._update(&text, &range, new_text.len(), &mut fake_wrap_line);
         assert_eq!(
             text.to_string(),
             "This is a new line.\nThis is new line 2.\n这里是第 4 行。New text"
@@ -1386,7 +1426,7 @@ mod tests {
         let range = text.len()..text.len();
         let new_text = "\nThis is a new line at the end.";
         text.replace(range.clone(), new_text);
-        wrapper._update(&text, &range, &Rope::from(new_text), &mut fake_wrap_line);
+        wrapper._update(&text, &range, new_text.len(), &mut fake_wrap_line);
         assert_eq!(
             text.to_string(),
             "This is a new line.\nThis is new line 2.\n这里是第 4 行。New text\nThis is a new line at the end."
@@ -1407,7 +1447,7 @@ mod tests {
         let range = 0..0;
         let new_text = "This is a new line at the beginning.\n";
         text.replace(range.clone(), new_text);
-        wrapper._update(&text, &range, &Rope::from(new_text), &mut fake_wrap_line);
+        wrapper._update(&text, &range, new_text.len(), &mut fake_wrap_line);
         assert_eq!(
             text.to_string(),
             "This is a new line at the beginning.\nThis is a new line.\nThis is new line 2.\n这里是第 4 行。New text\nThis is a new line at the end."
@@ -1429,7 +1469,7 @@ mod tests {
         let range = 0..text.len();
         let new_text = "";
         text.replace(range.clone(), new_text);
-        wrapper._update(&text, &range, &Rope::from(new_text), &mut fake_wrap_line);
+        wrapper._update(&text, &range, new_text.len(), &mut fake_wrap_line);
         assert_eq!(text.to_string(), "");
         assert_eq!(wrapper.lines_count(), 1);
         assert_eq!(wrapper.line(0).unwrap().wrapped_lines.as_slice(), [0..0]);
@@ -1438,7 +1478,7 @@ mod tests {
         let range = 0..text.len();
         let new_text = "This is a full text.\nThis is a second line.";
         text.replace(range.clone(), new_text);
-        wrapper._update(&text, &range, &text, &mut fake_wrap_line);
+        wrapper._update(&text, &range, text.len(), &mut fake_wrap_line);
         assert_eq!(
             text.to_string(),
             "This is a full text.\nThis is a second line."
@@ -1456,12 +1496,23 @@ mod tests {
         }
     }
 
+    /// vsn: unwrapped line lengths, counted over chunks, match the text's lines.
+    #[test]
+    fn test_unwrapped_lines_across_chunks() {
+        let mut wrapper = TextWrapper::new(test_font(), px(14.), None);
+        let value: String = (0..2000).map(|i| format!("{}世\n", "x".repeat(i % 37))).collect();
+        let text = Rope::from(value.as_str());
+        wrapper._update(&text, &(0..text.len()), text.len(), &mut |_, _, _| vec![]);
+        let lens: Vec<_> = wrapper.iter_lines().map(|l| l.len()).collect();
+        assert_eq!(lens, value.split('\n').map(str::len).collect::<Vec<_>>());
+    }
+
     /// The longest-row summary stays exact when the previously-longest line is shrunk.
     #[test]
     fn test_longest_row_after_shrink() {
         let mut wrapper = TextWrapper::new(test_font(), px(14.), None);
         let mut text = Rope::from("aa\nthis is the longest line\nbb");
-        wrapper._update(&text, &(0..text.len()), &text, &mut |_, _, _| vec![]);
+        wrapper._update(&text, &(0..text.len()), text.len(), &mut |_, _, _| vec![]);
         assert_eq!(wrapper.longest_row(), 1);
 
         // Shrink line 1 so line 2-equivalent isn't longest.
@@ -1471,7 +1522,7 @@ mod tests {
         let range = start..end;
         let new_text = "a very very long first line now";
         text.replace(range.clone(), new_text);
-        wrapper._update(&text, &range, &Rope::from(new_text), &mut |_, _, _| vec![]);
+        wrapper._update(&text, &range, new_text.len(), &mut |_, _, _| vec![]);
         assert_eq!(wrapper.longest_row(), 0);
     }
 
@@ -1480,7 +1531,7 @@ mod tests {
     fn test_edit_last_line_and_full_delete() {
         let mut wrapper = TextWrapper::new(test_font(), px(14.), None);
         let mut text = Rope::from("one\ntwo\nthree");
-        wrapper._update(&text, &(0..text.len()), &text, &mut |_, _, _| vec![]);
+        wrapper._update(&text, &(0..text.len()), text.len(), &mut |_, _, _| vec![]);
         assert_eq!(wrapper.lines_count(), 3);
 
         // Replace the last line only.
@@ -1488,14 +1539,14 @@ mod tests {
         let range = start..text.len();
         let new_text = "THREE EDITED";
         text.replace(range.clone(), new_text);
-        wrapper._update(&text, &range, &Rope::from(new_text), &mut |_, _, _| vec![]);
+        wrapper._update(&text, &range, new_text.len(), &mut |_, _, _| vec![]);
         assert_eq!(wrapper.lines_count(), 3);
         assert_eq!(wrapper.line(2).unwrap().len(), "THREE EDITED".len());
 
         // Delete everything.
         let range = 0..text.len();
         text.replace(range.clone(), "");
-        wrapper._update(&text, &range, &Rope::from(""), &mut |_, _, _| vec![]);
+        wrapper._update(&text, &range, 0, &mut |_, _, _| vec![]);
         assert_eq!(wrapper.lines_count(), 1);
         assert_eq!(wrapper.len(), 1);
         assert_eq!(wrapper.line(0).unwrap().wrapped_lines.as_slice(), [0..0]);
@@ -1561,7 +1612,7 @@ mod tests {
             }
         };
 
-        wrapper._update(&text, &(0..text.len()), &text, &mut fake_wrap_line);
+        wrapper._update(&text, &(0..text.len()), text.len(), &mut fake_wrap_line);
         assert_eq!(wrapper.buffer_line_to_wrap_row_range(0), 0..1);
         assert_eq!(wrapper.buffer_line_to_wrap_row_range(1), 1..3);
         assert_eq!(wrapper.buffer_line_to_wrap_row_range(2), 3..4);
@@ -1569,7 +1620,7 @@ mod tests {
         let range = text.line_start_offset(1)..text.line_end_offset(1);
         let new_text = "dd\neeee";
         text.replace(range.clone(), new_text);
-        wrapper._update(&text, &range, &Rope::from(new_text), &mut fake_wrap_line);
+        wrapper._update(&text, &range, new_text.len(), &mut fake_wrap_line);
 
         assert_eq!(wrapper.lines_count(), 4);
         assert_eq!(wrapper.len(), 5);
@@ -1850,7 +1901,7 @@ mod tests {
             }
         };
 
-        wrapper._update(&text, &(0..text.len()), &text, &mut fake_wrap_line);
+        wrapper._update(&text, &(0..text.len()), text.len(), &mut fake_wrap_line);
 
         let line = wrapper.line(0).unwrap();
         assert_eq!(line.indent, 2);
@@ -1882,7 +1933,7 @@ mod tests {
             }
         };
 
-        wrapper._update(&text, &(0..text.len()), &text, &mut fake_wrap_line);
+        wrapper._update(&text, &(0..text.len()), text.len(), &mut fake_wrap_line);
 
         let line = wrapper.line(0).unwrap();
         assert_eq!(line.indent, 0);

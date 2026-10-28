@@ -643,7 +643,8 @@ impl Workbench {
         let Some(re) = self.find.re.clone() else {
             return;
         };
-        let Some(doc) = self.docs.iter().find(|d| d.path == path) else {
+        // ponytail: a large file's results don't follow its edits.
+        let Some(doc) = self.docs.iter().find(|d| d.path == path && !d.large) else {
             return;
         };
         let lines = search_text(&doc.editor.read(cx).value(), &re);

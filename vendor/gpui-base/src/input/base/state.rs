@@ -4125,7 +4125,13 @@ impl<M: InputModeKind> InputBaseState<M> {
         for (range, new_text) in &sorted {
             let old_text = self.text.clone();
             self.mode.adjust_auto_closed_pair(range, new_text.len());
-            self.text.replace(range.clone(), new_text);
+            // vsn: a fresh rope is built in bulk; an insert into an empty
+            // one splits the text up piece by piece.
+            if self.text.len() == 0 {
+                self.text = Rope::from(*new_text);
+            } else {
+                self.text.replace(range.clone(), new_text);
+            }
 
             M::adjust_annotations(self, range, new_text.len());
             recorded |= self.push_history(
@@ -4141,7 +4147,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             self.display_map
                 .adjust_folds_for_edit(&old_text, range, new_text);
             self.display_map
-                .on_text_changed(&self.text, range, &Rope::from(*new_text), cx);
+                .on_text_changed(&self.text, range, new_text.len(), cx);
 
             if group {
                 if self.is_code_editor() {
@@ -4538,7 +4544,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
         self.display_map
             .adjust_folds_for_edit(&old_text, &range, new_text);
         self.display_map
-            .on_text_changed(&self.text, &range, &Rope::from(new_text), cx);
+            .on_text_changed(&self.text, &range, new_text.len(), cx);
 
         self.mode.update_highlighter::<M>(
             super::mode::HighlighterUpdate {
@@ -4656,7 +4662,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
         self.display_map
             .adjust_folds_for_edit(&old_text, &range, new_text);
         self.display_map
-            .on_text_changed(&self.text, &range, &Rope::from(new_text), cx);
+            .on_text_changed(&self.text, &range, new_text.len(), cx);
 
         self.mode.update_highlighter::<M>(
             super::mode::HighlighterUpdate {

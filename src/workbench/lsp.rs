@@ -515,7 +515,7 @@ impl Workbench {
     /// server on the first file of its language, and points the editor's
     /// hover, completion and definition requests at it.
     pub(super) fn lsp_open(&mut self, ix: usize, cx: &mut Context<Self>) {
-        let Some(doc) = self.docs.get(ix).filter(|d| !d.untitled && !d.binary) else {
+        let Some(doc) = self.docs.get(ix).filter(|d| !d.untitled && !d.binary && !d.large) else {
             return;
         };
         let snippets = Snippets::new(doc);
@@ -774,7 +774,8 @@ impl Workbench {
             return;
         };
         let e = doc.editor.read(cx);
-        let before = e.value()[..e.selected_range().start].chars().next_back();
+        // Read in place: copying a big file's text per keystroke stalled it.
+        let before = e.text().chars_at(e.selected_range().start).prev();
         if self.lsp.signature.is_some() || matches!(before, Some('(' | ',')) {
             self.signature_help(cx);
         }

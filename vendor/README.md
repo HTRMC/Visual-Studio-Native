@@ -11,3 +11,9 @@ comment; on a gpui-kit update, copy the new version over and re-apply them.
   baseline.
 - **gpui-base 0.8.0** (`src/scrollbar.rs`): a scrollbar thumb drag redraws on
   every mouse move on Windows instead of throttling through a coarse timer.
+- **gpui-base 0.8.0** (`src/input/editor/display_map/`, `src/input/base/`):
+  big files open fast. The line index is built once, at the first paint, and
+  without soft wrap from line lengths alone (`memchr`, a new dependency); a
+  font change only rebuilds it with wrap on; edits pass the inserted length
+  rather than a Rope of the text; a first value builds its rope in bulk; and
+  `install_tokens` compares texts only when there are tokens.

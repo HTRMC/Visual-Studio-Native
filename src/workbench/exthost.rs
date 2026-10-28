@@ -970,7 +970,8 @@ impl Workbench {
 
     /// The active text editor, its file, text and selection, or null.
     fn active_editor(&self, cx: &App) -> Value {
-        let editor = (self.docs.get(self.active).filter(|d| !d.binary)).map(|d| {
+        // A large file isn't synced, as VS Code's extension host never gets one.
+        let editor = (self.docs.get(self.active).filter(|d| !d.binary && !d.large)).map(|d| {
             let e = d.editor.read(cx);
             let sel = e.selected_range();
             let [start, end] = [sel.start, sel.end].map(|o| e.text().offset_to_position(o));

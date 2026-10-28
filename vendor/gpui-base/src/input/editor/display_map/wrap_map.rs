@@ -104,11 +104,11 @@ impl WrapMap {
         &mut self,
         changed_text: &Rope,
         range: &Range<usize>,
-        new_text: &Rope,
+        new_len: usize,
         cx: &mut App,
     ) {
-        self.wrapper.adjust_inline_metrics(range, new_text.len());
-        self.wrapper.update(changed_text, range, new_text, cx);
+        self.wrapper.adjust_inline_metrics(range, new_len);
+        self.wrapper.update(changed_text, range, new_len, cx);
     }
 
     /// Update layout parameters (wrap width or font)

@@ -110,6 +110,13 @@ Differences from VS Code still to close, smallest first within each area.
 ## Workbench
 
 - [x] Dragging a scrollbar thumb redraws every frame, not ~60 times a second.
+- [x] The title, activity and status bars, sidebar, editor and panel are
+      cached views: a redraw in one (scroll, cursor blink) reuses the rest.
+- [x] Large files (over 20MB or 300K lines, as VS Code): no highlighting,
+      language server, extension host sync or whole-text work per edit; a
+      1GB file opens in ~1.5s and types without lag.
+- [ ] Large files: no "large file" notice, the dirty dot stays after undo
+      to the saved text, and search results don't follow their edits.
 - [x] The folder and editors are saved as they change, not only on a clean quit.
 - [ ] Markdown preview: Ctrl+K V and the title button split the editor rather
       than opening a second group; no scroll sync, relative images or links.

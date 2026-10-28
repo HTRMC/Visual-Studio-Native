@@ -103,6 +103,9 @@ package = "gpui-pre-macros"
 [dependencies.html5ever]
 version = "0.27"
 
+[dependencies.memchr]
+version = "2"
+
 [dependencies.instant]
 version = "0.1"
 features = ["wasm-bindgen"]

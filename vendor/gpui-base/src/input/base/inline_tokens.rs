@@ -378,8 +378,9 @@ impl<M: InputModeKind> InputBaseState<M> {
     /// describe it.
     pub(super) fn install_tokens(&mut self, content: InputContent) {
         let supported = !M::CODE_EDITOR && self.mask_pattern.is_none();
-        let text_kept = self.text == content.text.as_ref();
-        self.inline_tokens = (supported && text_kept && !content.tokens.is_empty()).then(|| {
+        // vsn: the text comparison last, as it reads the whole text (0.15s on 1GB).
+        let text_kept = || self.text == content.text.as_ref();
+        self.inline_tokens = (supported && !content.tokens.is_empty() && text_kept()).then(|| {
             Box::new(InlineTokenStore {
                 spans: content.tokens,
             })

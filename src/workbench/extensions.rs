@@ -2073,11 +2073,13 @@ impl Workbench {
             return;
         };
         let editor = doc.editor.clone();
-        let (value, cursor) = editor.read_with(cx, |e, _| (e.value(), e.selected_range().end));
+        // The rope, not a copy of its text: that stalled big files per keystroke.
+        let (text, cursor) = editor.read_with(cx, |e, _| (e.text().clone(), e.selected_range().end));
         let found = OFFERED.with_borrow(|offered| {
             let (_, start, list) = offered.as_ref().filter(|o| o.0 == doc.path)?;
+            let typed = (*start <= cursor && cursor <= text.len()).then(|| text.slice(*start..cursor));
             let (_, stops) =
-                (list.iter()).find(|(new, _)| value.get(*start..cursor) == Some(new.as_str()))?;
+                (list.iter()).find(|(new, _)| typed.is_some_and(|t| t == new.as_str()))?;
             Some(
                 stops
                     .iter()
