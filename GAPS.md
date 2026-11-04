@@ -223,10 +223,14 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] The explorer header's Refresh and Collapse Folders buttons were inert
       and tipless (now also File: Refresh Explorer and View: Collapse
       Folders in Explorer in the palette).
-- [ ] The explorer header's New File... and New Folder... are still inert
-      (need an inline name box in the tree).
-- [ ] The explorer menu lacks New File/Folder, Open to the Side, Rename and
-      Delete.
+- [x] The explorer header's New File... and New Folder... were inert. They
+      (and the menu's) now put a name box in the focused folder; Enter or
+      clicking away makes it (slashes make the folders between), Escape drops
+      it, and a new file opens.
+- [ ] The explorer menu lacks Open to the Side, Rename and Delete.
+- [x] The explorer went stale after a build flooded Windows' change buffer;
+      a lost burst now re-reads every listing.
+- [x] Typing hid the mouse pointer (gpui's default); VS Code leaves it.
 - [x] Reveal in File Explorer ran `explorer /select,` which, with a space
       in the path, opened Documents and opened a new window each time. It
       now uses SHOpenFolderAndSelectItems (as Electron's

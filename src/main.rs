@@ -30,6 +30,8 @@ fn main() {
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
             gpui_kit::init(cx);
+            // gpui hides the mouse pointer on every keypress; VS Code doesn't.
+            cx.set_cursor_hide_mode(CursorHideMode::Never);
 
             cx.text_system()
                 .add_fonts(vec![

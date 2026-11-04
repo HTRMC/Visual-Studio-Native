@@ -1046,6 +1046,9 @@ pub struct Workbench {
     /// Explorer listings (folders first, then name), dropped when the watcher sees them change.
     dirs: HashMap<PathBuf, Vec<(PathBuf, bool)>>,
     watcher: Option<(notify::RecommendedWatcher, Task<()>)>,
+    /// The explorer's New File/Folder row: the folder it goes in, whether it
+    /// makes a folder, and its name box.
+    new_item: Option<(PathBuf, bool, Entity<InputState>)>,
     /// Set once the user agreed to quit, so closing doesn't ask twice.
     quitting: bool,
     root_open: bool,
@@ -1146,6 +1149,7 @@ impl Workbench {
             tree_focus: cx.focus_handle(),
             dirs: HashMap::new(),
             watcher: None,
+            new_item: None,
             quitting: false,
             root_open: true,
             docs: Vec::new(),
@@ -3340,6 +3344,20 @@ impl Workbench {
                 self.dirs.clear();
             }
             self.tree_rows(&root, 0, &mut rows);
+            // The New File/Folder row goes first among its folder's folders,
+            // or files, as VS Code places it; an empty path marks it.
+            if let Some((parent, dir, _)) = &self.new_item {
+                let (start, depth) = match rows.iter().position(|r| &r.0 == parent) {
+                    Some(i) => (i + 1, rows[i].1 + 1),
+                    None => (0, 0),
+                };
+                let end = (start..rows.len()).find(|&i| rows[i].1 < depth).unwrap_or(rows.len());
+                let at = match dir {
+                    true => start,
+                    false => (start..end).find(|&i| rows[i].1 == depth && !rows[i].2).unwrap_or(end),
+                };
+                rows.insert(at, (PathBuf::new(), depth, *dir));
+            }
         }
         let (wb, root, clip) = (
             cx.weak_entity(),
@@ -3349,18 +3367,24 @@ impl Workbench {
         let button = |id: &'static str, ch: char, text: &'static str| {
             (action_button(id, ch).font_weight(FontWeight::NORMAL)).tooltip(tip(text))
         };
-        // ponytail: New File/Folder are inert until the explorer has inline
-        // rename for the new row.
         let root_actions = h_flex()
             .gap(px(2.))
             .invisible()
             .group_hover("explorer-root-hdr", |s| s.visible())
-            .child(button("explorer-new-file", icon::NEW_FILE, "New File..."))
-            .child(button(
-                "explorer-new-folder",
-                icon::NEW_FOLDER,
-                "New Folder...",
+            .child(button("explorer-new-file", icon::NEW_FILE, "New File...").on_click(
+                cx.listener(|this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.new_item(false, window, cx)
+                }),
             ))
+            .child(
+                button("explorer-new-folder", icon::NEW_FOLDER, "New Folder...").on_click(
+                    cx.listener(|this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.new_item(true, window, cx)
+                    }),
+                ),
+            )
             .child(
                 button("explorer-refresh", icon::REFRESH, "Refresh Explorer").on_click(
                     cx.listener(|this, _, _, cx| {
@@ -3559,17 +3583,25 @@ impl Workbench {
         self.palette.remember_opened(true, &root, cx);
         let (tx, mut rx) = futures::channel::mpsc::unbounded::<Vec<PathBuf>>();
         let watcher = notify::recommended_watcher(move |ev: notify::Result<notify::Event>| {
-            // Only changes to a folder's entries matter, and launch.json's contents.
-            if let Ok(ev) = ev
-                && (matches!(
-                    ev.kind,
-                    EventKind::Create(_)
-                        | EventKind::Remove(_)
-                        | EventKind::Modify(ModifyKind::Name(_))
-                ) || ev.paths.iter().any(|p| p.ends_with(".vscode/launch.json")))
-            {
-                tx.unbounded_send(ev.paths).ok();
-            }
+            // Only changes to a folder's entries matter, and launch.json's
+            // contents. A lost burst (Windows' change buffer overflowing in a
+            // build) sends no paths: every listing is suspect then.
+            let paths = match ev {
+                Ok(ev) if ev.need_rescan() => Vec::new(),
+                Ok(ev)
+                    if matches!(
+                        ev.kind,
+                        EventKind::Create(_)
+                            | EventKind::Remove(_)
+                            | EventKind::Modify(ModifyKind::Name(_))
+                    ) || ev.paths.iter().any(|p| p.ends_with(".vscode/launch.json")) =>
+                {
+                    ev.paths
+                }
+                Ok(_) => return,
+                Err(_) => Vec::new(),
+            };
+            tx.unbounded_send(paths).ok();
         });
         let Ok(mut watcher) = watcher else { return };
         if let Err(err) = watcher.watch(&root, RecursiveMode::Recursive) {
@@ -3578,8 +3610,10 @@ impl Workbench {
         }
         let task = cx.spawn(async move |this, cx| {
             while let Some(mut paths) = rx.next().await {
+                let mut rescan = paths.is_empty();
                 // A build touches many files at once; take the whole burst in one go.
                 while let Ok(more) = rx.try_recv() {
+                    rescan |= more.is_empty();
                     paths.extend(more);
                 }
                 let alive = this.update(cx, |this, cx| {
@@ -3590,7 +3624,11 @@ impl Workbench {
                     {
                         this.palette.files_changed(false);
                     }
-                    let mut stale = false;
+                    let mut stale = rescan;
+                    if rescan {
+                        this.dirs.clear();
+                        this.palette.files_changed(false);
+                    }
                     if paths.iter().any(|p| p.ends_with(".vscode/launch.json")) {
                         this.launch_changed();
                         stale = true;
@@ -3681,7 +3719,8 @@ impl Workbench {
     /// steps out, Enter opens into the editor and Space opens keeping focus
     /// here.
     fn tree_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(root) = self.root.clone() else {
+        // Keys typed into the New File/Folder name are its own.
+        let Some(root) = self.root.clone().filter(|_| self.new_item.is_none()) else {
             return;
         };
         if ev.keystroke.modifiers.modified() {
@@ -3833,6 +3872,118 @@ impl Workbench {
         })
     }
 
+    /// VS Code's explorer New File... / New Folder...: a name box in the
+    /// focused folder, or the focused file's, else the workspace folder.
+    fn new_item(&mut self, dir: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let at = (self.tree_cursor.clone()).unwrap_or_else(|| root.clone());
+        let parent = match at.is_dir() {
+            true => at,
+            false => at.parent().map_or(root, Path::to_path_buf),
+        };
+        self.root_open = true;
+        self.expanded.insert(parent.clone());
+        let input = cx.new(|cx| InputState::new(window, cx));
+        cx.subscribe_in(&input, window, |this, input, ev: &InputEvent, window, cx| {
+            let ours = this.new_item.as_ref().is_some_and(|n| &n.2 == input);
+            match ev {
+                InputEvent::PressEnter { .. } if ours => {
+                    let dir = this.new_item.as_ref().is_some_and(|n| n.1);
+                    this.create_item(window, cx);
+                    // A new file has the editor's focus by now.
+                    if dir {
+                        window.focus(&this.tree_focus, cx);
+                    }
+                }
+                // As in VS Code, clicking away keeps the name.
+                InputEvent::Blur if ours => this.create_item(window, cx),
+                _ => {}
+            }
+        })
+        .detach();
+        // After the click or menu that asked for it settles the focus.
+        let focus = input.clone();
+        window.defer(cx, move |window, cx| focus.update(cx, |s, cx| s.focus(window, cx)));
+        self.new_item = Some((parent, dir, input));
+        cx.notify();
+    }
+
+    /// Makes the New File/Folder row's file or folder; a name with slashes
+    /// makes the folders on the way, as VS Code does.
+    fn create_item(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((parent, dir, input)) = self.new_item.take() else {
+            return;
+        };
+        cx.notify();
+        let name = input.read(cx).value().trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        let path = parent.join(&name);
+        if path.exists() {
+            return self.error(
+                format!(
+                    "A file or folder '{name}' already exists at this location. Please choose a different name."
+                ),
+                cx,
+            );
+        }
+        let made = match dir {
+            true => fs::create_dir_all(&path),
+            false => (path.parent().map_or(Ok(()), fs::create_dir_all))
+                .and_then(|_| fs::File::create_new(&path).map(drop)),
+        };
+        if let Err(err) = made {
+            return self.error(format!("Unable to create '{}' ({err})", path.display()), cx);
+        }
+        self.expanded.extend(
+            (path.ancestors().skip(1))
+                .take_while(|a| a.starts_with(&parent))
+                .map(Path::to_path_buf),
+        );
+        self.tree_sel = Some(path.clone());
+        self.tree_cursor = Some(path.clone());
+        self.dirs.clear();
+        if !dir {
+            self.open_path(path, window, cx);
+        }
+    }
+
+    fn render_new_item(&self, depth: usize, is_dir: bool, cx: &mut Context<Self>) -> AnyElement {
+        let Some((_, _, input)) = &self.new_item else {
+            return div().into_any_element();
+        };
+        h_flex()
+            .id("explorer-new-item")
+            .h(px(22.))
+            .w_full()
+            .pl(px(8. + depth as f32 * 8.))
+            .pr(px(12.))
+            .text_size(px(13.))
+            .child(div().w(px(16.)).flex_none().when(is_dir, |d| d.child(codicon(icon::CHEVRON_RIGHT))))
+            .map(|d| match is_dir {
+                true => d.children(folder_icon(Path::new("folder"), false).map(|i| div().mr(px(6.)).child(i))),
+                false => d.child(div().mr(px(6.)).child(file_icon(Path::new("")))),
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .border_1()
+                    .border_color(col::focus())
+                    .bg(col::input())
+                    .child(Input::new(input).appearance(false).text_size(px(13.))),
+            )
+            .on_action(cx.listener(|this, _: &input::Escape, window, cx| {
+                this.new_item = None;
+                window.focus(&this.tree_focus, cx);
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+
     fn render_tree_row(
         &self,
         (path, depth, is_dir): &(PathBuf, usize, bool),
@@ -3840,6 +3991,9 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (depth, is_dir) = (*depth, *is_dir);
+        if path.as_os_str().is_empty() {
+            return self.render_new_item(depth, is_dir, cx);
+        }
         let name = path
             .file_name()
             .unwrap_or_default()
@@ -5230,8 +5384,8 @@ fn reveal_path(path: &Path) {
 
 /// An explorer row's right-click menu, as VS Code's for a file or folder;
 /// the `root` one is the empty area's.
-// ponytail: no New File/Folder, Open to the Side, Rename or Delete yet (no
-// inline rename, split editors or recycle bin).
+// ponytail: no Open to the Side, Rename or Delete yet (no inline rename,
+// split editors or recycle bin).
 fn explorer_menu(
     menu: PopupMenu,
     wb: &WeakEntity<Workbench>,
@@ -5247,6 +5401,10 @@ fn explorer_menu(
             wb.update(cx, |this, cx| act(this, &path, window, cx)).ok();
         })
     };
+    let menu = menu
+        .item(item("New File...", None, |this, _, w, cx| this.new_item(false, w, cx)))
+        .item(item("New Folder...", None, |this, _, w, cx| this.new_item(true, w, cx)))
+        .separator();
     let menu = match is_dir {
         true => menu,
         false => menu
