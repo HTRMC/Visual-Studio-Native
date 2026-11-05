@@ -1955,6 +1955,14 @@ fn spawn_adapter(
         .stderr(Stdio::piped());
     #[cfg(windows)]
     std::os::windows::process::CommandExt::creation_flags(&mut command, 0x0800_0000); // CREATE_NO_WINDOW
+    // LLVM's Windows lldb embeds whichever python3.dll is on PATH, but looks
+    // for its standard library next to lldb-dap.exe and dies at once.
+    let stem = Path::new(&program).file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+    if stem.starts_with("lldb") && std::env::var_os("PYTHONHOME").is_none() {
+        if let Some(home) = python_home() {
+            command.env("PYTHONHOME", home);
+        }
+    }
     let mut child = command
         .spawn()
         .map_err(|err| format!("Could not start the debug adapter '{program}': {err}\n"))?;
@@ -2171,6 +2179,15 @@ fn lldb_dap() -> String {
         true => llvm.display().to_string(),
         false => "lldb-dap".into(),
     }
+}
+
+/// The first Python install on PATH with a `python3.dll` and its standard
+/// library: the one an embedding program loads. The Store's WindowsApps
+/// aliases have neither.
+fn python_home() -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .find(|d| d.join("python3.dll").is_file() && d.join("Lib").join("encodings").is_dir())
 }
 
 /// The adapter for a configuration's `type`, with VS Code's C++ and Go
