@@ -1382,6 +1382,40 @@ impl Workbench {
         self.focus_terminal(window, cx);
     }
 
+    /// An extension's task: `command_line` in a terminal of its own, named
+    /// `name`, which stays open with the output until a key is pressed, as
+    /// VS Code's task terminals do.
+    // ponytail: through cmd.exe, not the default shell; a new terminal each
+    // run rather than reusing the task's last one.
+    pub(super) fn run_task(
+        &mut self,
+        name: String,
+        command_line: String,
+        cwd: Option<PathBuf>,
+        mut env: Vec<(String, String)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // cmd expands the variable and then parses it, quotes and all; quoted
+        // as an argument, its quotes would be escaped the C way cmd ignores.
+        let line = format!(
+            "{command_line} & echo. & echo  *  Terminal will be reused by tasks, press any key to close it. & pause >nul"
+        );
+        env.push(("VSN_TASK".into(), line));
+        let profile = Profile {
+            name: name.clone().into(),
+            program: "cmd.exe".into(),
+            args: vec!["/d".into(), "/c".into(), "%VSN_TASK%".into()],
+            env,
+        };
+        if self.add_terminal(false, Some(profile), cwd, window, cx)
+            && let Some(t) = self.terminals.list.get_mut(self.terminals.active)
+        {
+            t.name = name;
+        }
+        self.focus_terminal(window, cx);
+    }
+
     /// The explorer's Open in Integrated Terminal: a new shell in `dir`.
     pub(super) fn open_terminal_at(
         &mut self,

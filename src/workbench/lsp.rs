@@ -20,7 +20,10 @@ use std::{
 };
 
 use futures::channel::oneshot;
-use gpui_kit::base::input::{Diagnostic, DiagnosticSeverity};
+use gpui_kit::base::input::{
+    CodeLens, Diagnostic, DiagnosticSeverity, FoldRange, InlayHint, InlayLabelPart, RangeDecoration,
+    RangeDecorationCollection, RangeDecorationStyle,
+};
 use input::{CodeActionProvider, CompletionProvider, DefinitionProvider, HoverProvider, Rope};
 use lsp_types::{
     CodeAction, CodeActionOrCommand, CompletionContext, CompletionItem, CompletionItemKind,
@@ -81,6 +84,40 @@ pub(super) struct Lsp {
     hosted: HashMap<String, &'static [&'static str]>,
     /// The parameter hints shown above the cursor in this file.
     signature: Option<(PathBuf, lsp_types::SignatureHelp)>,
+    /// What clicking an inlay hint or lens does, by the id its editor
+    /// reports: a command for its server to run, or a place to go.
+    decor: HashMap<usize, (PathBuf, Weak<Server>, Value)>,
+    next_decor: usize,
+    /// Each file's pending fetch of inlay hints and lenses.
+    decorating: HashMap<PathBuf, Task<()>>,
+    /// The editor and cursor offset the symbol highlights were last asked
+    /// for, the pending ask, and the highlights shown.
+    highlight_at: Option<(EntityId, usize)>,
+    highlighting: Option<Task<()>>,
+    highlights: Option<(Entity<EditorState>, RangeDecorationCollection)>,
+}
+
+impl Lsp {
+    /// Sends `method` to the server that has `path` open, if one does.
+    pub(super) fn request(
+        &self,
+        path: &Path,
+        method: &str,
+        params: Value,
+    ) -> Option<oneshot::Receiver<Value>> {
+        (self.servers.values().flatten())
+            .find(|s| s.open.lock().unwrap().contains_key(path))
+            .map(|s| s.request(method, params))
+    }
+
+    /// Asks every running server for the workspace's symbols matching
+    /// `query`; None when no server runs.
+    pub(super) fn workspace_symbols(&self, query: &str) -> Option<Vec<oneshot::Receiver<Value>>> {
+        let asks: Vec<_> = (self.servers.values().flatten())
+            .map(|s| s.request("workspace/symbol", json!({ "query": query })))
+            .collect();
+        (!asks.is_empty()).then_some(asks)
+    }
 }
 
 struct Server {
@@ -90,6 +127,8 @@ struct Server {
     pending: Mutex<HashMap<i64, oneshot::Sender<Value>>>,
     /// The open documents' versions and the hash of the text last sent.
     open: Mutex<HashMap<PathBuf, (i64, u64)>>,
+    /// What `initialize` answered it can do; null for an extension host.
+    caps: Mutex<Value>,
 }
 
 impl Server {
@@ -140,6 +179,44 @@ impl Server {
     }
 }
 
+/// LSP's semantic token types, and the theme's name that colors each.
+// ponytail: token modifiers (mutable, unsafe, ...) aren't styled.
+const SEMANTIC_TYPES: &[(&str, &str)] = &[
+    ("namespace", "type"),
+    ("type", "type"),
+    ("class", "type"),
+    ("enum", "type"),
+    ("interface", "type"),
+    ("struct", "type"),
+    ("typeParameter", "type"),
+    ("typeAlias", "type"),
+    ("union", "type"),
+    ("builtinType", "type"),
+    ("selfTypeKeyword", "type"),
+    ("parameter", "variable"),
+    ("variable", "variable"),
+    ("static", "variable"),
+    ("constParameter", "variable"),
+    ("property", "property"),
+    ("enumMember", "variant"),
+    ("function", "function"),
+    ("method", "function"),
+    ("macro", "function"),
+    ("keyword", "keyword"),
+    ("selfKeyword", "variable.special"),
+    ("lifetime", "keyword"),
+    ("boolean", "boolean"),
+    ("comment", "comment"),
+    ("string", "string"),
+    ("number", "number"),
+    ("label", "label"),
+    ("attribute", "attribute"),
+    ("builtinAttribute", "attribute"),
+    ("derive", "attribute"),
+    ("escapeSequence", "string.escape"),
+    ("formatSpecifier", "string.escape"),
+];
+
 /// One editor's hover, completion, definition and code action requests, to
 /// its server.
 struct Provider {
@@ -148,6 +225,8 @@ struct Provider {
     lang: &'static str,
     workbench: WeakEntity<Workbench>,
     snippets: Option<Snippets>,
+    /// The editor's indent unit, for snippets' tabs.
+    unit: String,
 }
 
 /// One editor's snippets as completions: those whose prefix starts with the
@@ -209,8 +288,10 @@ impl Snippets {
                 ..Default::default()
             })
             .collect();
-        let offered = offered.into_iter().map(|(_, filled)| filled).collect();
-        extensions::OFFERED.set(Some((self.path.clone(), start, offered)));
+        let offered = (offered.into_iter())
+            .map(|(_, (new, stops))| (start, new, stops))
+            .collect();
+        extensions::OFFERED.set(Some((self.path.clone(), offered)));
         items
     }
 }
@@ -274,16 +355,110 @@ impl CompletionProvider for Provider {
         cx: &mut App,
     ) -> Task<anyhow::Result<CompletionResponse>> {
         let reply = self.ask("textDocument/completion", text, offset, cx);
+        extensions::OFFERED.set(None);
         let snippets = (self.snippets.as_ref()).map_or(Vec::new(), |s| s.items(text, offset));
-        cx.background_spawn(async move {
+        let line = text.offset_to_position(offset).line as usize;
+        let line = text.slice(text.line_start_offset(line)..offset).to_string();
+        let indent = line[..line.len() - line.trim_start().len()].to_string();
+        let (path, lang, unit) = (self.path.clone(), self.lang, self.unit.clone());
+        let text = text.clone();
+        // On the main thread: the snippets offered are a thread-local.
+        cx.spawn(async move |_| {
             let mut items = match serde_json::from_value(reply.await)? {
                 None => vec![],
                 Some(CompletionResponse::Array(items)) => items,
                 Some(CompletionResponse::List(list)) => list.items,
             };
+            let at = extensions::Place {
+                path: &path,
+                lang,
+                indent: &indent,
+                unit: &unit,
+            };
+            let mut offered = Vec::new();
+            for item in &mut items {
+                if item.insert_text_format != Some(lsp_types::InsertTextFormat::SNIPPET) {
+                    continue;
+                }
+                item.insert_text_format = Some(lsp_types::InsertTextFormat::PLAIN_TEXT);
+                let (start, body) = match item.text_edit.as_mut() {
+                    Some(CompletionTextEdit::Edit(e)) => (e.range.start, &mut e.new_text),
+                    Some(CompletionTextEdit::InsertAndReplace(e)) => {
+                        (e.replace.start, &mut e.new_text)
+                    }
+                    None => (
+                        text.offset_to_position(offset),
+                        item.insert_text.get_or_insert_with(|| item.label.clone()),
+                    ),
+                };
+                let (new, stops) = extensions::fill(body, &at, "");
+                *body = new.clone();
+                // Only a stop other than the end needs the cursor moved.
+                if stops.iter().any(|r| *r != (new.len()..new.len())) {
+                    offered.push((text.position_to_offset(&start), new, stops));
+                }
+            }
+            extensions::offer(&path, offered);
             items.extend(snippets);
             Ok(CompletionResponse::Array(items))
         })
+    }
+
+    /// Resolves an accepted item for the import it adds and the command it
+    /// runs after, then applies those.
+    fn completion_accepted(
+        &self,
+        item: &CompletionItem,
+        state: Entity<EditorState>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let reply = (item.data.is_some() && item.additional_text_edits.is_none())
+            .then(|| self.server.upgrade())
+            .flatten()
+            .map(|server| server.request("completionItem/resolve", json!(item)));
+        // The editor applied those the item came with already.
+        let had_edits = item.additional_text_edits.is_some();
+        let (item, workbench, handle) =
+            (item.clone(), self.workbench.clone(), window.window_handle());
+        cx.spawn(async move |cx| {
+            let resolved = match reply {
+                Some(rx) => serde_json::from_value(rx.await.unwrap_or_default()).ok(),
+                None => None,
+            };
+            let resolved: CompletionItem = resolved.unwrap_or(item);
+            handle
+                .update(cx, |_, window, cx| {
+                    if let Some(edits) =
+                        (resolved.additional_text_edits).filter(|e| !had_edits && !e.is_empty())
+                    {
+                        state.update(cx, |e, cx| {
+                            let text = e.text().clone();
+                            let edits = (edits.into_iter())
+                                .map(|t| {
+                                    let r = text.position_to_offset(&t.range.start)
+                                        ..text.position_to_offset(&t.range.end);
+                                    (r, t.new_text)
+                                })
+                                .collect();
+                            e.apply_text_edits(edits, window, cx);
+                        });
+                    }
+                    if let Some(c) = resolved.command {
+                        let args = c.arguments.unwrap_or_default();
+                        // Once the editor's update asking is done.
+                        window.defer(cx, move |window, cx| {
+                            workbench
+                                .update(cx, |this, cx| {
+                                    this.run_any_command(c.command, args, window, cx)
+                                })
+                                .ok();
+                        });
+                    }
+                })
+                .ok();
+        })
+        .detach();
     }
 
     // ponytail: typing a word character or one of `.:>` asks; the server's
@@ -316,6 +491,71 @@ impl DefinitionProvider for Provider {
                 Some(GotoDefinitionResponse::Scalar(l)) => vec![link(l)],
                 Some(GotoDefinitionResponse::Array(ls)) => ls.into_iter().map(link).collect(),
                 Some(GotoDefinitionResponse::Link(ls)) => ls,
+            })
+        })
+    }
+}
+
+impl input::DocumentRangeSemanticTokensProvider for Provider {
+    /// The theme's names, in [`SEMANTIC_TYPES`]' order; the server's own
+    /// legend is mapped onto it as tokens arrive.
+    fn legend(&self) -> lsp_types::SemanticTokensLegend {
+        lsp_types::SemanticTokensLegend {
+            token_types: (SEMANTIC_TYPES.iter())
+                .map(|(_, theme)| lsp_types::SemanticTokenType::new(theme))
+                .collect(),
+            token_modifiers: Vec::new(),
+        }
+    }
+
+    fn semantic_tokens(
+        &self,
+        text: &Rope,
+        _: std::ops::Range<usize>,
+        _: &mut Window,
+        cx: &mut App,
+    ) -> Task<anyhow::Result<lsp_types::SemanticTokens>> {
+        let Some(server) = self.server.upgrade() else {
+            return Task::ready(Ok(Default::default()));
+        };
+        server.sync(&self.path, self.lang, &text.to_string());
+        let params = json!({ "textDocument": { "uri": path_uri(&self.path) } });
+        let rx = server.request("textDocument/semanticTokens/full", params);
+        cx.background_spawn(async move {
+            let reply = rx.await.unwrap_or_default();
+            // An extension host sends its legend along; a server said it
+            // at initialize.
+            let legend = match &reply["legend"] {
+                Value::Null => {
+                    server.caps.lock().unwrap()["semanticTokensProvider"]["legend"].clone()
+                }
+                l => l.clone(),
+            };
+            // Types without a color get an index past the legend, which the
+            // editor skips.
+            let map: Vec<u32> = (legend["tokenTypes"].as_array().into_iter().flatten())
+                .map(|t| {
+                    let ix = SEMANTIC_TYPES
+                        .iter()
+                        .position(|(n, _)| Some(*n) == t.as_str());
+                    ix.unwrap_or(SEMANTIC_TYPES.len()) as u32
+                })
+                .collect();
+            let data: Vec<u32> = (reply["data"].as_array().into_iter().flatten())
+                .map(|n| n.as_u64().unwrap_or(0) as u32)
+                .collect();
+            let data = (data.chunks_exact(5))
+                .map(|t| lsp_types::SemanticToken {
+                    delta_line: t[0],
+                    delta_start: t[1],
+                    length: t[2],
+                    token_type: map.get(t[3] as usize).copied().unwrap_or(u32::MAX),
+                    token_modifiers_bitset: 0,
+                })
+                .collect();
+            Ok(lsp_types::SemanticTokens {
+                result_id: None,
+                data,
             })
         })
     }
@@ -389,40 +629,51 @@ impl CodeActionProvider for Provider {
         window: &mut Window,
         cx: &mut App,
     ) -> Task<anyhow::Result<()>> {
-        // Called from inside the editor's own update; edit once that ends.
-        if let Some(edit) = action.edit {
-            let workbench = self.workbench.clone();
-            window.defer(cx, move |window, cx| {
-                (workbench.update(cx, |this, cx| this.apply_workspace_edit(edit, window, cx))).ok();
-            });
-        }
-        if let (Some(command), Some(server)) = (action.command, self.server.upgrade()) {
-            let params = json!({ "command": command.command, "arguments": command.arguments });
-            _ = server.request("workspace/executeCommand", params);
-        }
-        Task::ready(Ok(()))
+        let Some(server) = self.server.upgrade() else {
+            return Task::ready(Ok(()));
+        };
+        // An action listed without its edit gets it resolved first.
+        let reply = (action.edit.is_none() && action.data.is_some())
+            .then(|| server.request("codeAction/resolve", json!(action)));
+        let (workbench, handle) = (self.workbench.clone(), window.window_handle());
+        let server = Arc::downgrade(&server);
+        cx.spawn(async move |cx| {
+            let action = match reply {
+                Some(rx) => serde_json::from_value(rx.await.unwrap_or_default()).unwrap_or(action),
+                None => action,
+            };
+            if let Some(edit) = action.edit {
+                // Called from inside the editor's own update; edit once that ends.
+                handle.update(cx, |_, window, cx| {
+                    window.defer(cx, move |window, cx| {
+                        (workbench
+                            .update(cx, |this, cx| this.apply_workspace_edit(edit, window, cx)))
+                        .ok();
+                    });
+                })?;
+            }
+            if let (Some(command), Some(server)) = (action.command, server.upgrade()) {
+                let params = json!({ "command": command.command, "arguments": command.arguments });
+                _ = server.request("workspace/executeCommand", params);
+            }
+            Ok(())
+        })
     }
 }
 
 /// Applies a server's `edits` to the editor's text as one undo step.
 fn apply_edits(
     e: &mut EditorState,
-    mut edits: Vec<lsp_types::TextEdit>,
+    edits: Vec<lsp_types::TextEdit>,
     window: &mut Window,
     cx: &mut Context<EditorState>,
 ) {
-    edits.sort_by_key(|e| std::cmp::Reverse((e.range.start.line, e.range.start.character)));
-    let mut text = e.text().clone();
-    for edit in edits {
-        let start = text.position_to_offset(&edit.range.start);
-        text.replace(
-            start..text.position_to_offset(&edit.range.end),
-            &edit.new_text,
-        );
-    }
-    let pos = e.cursor_position();
-    e.replace_all(text.to_string(), window, cx);
-    e.set_cursor_position(pos, window, cx);
+    let text = e.text().clone();
+    let at = |p: &lsp_types::Position| text.position_to_offset(p);
+    let edits = (edits.into_iter())
+        .map(|t| (at(&t.range.start)..at(&t.range.end), t.new_text))
+        .collect();
+    e.apply_text_edits(edits, window, cx);
 }
 
 fn send(out: &mpsc::Sender<String>, msg: Value) {
@@ -486,6 +737,38 @@ pub(super) fn uri_path(uri: &str) -> Option<PathBuf> {
 }
 
 /// Splits a server's stdout into its JSON-RPC messages.
+/// `title` without its `$(icon)` codicons, which vsn can't draw inline.
+fn strip_icons(title: &str) -> String {
+    let mut out = String::new();
+    let mut rest = title;
+    while let Some(i) = rest.find("$(") {
+        out.push_str(&rest[..i]);
+        rest = rest[i..].find(')').map_or("", |j| &rest[i + j + 1..]);
+    }
+    out.push_str(rest);
+    out.trim().to_string()
+}
+
+/// The places in a reply of Locations or LocationLinks, one or a list.
+fn locations(reply: Value) -> Vec<(PathBuf, lsp_types::Position)> {
+    let list = match reply {
+        Value::Array(list) => list,
+        Value::Null => Vec::new(),
+        one => vec![one],
+    };
+    (list.iter())
+        .filter_map(|l| {
+            let uri = l["uri"].as_str().or(l["targetUri"].as_str())?;
+            let range = match &l["targetSelectionRange"] {
+                Value::Null => &l["range"],
+                r => r,
+            };
+            let at = serde_json::from_value(range["start"].clone()).ok()?;
+            Some((uri_path(uri)?, at))
+        })
+        .collect()
+}
+
 fn read_frames(stdout: impl Read, mut emit: impl FnMut(Value)) {
     let mut reader = BufReader::new(stdout);
     let (mut line, mut len) = (String::new(), None);
@@ -515,10 +798,18 @@ impl Workbench {
     /// server on the first file of its language, and points the editor's
     /// hover, completion and definition requests at it.
     pub(super) fn lsp_open(&mut self, ix: usize, cx: &mut Context<Self>) {
-        let Some(doc) = self.docs.get(ix).filter(|d| !d.untitled && !d.binary && !d.large) else {
+        let Some(doc) = self
+            .docs
+            .get(ix)
+            .filter(|d| !d.untitled && !d.binary && !d.large)
+        else {
             return;
         };
         let snippets = Snippets::new(doc);
+        let unit = match doc.indent.hard_tabs {
+            true => "	".to_string(),
+            false => " ".repeat(doc.indent.tab_size),
+        };
         let cmd = match self.lsp.hosted.get(doc.lang) {
             Some(&host) => host,
             None => match SERVERS.iter().find(|(langs, _)| langs.contains(&doc.lang)) {
@@ -549,6 +840,7 @@ impl Workbench {
             lang,
             workbench: cx.weak_entity(),
             snippets,
+            unit,
         });
         let this = cx.weak_entity();
         // A definition in another file opens there; within its own file the
@@ -579,9 +871,241 @@ impl Workbench {
             lsp.hover_provider = Some(provider.clone());
             lsp.completion_provider = Some(provider.clone());
             lsp.definition_provider = Some(provider.clone());
+            lsp.semantic_tokens_provider = Some(provider.clone());
             lsp.code_action_providers = vec![provider];
             lsp.show_document = Some(show);
         });
+        self.lsp_decorate(ix, cx);
+    }
+
+    /// Fetches editor `ix`'s inlay hints, lenses and folding ranges from its
+    /// server, shortly after the last edit.
+    pub(super) fn lsp_decorate(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.get(ix) else {
+            return;
+        };
+        let (path, editor) = (doc.path.clone(), doc.editor.clone());
+        let Some(server) = (self.lsp.servers.values().flatten())
+            .find(|s| s.open.lock().unwrap().contains_key(&path))
+            .cloned()
+        else {
+            return;
+        };
+        let key = path.clone();
+        // Replacing the last fetch drops it, so stale replies never land.
+        let task = cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(300))
+                .await;
+            let text = editor.read_with(cx, |e, _| e.text().clone());
+            let doc = json!({ "uri": path_uri(&path) });
+            let end = text.offset_to_position(text.len());
+            let range = json!({ "start": { "line": 0, "character": 0 }, "end": end });
+            // A server still loading the workspace answers null (or an
+            // error); ask again a little later, a few times.
+            let (mut hints, mut lenses) = (Value::Null, Value::Null);
+            for wait in [0, 1000, 2000, 4000, 8000] {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(wait))
+                    .await;
+                let h = server.request(
+                    "textDocument/inlayHint",
+                    json!({ "textDocument": doc, "range": range }),
+                );
+                let l = server.request("textDocument/codeLens", json!({ "textDocument": doc }));
+                (hints, lenses) = (h.await.unwrap_or_default(), l.await.unwrap_or_default());
+                if !hints.is_null() && !lenses.is_null() {
+                    break;
+                }
+            }
+            // A server may leave a lens' command for codeLens/resolve.
+            for lens in lenses.as_array_mut().into_iter().flatten() {
+                if lens["command"].is_null() {
+                    *lens = server
+                        .request("codeLens/resolve", lens.clone())
+                        .await
+                        .unwrap_or_default();
+                }
+            }
+            let folds = server.request("textDocument/foldingRange", json!({ "textDocument": doc }));
+            // LSP's end is the last line hidden; the editor's is the one after.
+            let folds: Vec<_> = (folds.await.unwrap_or_default().as_array().into_iter().flatten())
+                .filter_map(|f| Some((f["startLine"].as_u64()? as usize, f["endLine"].as_u64()? as usize)))
+                .filter(|(start, end)| end > start)
+                .map(|(start, end)| FoldRange::new(start, end + 1))
+                .collect();
+            if !folds.is_empty() {
+                editor.update(cx, |e, cx| e.apply_highlighter_fold_candidates(folds, cx));
+            }
+            let weak = Arc::downgrade(&server);
+            this.update(cx, |this, cx| {
+                let lsp = &mut this.lsp;
+                lsp.decor.retain(|_, (p, ..)| *p != path);
+                let mut target = |what: Value| {
+                    let id = lsp.next_decor;
+                    lsp.next_decor += 1;
+                    lsp.decor.insert(id, (path.clone(), weak.clone(), what));
+                    id
+                };
+                let hints = (hints.as_array().into_iter().flatten())
+                    .filter_map(|h| {
+                        let at = serde_json::from_value(h["position"].clone()).ok()?;
+                        let label = match &h["label"] {
+                            Value::String(s) => vec![InlayLabelPart {
+                                text: s.clone().into(),
+                                id: None,
+                            }],
+                            Value::Array(parts) => (parts.iter())
+                                .map(|p| {
+                                    let what = match (&p["command"], &p["location"]) {
+                                        (Value::Null, Value::Null) => None,
+                                        (Value::Null, l) => Some(l.clone()),
+                                        (c, _) => Some(c.clone()),
+                                    };
+                                    InlayLabelPart {
+                                        text: p["value"]
+                                            .as_str()
+                                            .unwrap_or_default()
+                                            .to_string()
+                                            .into(),
+                                        id: what.map(&mut target),
+                                    }
+                                })
+                                .collect(),
+                            _ => return None,
+                        };
+                        Some(InlayHint {
+                            offset: text.position_to_offset(&at),
+                            label,
+                            padding_left: h["paddingLeft"].as_bool().unwrap_or(false),
+                            padding_right: h["paddingRight"].as_bool().unwrap_or(false),
+                        })
+                    })
+                    .collect();
+                let lenses = (lenses.as_array().into_iter().flatten())
+                    .filter_map(|l| {
+                        let title = l["command"]["title"].as_str().filter(|t| !t.is_empty())?;
+                        let line = l["range"]["start"]["line"].as_u64()? as usize;
+                        let title = strip_icons(title).into();
+                        Some(CodeLens {
+                            line,
+                            items: vec![(title, target(l["command"].clone()))],
+                        })
+                    })
+                    .collect();
+                editor.update(cx, |e, cx| {
+                    e.set_inlay_hints(hints, cx);
+                    e.set_code_lenses(lenses, cx);
+                });
+            })
+            .ok();
+        });
+        self.lsp.decorating.insert(key, task);
+    }
+
+    /// The cursor in `editor` may have moved: shortly after, its server's
+    /// highlights of the symbol there replace the last ones.
+    pub(super) fn lsp_cursor_moved(
+        &mut self,
+        editor: &Entity<EditorState>,
+        cx: &mut Context<Self>,
+    ) {
+        let e = editor.read(cx);
+        let at = (editor.entity_id(), e.cursor());
+        if self.lsp.highlight_at == Some(at) {
+            return;
+        }
+        self.lsp.highlight_at = Some(at);
+        let selected = !e.selected_range().is_empty();
+        let position = e.text().offset_to_position(at.1);
+        if let Some((_, shown)) = self.lsp.highlights.take() {
+            shown.dispose(cx);
+        }
+        let Some(doc) = self
+            .docs
+            .iter()
+            .find(|d| &d.editor == editor)
+            .filter(|_| !selected)
+        else {
+            self.lsp.highlighting = None;
+            return;
+        };
+        let params = json!({
+            "textDocument": { "uri": path_uri(&doc.path) },
+            "position": position,
+        });
+        let (path, editor) = (doc.path.clone(), editor.clone());
+        self.lsp.highlighting = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(250))
+                .await;
+            let Ok(Some(ask)) = this.update(cx, |this, _| {
+                this.lsp
+                    .request(&path, "textDocument/documentHighlight", params)
+            }) else {
+                return;
+            };
+            let reply = ask.await.unwrap_or_default();
+            this.update(cx, |this, cx| {
+                let decos: Vec<_> = (reply.as_array().into_iter().flatten())
+                    .filter_map(|h| {
+                        let range: lsp_types::Range =
+                            serde_json::from_value(h["range"].clone()).ok()?;
+                        let text = editor.read(cx).text();
+                        let range = text.position_to_offset(&range.start)
+                            ..text.position_to_offset(&range.end);
+                        // A write reads stronger than a read, as VS Code's.
+                        let alpha = if h["kind"].as_u64() == Some(3) {
+                            0.25
+                        } else {
+                            0.15
+                        };
+                        Some(
+                            RangeDecoration::new(range)
+                                .with_style(RangeDecorationStyle::Fill)
+                                .with_color(col::fg().opacity(alpha)),
+                        )
+                    })
+                    .collect();
+                if decos.is_empty() {
+                    return;
+                }
+                let shown =
+                    editor.update(cx, |e, cx| e.create_range_decorations_collection(decos, cx));
+                this.lsp.highlights = Some((editor, shown));
+            })
+            .ok();
+        }));
+    }
+
+    /// Every editor's inlay hints and lenses, again.
+    fn lsp_decorate_all(&mut self, cx: &mut Context<Self>) {
+        for ix in 0..self.docs.len() {
+            self.lsp_decorate(ix, cx);
+        }
+    }
+
+    /// An inlay hint's part or a lens was clicked: its server runs the
+    /// command, or the editor goes to the place.
+    pub(super) fn lsp_decor_clicked(
+        &mut self,
+        id: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((_, server, what)) = self.lsp.decor.get(&id).cloned() else {
+            return;
+        };
+        if let Some(command) = what["command"].as_str() {
+            if let Some(server) = server.upgrade() {
+                let params = json!({ "command": command, "arguments": what["arguments"] });
+                _ = server.request("workspace/executeCommand", params);
+            }
+        } else if let Some(path) = what["uri"].as_str().and_then(uri_path)
+            && let Ok(at) = serde_json::from_value(what["range"]["start"].clone())
+        {
+            self.go_to(path, at, window, cx);
+        }
     }
 
     /// Editor `ix` changed: its server gets the whole new text.
@@ -592,6 +1116,7 @@ impl Workbench {
                 server.sync(&doc.path, doc.lang, &doc.editor.read(cx).value());
             }
         }
+        self.lsp_decorate(ix, cx);
     }
 
     /// Sends didClose for the files no editor shows any more.
@@ -897,65 +1422,182 @@ impl Workbench {
         method: &str,
         params: Value,
     ) -> Option<oneshot::Receiver<Value>> {
-        (self.lsp.servers.values().flatten())
-            .find(|s| s.open.lock().unwrap().contains_key(path))
-            .map(|s| s.request(method, params))
+        self.lsp.request(path, method, params)
     }
 
     /// Shift+F12: the symbol's references, a pick list grouped by file.
     // ponytail: a pick list stands in for VS Code's peek view and References
     // panel.
     pub(super) fn find_references(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let context = json!({ "context": { "includeDeclaration": true } });
+        self.request_locations(
+            "textDocument/references",
+            context,
+            "references",
+            false,
+            window,
+            cx,
+        );
+    }
+
+    /// Go to the symbol's type definition, implementations or declaration:
+    /// the one there is, or a pick list of them.
+    pub(super) fn go_to_locations(
+        &mut self,
+        method: &str,
+        what: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.request_locations(method, json!({}), what, true, window, cx);
+    }
+
+    /// Sends `method` for the cursor's position, with `extra` params, and
+    /// shows the places it answers with.
+    fn request_locations(
+        &mut self,
+        method: &str,
+        extra: Value,
+        what: &'static str,
+        jump: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(doc) = self.docs.get(self.active) else {
             return;
         };
         let e = doc.editor.read(cx);
         let at = e.text().offset_to_position(e.selected_range().start);
-        let params = json!({
-            "textDocument": { "uri": path_uri(&doc.path) },
-            "position": at,
-            "context": { "includeDeclaration": true },
-        });
-        let Some(reply) = self.request_for(&doc.path.clone(), "textDocument/references", params)
-        else {
-            self.note("No references found".into(), Severity::Info, cx);
+        let mut params = json!({ "textDocument": { "uri": path_uri(&doc.path) }, "position": at });
+        if let (Some(p), Value::Object(extra)) = (params.as_object_mut(), extra) {
+            p.extend(extra);
+        }
+        let none = SharedString::from(format!("No {what} found"));
+        let Some(reply) = self.request_for(&doc.path.clone(), method, params) else {
+            self.note(none, Severity::Info, cx);
             return;
         };
         cx.spawn_in(window, async move |this, cx| {
-            let reply = reply.await.unwrap_or_default();
-            let found = serde_json::from_value::<Option<Vec<lsp_types::Location>>>(reply);
+            let mut found = locations(reply.await.unwrap_or_default());
+            this.update_in(cx, |this, window, cx| match found.len() {
+                0 => this.note(none, Severity::Info, cx),
+                1 if jump => {
+                    let (path, at) = found.swap_remove(0);
+                    this.go_to(path, at, window, cx);
+                }
+                _ => this.pick_locations(found, format!("Go to {what}"), window, cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// `found` as a pick list grouped by file, each row its line's text.
+    pub(super) fn pick_locations(
+        &mut self,
+        mut found: Vec<(PathBuf, lsp_types::Position)>,
+        placeholder: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        found.sort_by_key(|(path, at)| (path.clone(), at.line, at.character));
+        found.dedup();
+        let (mut rows, mut groups) = (Vec::new(), Vec::new());
+        let mut lines = Vec::new();
+        for (ix, (path, at)) in found.iter().enumerate() {
+            if ix == 0 || found[ix - 1].0 != *path {
+                let open = self.docs.iter().find(|d| d.path == *path);
+                let text = match open {
+                    Some(d) => d.editor.read(cx).value().to_string(),
+                    None => fs::read_to_string(path).unwrap_or_default(),
+                };
+                lines = text.lines().map(str::to_string).collect();
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                groups.push((ix, name.into_owned().into()));
+            }
+            let line = lines.get(at.line as usize).map_or("", |l| l.trim());
+            rows.push((
+                line.to_string(),
+                format!("{}:{}", at.line + 1, at.character + 1),
+            ));
+        }
+        let items = super::palette::Items {
+            picker: super::palette::Picker::Location(found),
+            rows,
+            groups,
+            placeholder: placeholder.into(),
+            current: 0,
+        };
+        self.open_items(items, window, cx);
+    }
+
+    /// Shift+Alt+H: the calls to the function at the cursor, a pick list of
+    /// the callers.
+    // ponytail: a pick list of incoming calls stands in for VS Code's Call
+    // Hierarchy view; outgoing calls and going deeper aren't offered.
+    pub(super) fn call_hierarchy(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.get(self.active) else {
+            return;
+        };
+        let e = doc.editor.read(cx);
+        let at = e.text().offset_to_position(e.selected_range().start);
+        let path = doc.path.clone();
+        let params = json!({ "textDocument": { "uri": path_uri(&path) }, "position": at });
+        let none = SharedString::from("No call hierarchy found");
+        let Some(server) = (self.lsp.servers.values().flatten())
+            .find(|s| s.open.lock().unwrap().contains_key(&path))
+            .cloned()
+        else {
+            self.note(none, Severity::Info, cx);
+            return;
+        };
+        let prepare = server.request("textDocument/prepareCallHierarchy", params);
+        cx.spawn_in(window, async move |this, cx| {
+            let item = match prepare.await.unwrap_or_default() {
+                Value::Array(mut a) if !a.is_empty() => a.swap_remove(0),
+                _ => Value::Null,
+            };
+            let calls = match item.is_object() {
+                true => {
+                    server
+                        .request("callHierarchy/incomingCalls", json!({ "item": item }))
+                        .await
+                }
+                false => Ok(Value::Null),
+            };
+            let calls = calls.unwrap_or_default();
             this.update_in(cx, |this, window, cx| {
-                let mut found: Vec<_> = (found.ok().flatten().into_iter().flatten())
-                    .filter_map(|l| Some((uri_path(l.uri.as_str())?, l.range.start)))
-                    .collect();
+                let calls = calls.as_array().cloned().unwrap_or_default();
+                let mut found = Vec::new();
+                let mut rows = Vec::new();
+                for call in &calls {
+                    let from = &call["from"];
+                    let Some(path) = from["uri"].as_str().and_then(uri_path) else {
+                        continue;
+                    };
+                    let range = match &call["fromRanges"][0] {
+                        Value::Null => &from["selectionRange"],
+                        r => r,
+                    };
+                    let Ok(at) =
+                        serde_json::from_value::<lsp_types::Position>(range["start"].clone())
+                    else {
+                        continue;
+                    };
+                    let name = path.file_name().unwrap_or_default().to_string_lossy();
+                    let label = from["name"].as_str().unwrap_or_default().to_string();
+                    rows.push((label, format!("{name}:{}", at.line + 1)));
+                    found.push((path, at));
+                }
                 if found.is_empty() {
-                    return this.note("No references found".into(), Severity::Info, cx);
+                    return this.note(none, Severity::Info, cx);
                 }
-                found.sort_by_key(|(path, at)| (path.clone(), at.line, at.character));
-                let (mut rows, mut groups) = (Vec::new(), Vec::new());
-                let mut lines = Vec::new();
-                for (ix, (path, at)) in found.iter().enumerate() {
-                    if ix == 0 || found[ix - 1].0 != *path {
-                        let open = this.docs.iter().find(|d| d.path == *path);
-                        let text = match open {
-                            Some(d) => d.editor.read(cx).value().to_string(),
-                            None => fs::read_to_string(path).unwrap_or_default(),
-                        };
-                        lines = text.lines().map(str::to_string).collect();
-                        let name = path.file_name().unwrap_or_default().to_string_lossy();
-                        groups.push((ix, name.into_owned().into()));
-                    }
-                    let line = lines.get(at.line as usize).map_or("", |l| l.trim());
-                    rows.push((
-                        line.to_string(),
-                        format!("{}:{}", at.line + 1, at.character + 1),
-                    ));
-                }
+                let name = item["name"].as_str().unwrap_or_default();
                 let items = super::palette::Items {
                     picker: super::palette::Picker::Location(found),
                     rows,
-                    groups,
-                    placeholder: "Go to reference".into(),
+                    groups: Vec::new(),
+                    placeholder: format!("Calls to '{name}'").into(),
                     current: 0,
                 };
                 this.open_items(items, window, cx);
@@ -990,6 +1632,7 @@ impl Workbench {
                 next_id: AtomicI64::new(1),
                 pending: Mutex::default(),
                 open: Mutex::default(),
+                caps: Mutex::default(),
             }))
         });
         let new: Vec<String> = (ids.into_iter())
@@ -1091,6 +1734,7 @@ impl Workbench {
             next_id: AtomicI64::new(1),
             pending: Mutex::default(),
             open: Mutex::default(),
+            caps: Mutex::default(),
         });
         let (tx, mut rx) = futures::channel::mpsc::unbounded::<Value>();
         let log = |text: &str| json!({ "method": "vsn/log", "params": [cmd[0], text] });
@@ -1109,7 +1753,12 @@ impl Workbench {
                     tx.unbounded_send(log(text)).ok();
                 }
                 (Value::Null, Some(_)) => _ = tx.unbounded_send(msg),
-                (id, None) if id == 0 => _ = ready.send(()),
+                (id, None) if id == 0 => {
+                    if let Some(server) = weak.upgrade() {
+                        *server.caps.lock().unwrap() = msg["result"]["capabilities"].clone();
+                    }
+                    ready.send(()).ok();
+                }
                 (id, None) => {
                     let waiting = (weak.upgrade().zip(id.as_i64()))
                         .and_then(|(s, id)| s.pending.lock().unwrap().remove(&id));
@@ -1128,6 +1777,9 @@ impl Workbench {
                         "workspace/configuration" => json!(vec![Value::Null; items]),
                         _ => Value::Null,
                     };
+                    if method.ends_with("/refresh") {
+                        tx.unbounded_send(json!({ "method": method })).ok();
+                    }
                     send(
                         &server.out,
                         json!({ "jsonrpc": "2.0", "id": id, "result": result }),
@@ -1169,21 +1821,51 @@ impl Workbench {
                         "synchronization": { "didSave": true },
                         "publishDiagnostics": {},
                         "hover": { "contentFormat": ["markdown", "plaintext"] },
-                        "completion": { "completionItem": { "snippetSupport": false } },
+                        // No resolveSupport: servers then send auto-imports' edits up front.
+                        "completion": { "completionItem": { "snippetSupport": true } },
                         "definition": { "linkSupport": true },
+                        "typeDefinition": { "linkSupport": true },
+                        "implementation": { "linkSupport": true },
+                        "declaration": { "linkSupport": true },
+                        "references": {},
+                        "documentSymbol": { "hierarchicalDocumentSymbolSupport": true },
+                        "documentHighlight": {},
+                        "selectionRange": {},
+                        "foldingRange": { "lineFoldingOnly": true },
+                        "callHierarchy": {},
+                        "onTypeFormatting": {},
+                        "inlayHint": {},
+                        "codeLens": {},
+                        "semanticTokens": {
+                            "requests": { "full": true },
+                            "tokenTypes": SEMANTIC_TYPES.iter().map(|(t, _)| t).collect::<Vec<_>>(),
+                            "tokenModifiers": [],
+                            "formats": ["relative"],
+                        },
                         "formatting": {},
                         "rangeFormatting": {},
                         "rename": {},
                         "signatureHelp": { "signatureInformation": {
                             "parameterInformation": { "labelOffsetSupport": true },
                         } },
-                        "codeAction": { "codeActionLiteralSupport": { "codeActionKind": {
-                            "valueSet": ["", "quickfix", "refactor", "refactor.extract",
-                                "refactor.inline", "refactor.rewrite", "source",
-                                "source.organizeImports"],
-                        }}},
+                        "codeAction": {
+                            "dataSupport": true,
+                            "resolveSupport": { "properties": ["edit"] },
+                            "codeActionLiteralSupport": { "codeActionKind": {
+                                "valueSet": ["", "quickfix", "refactor", "refactor.extract",
+                                    "refactor.inline", "refactor.rewrite", "source",
+                                    "source.organizeImports"],
+                            }},
+                        },
                     },
-                    "workspace": { "configuration": true, "workspaceFolders": true },
+                    "workspace": {
+                        "configuration": true,
+                        "workspaceFolders": true,
+                        "symbol": {},
+                        "semanticTokens": { "refreshSupport": true },
+                        "inlayHint": { "refreshSupport": true },
+                        "codeLens": { "refreshSupport": true },
+                    },
                 },
             }}),
         );
@@ -1265,6 +1947,14 @@ impl Workbench {
                     _ => Severity::Info,
                 };
                 self.note(text.into(), severity, cx);
+            }
+            Some("workspace/semanticTokens/refresh") => self.in_window(cx, |this, window, cx| {
+                for doc in &this.docs {
+                    (doc.editor.clone()).update(cx, |e, cx| e.refresh_semantic_tokens(window, cx));
+                }
+            }),
+            Some("workspace/inlayHint/refresh" | "workspace/codeLens/refresh") => {
+                self.lsp_decorate_all(cx)
             }
             _ => {}
         }

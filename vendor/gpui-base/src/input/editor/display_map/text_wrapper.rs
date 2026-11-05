@@ -791,6 +791,9 @@ pub(crate) struct LineLayout {
     /// Whether any run of this line carries a background color, so [`Self::paint_background`]
     /// can skip the glyph walk for the common case of a line without highlights.
     has_background: bool,
+    /// vsn: rows painted above the text (a CodeLens), each one line tall. The
+    /// text starts this many rows down; everything above it is not text.
+    pub(crate) top_rows: usize,
 }
 
 impl LineLayout {
@@ -803,7 +806,14 @@ impl LineLayout {
             whitespace_chars: Vec::new(),
             whitespace_indicators: None,
             has_background: false,
+            top_rows: 0,
         }
+    }
+
+    /// vsn: how far down the text starts, below the rows reserved above it.
+    #[inline]
+    pub(crate) fn text_top(&self, line_height: Pixels) -> Pixels {
+        self.top_rows * line_height
     }
 
     /// Record whether any run of this line carries a background color.
@@ -820,8 +830,9 @@ impl LineLayout {
 
     /// The pixel indent applied to the given visual line, relative to the line's
     /// leading text. Only continuation lines (index > 0) are indented.
+    // vsn: pub(crate) for placing inlay hint hit areas.
     #[inline]
-    fn line_indent(&self, line_index: usize) -> Pixels {
+    pub(crate) fn line_indent(&self, line_index: usize) -> Pixels {
         if line_index == 0 {
             px(0.)
         } else {
@@ -902,7 +913,8 @@ impl LineLayout {
         line_end_affinity: bool,
     ) -> Option<Point<Pixels>> {
         let mut acc_len = 0;
-        let mut offset_y = px(0.);
+        // vsn: the text starts below the rows reserved above it.
+        let mut offset_y = self.text_top(last_layout.line_height);
 
         let x_offset = last_layout.alignment_offset(self.longest_width);
 
@@ -967,7 +979,14 @@ impl LineLayout {
         last_layout: &LastLayout,
     ) -> Option<(usize, usize, Pixels)> {
         let mut offset = 0;
-        let mut line_top = px(0.);
+        // vsn: the text starts below the rows reserved above it; a position in
+        // those rows resolves to the first text row, as nothing there is text.
+        let mut line_top = self.text_top(last_layout.line_height);
+        let pos = if self.top_rows > 0 && pos.y >= px(0.) && pos.y < line_top {
+            point(pos.x, line_top)
+        } else {
+            pos
+        };
         let x_offset = last_layout.alignment_offset(self.longest_width);
 
         for (i, line) in self.wrapped_lines.iter().enumerate() {
@@ -1055,7 +1074,8 @@ impl LineLayout {
             .map(|(ix, line)| line.width + self.line_indent(ix))
             .max()
             .unwrap_or(self.longest_width);
-        size(width, self.wrapped_lines.len() * line_height)
+        // vsn: the rows reserved above the text are part of the line.
+        size(width, (self.top_rows + self.wrapped_lines.len()) * line_height)
     }
 
     /// Paint only the glyph background quads of this line.
@@ -1076,6 +1096,8 @@ impl LineLayout {
         if !self.has_background {
             return;
         }
+        // vsn: the text starts below the rows reserved above it.
+        let pos = pos + point(px(0.), self.text_top(line_height));
 
         for (ix, line) in self.wrapped_lines.iter().enumerate() {
             _ = line.paint_background(
@@ -1098,6 +1120,8 @@ impl LineLayout {
         window: &mut Window,
         cx: &mut App,
     ) {
+        // vsn: the text starts below the rows reserved above it.
+        let pos = pos + point(px(0.), self.text_top(line_height));
         for (ix, line) in self.wrapped_lines.iter().enumerate() {
             _ = line.paint(
                 pos + point(self.line_indent(ix), ix * line_height),

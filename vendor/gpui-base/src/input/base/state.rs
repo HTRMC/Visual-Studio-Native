@@ -38,6 +38,7 @@ use super::{
 use crate::actions::{SelectDown, SelectLeft, SelectRight, SelectUp};
 use crate::input::blink_cursor::CURSOR_WIDTH;
 use crate::input::movement::MoveDirection;
+use crate::input::language_config::IndentAction;
 use crate::input::{
     InputExtras as _, Position, RopeExt as _, element::RIGHT_MARGIN, layout::LastLayout,
 };
@@ -131,6 +132,10 @@ pub enum InputEvent {
     PressEnter { secondary: bool, shift: bool },
     Focus,
     Blur,
+    /// vsn: an inlay hint label part with this id was clicked.
+    InlayClicked(usize),
+    /// vsn: a CodeLens item with this id was clicked.
+    CodeLensClicked(usize),
 }
 
 pub(super) const CONTEXT: &str = "Input";
@@ -1078,7 +1083,8 @@ impl<M: InputModeKind> InputBaseState<M> {
             let prev_lines_offset = last_layout.visible_line_byte_offsets[vi];
             let local_offset = offset.saturating_sub(prev_lines_offset);
             if let Some(pos) = line.position_for_index(local_offset, last_layout, false) {
-                let sub_line_index = (pos.y / line_height) as usize;
+                // vsn: count sub-lines from the text, below any CodeLens row.
+                let sub_line_index = ((pos.y - line.text_top(line_height)) / line_height) as usize;
                 let adjusted_pos = point(pos.x + last_layout.line_number_width, pos.y + y_offset);
                 return (vi, sub_line_index, Some(adjusted_pos));
             }
@@ -2252,6 +2258,10 @@ impl<M: InputModeKind> InputBaseState<M> {
                         }
                     }
                 }
+                // vsn: the language's onEnterRules, before the plain indent.
+                if !split && self.is_code_editor() && self.active_selection().is_empty() {
+                    split = self.enter_by_rule(window, cx);
+                }
                 if !split {
                     // Get current line indent
                     let indent = if self.is_code_editor() {
@@ -2277,6 +2287,52 @@ impl<M: InputModeKind> InputBaseState<M> {
             secondary: action.secondary,
             shift: action.shift,
         });
+    }
+
+    /// vsn: Enter under the first matching onEnterRule, if any matches.
+    fn enter_by_rule(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(rules) = self.mode.language_config() else {
+            return false;
+        };
+        let off = self.cursor();
+        let affinity = self.line_end_affinity_at(off);
+        let (start, end) = (self.start_of_line_at(off, affinity), self.end_of_line_at(off, affinity));
+        let before = self.text.slice(start..off).to_string();
+        let after = self.text.slice(off..end).to_string();
+        let after = after.trim_end_matches(['\n', '\r']);
+        let previous = match start {
+            0 => String::new(),
+            _ => {
+                let prev_start = self.start_of_line_at(start - 1, affinity);
+                self.text.slice(prev_start..start).to_string()
+            }
+        };
+        let Some(rule) = rules.on_enter(&before, after, previous.trim_end_matches(['\n', '\r'])) else {
+            return false;
+        };
+        let indent: String = before.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+        let tab = self.mode.tab_size();
+        let unit = match tab.hard_tabs {
+            true => "\t".to_string(),
+            false => " ".repeat(tab.tab_size),
+        };
+        let mut new = match rule.action {
+            IndentAction::None => indent.clone(),
+            IndentAction::Indent | IndentAction::IndentOutdent => format!("{indent}{unit}"),
+            IndentAction::Outdent => (indent.strip_suffix(unit.as_str()).unwrap_or(&indent)).to_string(),
+        };
+        new.truncate(new.len().saturating_sub(rule.remove_text));
+        new.push_str(&rule.append_text);
+        let caret = off + 1 + new.len();
+        let text = match rule.action {
+            IndentAction::IndentOutdent => format!("\n{new}\n{indent}"),
+            _ => format!("\n{new}"),
+        };
+        self.replace_text_in_range_silent(None, &text, window, cx);
+        self.set_cursor_to(caret);
+        self.update_preferred_column();
+        self.pause_blink_cursor(cx);
+        true
     }
 
     pub fn clean(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2884,7 +2940,8 @@ impl<M: InputModeKind> InputBaseState<M> {
         let display_row = self
             .display_map
             .offset_to_display_row(offset, self.line_end_affinity_at(offset));
-        let row_offset_y = line_height * display_row;
+        // vsn: measured in visual rows, which count CodeLens rows too.
+        let row_offset_y = line_height * self.display_map.display_row_to_visual_row(display_row);
 
         // For Right alignment use 0 margin: the cursor indicator is clamped inside bounds
         // in layout_cursors, so shifting the text here would cause a first-click visual jump.
@@ -10580,6 +10637,47 @@ mod tests {
             regex::Regex::new(r"^\s*end\b").unwrap(),
         ));
         for (before, expected) in [("begin|", "begin\n  |"), ("  |end", "  \n|end")] {
+            setup_cursors(&mut cx, &view.input, before);
+            cx.update(|window, cx| {
+                view.input.update(cx, |state, cx| {
+                    crate::input::set_language_config(state.language_name(), rules.clone(), cx);
+                    state.enter(
+                        &Enter {
+                            secondary: false,
+                            shift: false,
+                        },
+                        window,
+                        cx,
+                    );
+                });
+            });
+            assert_cursors(&mut cx, &view.input, expected);
+        }
+    }
+
+    #[gpui::test]
+    fn test_on_enter_rules(cx: &mut TestAppContext) {
+        use crate::input::{IndentAction, OnEnterRule};
+        use std::sync::Arc;
+        let view = InputView::<EditorMode>::new(cx);
+        let mut cx = VisualTestContext::from_window(view.window_handle.into(), cx);
+        let rule = |before: &str, after: Option<&str>, action, append: &str| OnEnterRule {
+            before: Arc::new(regex::Regex::new(before).unwrap()),
+            after: after.map(|a| Arc::new(regex::Regex::new(a).unwrap())),
+            previous_line: None,
+            action,
+            append_text: append.to_string().into(),
+            remove_text: 0,
+        };
+        let rules = LanguageConfig::default().on_enter_rules([
+            rule(r"^\s*///.*$", None, IndentAction::None, "/// "),
+            rule(r"^\s*/\*\*", Some(r"^\s*\*/$"), IndentAction::IndentOutdent, " * "),
+        ]);
+        for (before, expected) in [
+            ("    /// docs|", "    /// docs\n    /// |"),
+            ("/**| */", "/**\n   * |\n */"),
+            ("let a = 1;|", "let a = 1;\n|"),
+        ] {
             setup_cursors(&mut cx, &view.input, before);
             cx.update(|window, cx| {
                 view.input.update(cx, |state, cx| {

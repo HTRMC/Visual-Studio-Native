@@ -82,6 +82,7 @@ fn builtin_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("File: Save As...", Box::new(SaveAs)),
         ("File: Save All", Box::new(SaveAll)),
         ("File: Revert File", Box::new(RevertFile)),
+        ("View: Reopen Editor With...", Box::new(ReopenEditorWith)),
         ("File: Toggle Auto Save", Box::new(ToggleAutoSave)),
         ("Workspaces: Close Workspace", Box::new(CloseFolder)),
         ("View: Close Editor", Box::new(CloseEditor)),
@@ -209,6 +210,10 @@ fn builtin_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("Format Selection", Box::new(FormatSelection)),
         ("Rename Symbol", Box::new(RenameSymbol)),
         ("Find All References", Box::new(FindAllReferences)),
+        ("Go to Type Definition", Box::new(GoToTypeDefinition)),
+        ("Go to Implementations", Box::new(GoToImplementation)),
+        ("Go to Declaration", Box::new(GoToDeclaration)),
+        ("Calls: Show Call Hierarchy", Box::new(ShowCallHierarchy)),
         ("Trigger Parameter Hints", Box::new(TriggerParameterHints)),
         ("Toggle Line Comment", Box::new(ToggleLineComment)),
         ("Add Line Comment", Box::new(AddLineComment)),
@@ -281,7 +286,10 @@ fn builtin_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("Debug: Open 'launch.json'", Box::new(OpenLaunchJson)),
         ("Preferences: Open User Settings", Box::new(OpenSettings)),
         ("Markdown: Open Preview", Box::new(MarkdownShowPreview)),
-        ("Markdown: Open Preview to the Side", Box::new(MarkdownShowPreviewToSide)),
+        (
+            "Markdown: Open Preview to the Side",
+            Box::new(MarkdownShowPreviewToSide),
+        ),
         ("Markdown: Open Source File", Box::new(MarkdownShowSource)),
         ("Preferences: Color Theme", Box::new(SelectColorTheme)),
         ("Preferences: File Icon Theme", Box::new(SelectIconTheme)),
@@ -440,6 +448,8 @@ pub(super) enum Picker {
     Location(Vec<(PathBuf, Position)>),
     /// An extension's quick pick, by the host's question.
     Host(u64),
+    /// Reopen Editor With...: a file's custom editors, None for text.
+    OpenWith(PathBuf, Vec<Option<String>>),
 }
 
 pub(super) struct Palette {
@@ -464,6 +474,9 @@ pub(super) struct Palette {
     /// Symbols of every workspace file with its path, parsed on the first
     /// `#` query.
     ws_defs: Option<Arc<Vec<(String, Def)>>>,
+    /// The `#` query last sent to the language servers, and their answer
+    /// on its way; `ws_defs` then holds what they found.
+    ws_ask: Option<(String, Task<()>)>,
     /// Set while the palette is Select Default Profile's pick list.
     profiles: Option<Vec<Profile>>,
     /// Set while the palette is a rename's input.
@@ -539,6 +552,7 @@ impl Palette {
             dnd: state["doNotDisturb"].as_bool().unwrap_or_default(),
             defs: None,
             ws_defs: None,
+            ws_ask: None,
             profiles: None,
             renaming: None,
             coloring: None,
@@ -1324,6 +1338,103 @@ fn symbol_kind(kind: &str, container: Option<&str>) -> &'static str {
     }
 }
 
+/// LSP's SymbolKind as the plural label of its `@:` group.
+fn lsp_symbol_kind(kind: u64) -> &'static str {
+    const KINDS: [&str; 26] = [
+        "files",
+        "modules",
+        "namespaces",
+        "packages",
+        "classes",
+        "methods",
+        "properties",
+        "fields",
+        "constructors",
+        "enumerations",
+        "interfaces",
+        "functions",
+        "variables",
+        "constants",
+        "strings",
+        "numbers",
+        "booleans",
+        "arrays",
+        "objects",
+        "keys",
+        "null",
+        "enumeration members",
+        "structs",
+        "events",
+        "operators",
+        "type parameters",
+    ];
+    KINDS
+        .get(kind.wrapping_sub(1) as usize)
+        .copied()
+        .unwrap_or("properties")
+}
+
+/// An LSP position in a JSON reply.
+fn lsp_position(p: &serde_json::Value) -> lsp_types::Position {
+    let n = |k: &str| p[k].as_u64().unwrap_or(0) as u32;
+    lsp_types::Position::new(n("line"), n("character"))
+}
+
+/// A documentSymbol reply as `@`'s definitions, nested ones after their
+/// container; empty when the server sent none.
+fn symbol_defs(reply: &serde_json::Value, text: &str) -> Vec<Def> {
+    fn walk(list: &serde_json::Value, container: Option<usize>, text: &Rope, out: &mut Vec<Def>) {
+        for s in list.as_array().into_iter().flatten() {
+            // DocumentSymbol, or the flat SymbolInformation.
+            let range = match &s["range"] {
+                serde_json::Value::Null => &s["location"]["range"],
+                r => r,
+            };
+            let at = lsp_position(&s["selectionRange"]["start"]);
+            let at = if s["selectionRange"].is_null() {
+                lsp_position(&range["start"])
+            } else {
+                at
+            };
+            let start = text.position_to_offset(&lsp_position(&range["start"]));
+            let end = text.position_to_offset(&lsp_position(&range["end"]));
+            out.push(Def {
+                name: s["name"].as_str().unwrap_or_default().to_string(),
+                kind: lsp_symbol_kind(s["kind"].as_u64().unwrap_or(0)),
+                line: at.line,
+                col: at.character,
+                range: start..end.max(start),
+                container,
+            });
+            walk(&s["children"], Some(out.len() - 1), text, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(reply, None, &Rope::from_str(text), &mut out);
+    out
+}
+
+/// A workspace/symbol reply as `#`'s definitions, by path relative to
+/// `root` (or whole, outside it).
+fn workspace_symbol_defs(reply: &serde_json::Value, root: &Path) -> Vec<(String, Def)> {
+    (reply.as_array().into_iter().flatten())
+        .filter_map(|s| {
+            let path = super::lsp::uri_path(s["location"]["uri"].as_str()?)?;
+            let rel = path.strip_prefix(root).unwrap_or(&path);
+            let at = lsp_position(&s["location"]["range"]["start"]);
+            let def = Def {
+                name: s["name"].as_str().unwrap_or_default().to_string(),
+                kind: lsp_symbol_kind(s["kind"].as_u64().unwrap_or(0)),
+                line: at.line,
+                col: at.character,
+                range: 0..0,
+                container: None,
+            };
+            Some((rel.to_string_lossy().replace('\\', "/"), def))
+        })
+        .collect()
+}
+
 /// A kind's codicon and VS Code's dark `symbolIcon.*Foreground`.
 fn symbol_icon(kind: &str) -> (char, Hsla) {
     let (ch, color) = match kind {
@@ -1903,6 +2014,7 @@ impl Workbench {
         }
         p.defs = None;
         p.ws_defs = None;
+        p.ws_ask = None;
         p.profiles = None;
         p.renaming = None;
         p.coloring = None;
@@ -2664,6 +2776,29 @@ impl Workbench {
         }
 
         if let Some(q) = query.strip_prefix('#') {
+            // Language servers answer each query from their index; files
+            // they don't know are parsed when they find nothing.
+            let asked = q.trim().to_string();
+            if p.ws_ask.as_ref().is_none_or(|(q, _)| *q != asked)
+                && let Some(asks) = self.lsp.workspace_symbols(&asked)
+            {
+                let root = self.root.clone().unwrap_or_default();
+                let task = cx.spawn(async move |this, cx| {
+                    let mut found = Vec::new();
+                    for ask in asks {
+                        found.extend(workspace_symbol_defs(&ask.await.unwrap_or_default(), &root));
+                    }
+                    this.update(cx, |this, cx| {
+                        if !found.is_empty() {
+                            this.palette.ws_defs = Some(Arc::new(found));
+                        }
+                        let query = this.palette.query.clone();
+                        this.palette_query(query, cx);
+                    })
+                    .ok();
+                });
+                p.ws_ask = Some((asked, task));
+            }
             let Some(ws) = p.ws_defs.clone() else {
                 // Parsed once the file walk is done; the list fills then.
                 if let (None, None, false) = (&p.parse, &p.walk, p.stale) {
@@ -2725,8 +2860,27 @@ impl Workbench {
                 if p.parse.is_none() {
                     let lang = editor_language(doc.lang);
                     let text = editor.value().to_string();
+                    let uri = super::lsp::path_uri(&doc.path);
+                    let params = serde_json::json!({ "textDocument": { "uri": uri } });
+                    let ask = self
+                        .lsp
+                        .request(&doc.path, "textDocument/documentSymbol", params);
                     p.parse = Some(cx.spawn(async move |this, cx| {
-                        let defs = cx.background_spawn(async move { defs(&lang, &text) }).await;
+                        let reply = match ask {
+                            Some(ask) => ask.await.unwrap_or_default(),
+                            None => serde_json::Value::Null,
+                        };
+                        // The language server's symbols, else the syntax tree's.
+                        let defs = cx
+                            .background_spawn(async move {
+                                let found = symbol_defs(&reply, &text);
+                                if found.is_empty() {
+                                    defs(&lang, &text)
+                                } else {
+                                    found
+                                }
+                            })
+                            .await;
                         this.update(cx, |this, cx| {
                             this.palette.defs = Some(defs);
                             let query = this.palette.query.clone();

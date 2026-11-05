@@ -35,6 +35,7 @@ use gpui_kit::{
     *,
 };
 
+mod custom_editors;
 mod debug;
 pub(crate) mod extensions;
 mod exthost;
@@ -45,6 +46,27 @@ mod search;
 mod settings_ui;
 mod terminal;
 mod wasmhost;
+#[cfg(windows)]
+mod webview;
+/// Webviews are WebView2's; elsewhere they stay blank.
+#[cfg(not(windows))]
+mod webview {
+    use std::path::PathBuf;
+    pub enum Event {
+        Message(u64, serde_json::Value),
+        Key(String),
+        Open(String),
+        Error(String),
+    }
+    pub fn create(_: u64, _: Vec<PathBuf>) {}
+    pub fn set_html(_: u64, _: String) {}
+    pub fn set_roots(_: u64, _: Vec<PathBuf>) {}
+    pub fn post(_: u64, _: String) {}
+    pub fn set_theme(_: serde_json::Value) {}
+    pub fn hide_others(_: Option<u64>) {}
+    pub fn focus(_: u64) {}
+    pub fn dispose(_: u64) {}
+}
 
 use crate::theme::{
     action_button, c, ca, codicon, col, file_icon, folder_icon, icon, kbds, language_id,
@@ -161,9 +183,14 @@ actions!(
         FormatSelection,
         RenameSymbol,
         FindAllReferences,
+        GoToTypeDefinition,
+        GoToImplementation,
+        GoToDeclaration,
+        ShowCallHierarchy,
         TriggerParameterHints,
         NewTextFile,
         RevertFile,
+        ReopenEditorWith,
         SaveAs,
         ToggleAutoSave,
         ShowNotifications,
@@ -231,8 +258,16 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-shift-x", ShowExtensions, None),
         KeyBinding::new("ctrl-shift-p", CommandPalette, None),
         KeyBinding::new("ctrl-,", OpenSettings, None),
-        KeyBinding::new("ctrl-shift-v", MarkdownShowPreview, Some("editorLangId == markdown")),
-        KeyBinding::new("ctrl-k v", MarkdownShowPreviewToSide, Some("editorLangId == markdown")),
+        KeyBinding::new(
+            "ctrl-shift-v",
+            MarkdownShowPreview,
+            Some("editorLangId == markdown"),
+        ),
+        KeyBinding::new(
+            "ctrl-k v",
+            MarkdownShowPreviewToSide,
+            Some("editorLangId == markdown"),
+        ),
         KeyBinding::new("f1", CommandPalette, None),
         KeyBinding::new("ctrl-p", QuickOpen, None),
         KeyBinding::new("ctrl-q", OpenView, None),
@@ -249,6 +284,8 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-k ctrl-f", FormatSelection, None),
         KeyBinding::new("f2", RenameSymbol, None),
         KeyBinding::new("shift-f12", FindAllReferences, None),
+        KeyBinding::new("ctrl-f12", GoToImplementation, None),
+        KeyBinding::new("shift-alt-h", ShowCallHierarchy, None),
         KeyBinding::new("ctrl-shift-space", TriggerParameterHints, None),
         KeyBinding::new("ctrl-pagedown", NextEditor, None),
         KeyBinding::new("ctrl-pageup", PreviousEditor, None),
@@ -524,6 +561,10 @@ struct Doc {
     preview: Option<PathBuf>,
     /// Over VS Code's large file limits: see [`is_large`].
     large: bool,
+    /// An extension's webview shown instead of the editor.
+    webview: Option<custom_editors::DocWebview>,
+    /// An extension's read-only document instead of a file, by its uri.
+    uri: Option<String>,
 }
 
 fn session_path() -> Option<PathBuf> {
@@ -555,9 +596,11 @@ impl Render for Part {
         let render = self.render;
         // Laid out as a root of its own: the column stretches the slice
         // across, as its parent's flex did before it was cached.
-        div().size_full().flex().flex_col().children(
-            self.wb.update(cx, |wb, cx| render(wb, window, cx)).ok(),
-        )
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .children(self.wb.update(cx, |wb, cx| render(wb, window, cx)).ok())
     }
 }
 
@@ -1124,6 +1167,7 @@ pub struct Workbench {
     /// Spawned when the Terminal tab first shows; the error if the shell didn't start.
     terminals: terminal::Terminals,
     ext: exthost::Host,
+    webviews: custom_editors::Webviews,
     lsp: lsp::Lsp,
     output: output::Output,
     commit: Entity<InputState>,
@@ -1195,11 +1239,13 @@ impl Workbench {
             debug: debug::Debug::new(window, cx),
             terminals: Default::default(),
             ext: exthost::Host::new(window.window_handle()),
+            webviews: Default::default(),
             lsp: Default::default(),
             output: output::Output::new(),
         };
         this.init_search(window, cx);
         this.init_debug(window, cx);
+        this.start_webviews(window, cx);
         cx.subscribe(&this.ext_search, |this, _, ev: &InputEvent, cx| {
             if matches!(ev, InputEvent::Change) {
                 this.search_market(cx);
@@ -1259,6 +1305,18 @@ impl Workbench {
     // ---- files -------------------------------------------------------------
 
     pub fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_path_as(path, None, window, cx);
+    }
+
+    /// [`Self::open_path`] in custom editor `with` (Some(None) for the text
+    /// editor), else the one that opens such files.
+    fn open_path_as(
+        &mut self,
+        path: PathBuf,
+        with: Option<Option<String>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(ix) = self.docs.iter().position(|d| d.path == path) {
             self.activate(ix, window, cx);
             return;
@@ -1277,7 +1335,12 @@ impl Workbench {
         });
         let binary = decoded.is_none();
         let (text, encoding) = decoded.unwrap_or_default();
+        let custom = with.unwrap_or_else(|| custom_editors::editor_for(&path));
         self.push_doc(path, text, encoding, binary, false, window, cx);
+        if let Some(view_type) = custom {
+            self.attach_custom_editor(self.docs.len() - 1, view_type, cx);
+            self.activate(self.docs.len() - 1, window, cx);
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1319,6 +1382,8 @@ impl Workbench {
             settings: None,
             preview: None,
             large,
+            webview: None,
+            uri: None,
         });
         self.activate(self.docs.len() - 1, window, cx);
         self.open_editors_changed(cx);
@@ -1346,6 +1411,9 @@ impl Workbench {
     /// File: Revert File: the active editor's file read again, dropping its
     /// changes; an Untitled editor is emptied.
     fn revert_file(&mut self, _: &RevertFile, window: &mut Window, cx: &mut Context<Self>) {
+        if self.custom_revert(self.active) {
+            return;
+        }
         let Some(doc) = self.docs.get(self.active).filter(|d| !d.binary) else {
             return;
         };
@@ -1432,6 +1500,10 @@ impl Workbench {
         });
         editor.update(cx, |e, cx| e.set_value(text, window, cx));
         self.attach_breakpoints(path, &editor, cx);
+        cx.observe(&editor, |this, editor, cx| {
+            this.lsp_cursor_moved(&editor, cx)
+        })
+        .detach();
         cx.subscribe_in(
             &editor,
             window,
@@ -1479,11 +1551,15 @@ impl Workbench {
                     if let Some(ix) = this.docs.iter().position(|d| &d.editor == editor) {
                         this.snippet_completed(ix, cx);
                         this.lsp_change(ix, cx);
+                        this.custom_text_changed(ix, cx);
                         this.signature_on_change(cx);
                     }
                 }
                 if matches!(ev, InputEvent::Blur) {
                     this.hide_signature(cx);
+                }
+                if let InputEvent::InlayClicked(id) | InputEvent::CodeLensClicked(id) = ev {
+                    this.lsp_decor_clicked(*id, window, cx);
                 }
                 // Cursor moves also land here; re-render keeps "Ln, Col" current.
                 cx.notify();
@@ -1775,14 +1851,17 @@ impl Workbench {
     fn activate(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.active = ix;
         if let Some(doc) = self.docs.get(ix) {
-            doc.editor.update(cx, |e, cx| e.focus(window, cx));
-            if !doc.untitled {
+            if doc.webview.is_none() {
+                doc.editor.update(cx, |e, cx| e.focus(window, cx));
+            }
+            if !doc.untitled && doc.webview.as_ref().is_none_or(|w| w.panel.is_none()) {
                 let path = doc.path.clone();
                 self.palette.remember(self.root.as_deref(), &path, cx);
                 self.reveal_in_tree(&path, false, cx);
             }
         }
         self.send_active_editor(cx);
+        self.webviews_activated(window, cx);
         cx.notify();
     }
 
@@ -1901,6 +1980,7 @@ impl Workbench {
         };
         // The placeholder's editor is empty; writing it would wipe the file.
         if doc.binary {
+            self.custom_save(ix);
             return;
         }
         if doc.untitled {
@@ -1949,7 +2029,13 @@ impl Workbench {
     /// language follows the new name; undo history starts over). Another tab
     /// on that file closes, as VS Code replaces it.
     fn save_as(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.custom_save_as(ix, cx) {
+            return;
+        }
         let doc = &self.docs[ix];
+        if doc.binary {
+            return;
+        }
         let editor = doc.editor.clone();
         let dir = match doc.untitled {
             true => self.root.clone().or_else(|| std::env::current_dir().ok()),
@@ -2070,6 +2156,7 @@ impl Workbench {
                     return;
                 };
                 match choice {
+                    0 if this.custom_save_and_close(ix) => {}
                     0 => {
                         this.write(ix, window, cx);
                         if !this.docs[ix].dirty {
@@ -2178,6 +2265,9 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) {
         let active = self.docs.get(self.active).map(|d| d.editor.clone());
+        for d in self.docs.iter().filter(|d| gone(d)) {
+            self.webview_closed(d);
+        }
         self.docs.retain(|d| !gone(d));
         self.lsp_closed();
         self.open_editors_changed(cx);
@@ -2192,7 +2282,8 @@ impl Workbench {
     }
 
     fn remove(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        self.docs.remove(ix);
+        let doc = self.docs.remove(ix);
+        self.webview_closed(&doc);
         self.lsp_closed();
         self.open_editors_changed(cx);
         if self.active > ix || self.active >= self.docs.len() {
@@ -2306,14 +2397,19 @@ impl Workbench {
                 Some(d) => d.editor.read(cx).value(),
                 None => fs::read_to_string(&source).unwrap_or_default().into(),
             };
-            self.previews.insert(source.clone(), cx.new(|_| MdPreview(text)));
+            self.previews
+                .insert(source.clone(), cx.new(|_| MdPreview(text)));
         }
         if side {
             self.open_path(source.clone(), window, cx);
             self.side_preview = Some(source);
             return cx.notify();
         }
-        if let Some(ix) = self.docs.iter().position(|d| d.preview.as_ref() == Some(&source)) {
+        if let Some(ix) = self
+            .docs
+            .iter()
+            .position(|d| d.preview.as_ref() == Some(&source))
+        {
             return self.activate(ix, window, cx);
         }
         let name = source.file_name().unwrap_or_default().to_string_lossy();
@@ -2336,7 +2432,12 @@ impl Workbench {
             .border_b_1()
             .border_color(col::border())
             .child(codicon(icon::OPEN_PREVIEW))
-            .child(div().flex_1().whitespace_nowrap().child(format!("Preview {name}")))
+            .child(
+                div()
+                    .flex_1()
+                    .whitespace_nowrap()
+                    .child(format!("Preview {name}")),
+            )
             .child(
                 action_button("side-preview-close", icon::CLOSE)
                     .tooltip(tip("Close"))
@@ -2365,7 +2466,10 @@ impl Workbench {
     /// the laid-out document until its text changes.
     fn render_preview(&self, source: &Path) -> AnyElement {
         match self.previews.get(source) {
-            Some(p) => p.clone().cached(StyleRefinement::default().size_full()).into_any_element(),
+            Some(p) => p
+                .clone()
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element(),
             None => div().into_any_element(),
         }
     }
@@ -2388,7 +2492,10 @@ impl Workbench {
             cx.new(|cx| {
                 // Any workbench change redraws it, as before it was cached.
                 cx.observe(&wb, |_, _, cx| cx.notify()).detach();
-                Part { wb: wb.downgrade(), render }
+                Part {
+                    wb: wb.downgrade(),
+                    render,
+                }
             })
         });
         part.clone().cached(style).into_any_element()
@@ -2401,6 +2508,7 @@ impl Workbench {
         let mut s = session();
         let files: Vec<_> = (self.docs.iter())
             .filter(|d| !d.untitled && d.page.is_none() && d.path.is_file())
+            .filter(|d| d.webview.as_ref().is_none_or(|w| w.panel.is_none()))
             .collect();
         let active = (files.iter())
             .position(|d| self.docs.get(self.active).is_some_and(|a| a.path == d.path));
@@ -2572,6 +2680,58 @@ impl Workbench {
     /// Selection > Expand Selection (Shift+Alt+Right), or Shrink Selection
     /// back to what it was before the last expand.
     fn expand_selection(&mut self, expand: bool, cx: &mut Context<Self>) {
+        // A language server knows the syntax; ask it, else go by brackets.
+        if expand && let Some(doc) = self.docs.get(self.active).filter(|d| !d.binary) {
+            let e = doc.editor.read(cx);
+            let sel = e.selected_range();
+            let params = serde_json::json!({
+                "textDocument": { "uri": lsp::path_uri(&doc.path) },
+                "positions": [e.text().offset_to_position(sel.start)],
+            });
+            if let Some(ask) = self
+                .lsp
+                .request(&doc.path, "textDocument/selectionRange", params)
+            {
+                let editor = doc.editor.clone();
+                cx.spawn(async move |this, cx| {
+                    let reply = ask.await.unwrap_or_default();
+                    this.update(cx, |this, cx| {
+                        let e = editor.read(cx);
+                        // Moved on meanwhile.
+                        if e.selected_range() != sel {
+                            return;
+                        }
+                        let at = |p: &serde_json::Value| {
+                            let p = serde_json::from_value(p.clone()).unwrap_or_default();
+                            e.text().position_to_offset(&p)
+                        };
+                        let mut found = None;
+                        let mut r = &reply[0];
+                        while !r.is_null() && found.is_none() {
+                            let range = at(&r["range"]["start"])..at(&r["range"]["end"]);
+                            if range.start <= sel.start && range.end >= sel.end && range != sel {
+                                found = Some(range);
+                            }
+                            r = &r["parent"];
+                        }
+                        this.step_selection(true, found, cx);
+                    })
+                    .ok();
+                })
+                .detach();
+                return;
+            }
+        }
+        self.step_selection(expand, None, cx);
+    }
+
+    /// Expands to `found` (else the next brackets out) or shrinks back.
+    fn step_selection(
+        &mut self,
+        expand: bool,
+        found: Option<Range<usize>>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(doc) = self.docs.get(self.active).filter(|d| !d.binary) else {
             return;
         };
@@ -2586,7 +2746,7 @@ impl Workbench {
                 history = vec![sel.clone()];
             }
             let next = match expand {
-                true => expanded(&e.value(), sel),
+                true => found.or_else(|| expanded(&e.value(), sel)),
                 false if history.len() > 1 => {
                     history.pop();
                     history.last().cloned()
@@ -4194,12 +4354,7 @@ impl Workbench {
                 move |path: &Path| open.iter().position(|p| p == path).is_some_and(|f| f < ix)
             };
             let active = ix == self.active;
-            let name = doc
-                .path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
+            let name = Self::doc_name(doc);
             let group = SharedString::from(format!("tab-{ix}"));
             let full = SharedString::from(doc.path.display().to_string());
             h_flex()
@@ -4230,6 +4385,9 @@ impl Workbench {
                     )
                 })
                 .child(match (doc.settings.is_some(), doc.preview.is_some()) {
+                    _ if doc.webview.as_ref().is_some_and(|w| w.panel.is_some()) => {
+                        codicon(icon::OPEN_PREVIEW).into_any_element()
+                    }
                     (true, _) => codicon(icon::SETTINGS).into_any_element(),
                     (_, true) => codicon(icon::OPEN_PREVIEW).into_any_element(),
                     _ => file_icon(&doc.path).into_any_element(),
@@ -4466,7 +4624,7 @@ impl Workbench {
             .child(
                 div()
                     .id("breadcrumbs-row")
-                    .when(doc.page.is_some() || doc.settings.is_some() || doc.preview.is_some(), |d| d.hidden())
+                    .when(doc.page.is_some() || doc.settings.is_some() || doc.preview.is_some() || doc.webview.as_ref().is_some_and(|w| w.panel.is_some()), |d| d.hidden())
                     .relative()
                     .h(px(22.))
                     .flex_none()
@@ -4495,6 +4653,9 @@ impl Workbench {
                     }
                     if let Some(source) = &doc.preview {
                         return d.child(self.render_preview(source));
+                    }
+                    if doc.webview.is_some() {
+                        return d.child(self.render_webview(doc));
                     }
                     if !doc.binary {
                         let keys = exthost::editor_keys(&doc.path, doc.lang);
@@ -4741,7 +4902,9 @@ impl Workbench {
             (0, 0) => "No Problems".to_string(),
             _ => format!("Errors: {errors}, Warnings: {warnings}"),
         };
-        if let Some(doc) = self.docs.get(self.active).filter(|d| !d.binary) {
+        // Webviews have no cursor or text settings to show.
+        if let Some(doc) = (self.docs.get(self.active)).filter(|d| !d.binary && d.webview.is_none())
+        {
             let editor = doc.editor.read(cx);
             let pos = editor.cursor_position();
             let line = editor.text().slice_line(pos.line as usize).to_string();
@@ -5353,7 +5516,8 @@ fn reveal_path(path: &Path) {
             let wide: Vec<u16> = p.as_os_str().encode_wide().chain([0]).collect();
             let mut pidl = null_mut();
             // SAFETY: `wide` is NUL-terminated; `pidl` receives an ID list we free.
-            let hr = unsafe { SHParseDisplayName(wide.as_ptr(), null_mut(), &mut pidl, 0, null_mut()) };
+            let hr =
+                unsafe { SHParseDisplayName(wide.as_ptr(), null_mut(), &mut pidl, 0, null_mut()) };
             (hr >= 0).then_some(pidl)
         };
         // SAFETY: COM is initialized and uninitialized on this thread only;
@@ -5369,14 +5533,20 @@ fn reveal_path(path: &Path) {
                     hr >= 0
                 }
                 (folder, item) => {
-                    folder.into_iter().chain(item).for_each(|p| CoTaskMemFree(p));
+                    folder
+                        .into_iter()
+                        .chain(item)
+                        .for_each(|p| CoTaskMemFree(p));
                     false
                 }
             };
             CoUninitialize();
             // Electron opens the folder when the item can't be selected.
             if !shown && dir.is_dir() {
-                std::process::Command::new("explorer.exe").arg(dir).spawn().ok();
+                std::process::Command::new("explorer.exe")
+                    .arg(dir)
+                    .spawn()
+                    .ok();
             }
         }
     });
@@ -5519,11 +5689,19 @@ impl Render for Workbench {
             self.title = title;
         }
         // Saved as it changes, so a kill or crash still reopens it.
-        let session = format!("{:?}", (&self.root, self.docs.iter().map(|d| &d.path).collect::<Vec<_>>(), self.active));
+        let session = format!(
+            "{:?}",
+            (
+                &self.root,
+                self.docs.iter().map(|d| &d.path).collect::<Vec<_>>(),
+                self.active
+            )
+        );
         if session != self.saved_session {
             self.save_session();
             self.saved_session = session;
         }
+        self.sync_webviews();
         let sidebar = self.part("sidebar", |wb, _, cx| wb.render_sidebar(cx), cx);
         // A file dragged from the explorer opens where it's dropped; so do
         // files from Windows, and a folder from there becomes the workspace.
@@ -5713,9 +5891,11 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &MarkdownShowPreview, window, cx| {
                 this.markdown_preview(None, false, window, cx)
             }))
-            .on_action(cx.listener(|this, _: &MarkdownShowPreviewToSide, window, cx| {
-                this.markdown_preview(None, true, window, cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &MarkdownShowPreviewToSide, window, cx| {
+                    this.markdown_preview(None, true, window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &MarkdownShowSource, window, cx| {
                 let source = this.docs.get(this.active).and_then(|d| d.preview.clone());
                 if let Some(source) = source {
@@ -5771,6 +5951,9 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &About, window, cx| this.about(window, cx)))
             .on_action(cx.listener(Self::new_text_file))
             .on_action(cx.listener(Self::revert_file))
+            .on_action(
+                cx.listener(|this, _: &ReopenEditorWith, window, cx| this.reopen_with(window, cx)),
+            )
             .on_action(cx.listener(Self::toggle_auto_save))
             .on_action(cx.listener(Self::close_window))
             .on_action(cx.listener(|this, _: &SaveAs, window, cx| {
@@ -5959,6 +6142,18 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &FindAllReferences, window, cx| {
                 this.find_references(window, cx)
             }))
+            .on_action(cx.listener(|this, _: &GoToTypeDefinition, window, cx| {
+                this.go_to_locations("textDocument/typeDefinition", "type definition", window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &GoToImplementation, window, cx| {
+                this.go_to_locations("textDocument/implementation", "implementation", window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &GoToDeclaration, window, cx| {
+                this.go_to_locations("textDocument/declaration", "declaration", window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ShowCallHierarchy, window, cx| {
+                this.call_hierarchy(window, cx)
+            }))
             .on_action(
                 cx.listener(|this, _: &TriggerParameterHints, _, cx| this.signature_help(cx)),
             )
@@ -6053,12 +6248,17 @@ impl Render for Workbench {
                             ),
                     ),
             )
-            .child(self.part_sized(
-                "statusbar",
-                StyleRefinement::default().w_full().h(px(if self.modern { 28. } else { 22. })).flex_none(),
-                |wb, _, cx| wb.render_statusbar(cx).into_any_element(),
-                cx,
-            ))
+            .child(
+                self.part_sized(
+                    "statusbar",
+                    StyleRefinement::default()
+                        .w_full()
+                        .h(px(if self.modern { 28. } else { 22. }))
+                        .flex_none(),
+                    |wb, _, cx| wb.render_statusbar(cx).into_any_element(),
+                    cx,
+                ),
+            )
             .children(toolbar)
             .child(self.render_toasts(cx))
             .children(self.render_center(cx))
@@ -6528,6 +6728,11 @@ fn app_menu(
             .separator()
             .menu("Go to Symbol in Editor...", Box::new(GoToSymbol))
             .menu("Go to Definition", Box::new(input::GoToDefinition))
+            .menu("Go to Declaration", Box::new(GoToDeclaration))
+            .menu("Go to Type Definition", Box::new(GoToTypeDefinition))
+            .menu("Go to Implementations", Box::new(GoToImplementation))
+            .menu("Go to References", Box::new(FindAllReferences))
+            .separator()
             .menu("Go to Line/Column...", Box::new(GoToLine)),
         "Run" => menu
             .menu("Start Debugging", Box::new(StartDebugging))
@@ -6907,9 +7112,10 @@ fn editor_tab_menu(
             this.reveal_in_tree(&this.docs[ix].path.clone(), true, cx)
         }))
         .when(lang == "markdown", |m| {
-            m.separator().item(item("Open Preview", None, |this, ix, w, cx| {
-                this.markdown_preview(Some(this.docs[ix].path.clone()), false, w, cx)
-            }))
+            m.separator()
+                .item(item("Open Preview", None, |this, ix, w, cx| {
+                    this.markdown_preview(Some(this.docs[ix].path.clone()), false, w, cx)
+                }))
         });
     let mut focus = KeyContext::default();
     focus.set("resourceLangId", lang);

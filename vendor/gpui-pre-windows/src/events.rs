@@ -20,6 +20,21 @@ use windows::{
 use crate::*;
 use gpui::*;
 
+thread_local! {
+    /// vsn: the cursor a webview under the mouse wants, over gpui's.
+    static CURSOR_OVERRIDE: Cell<Option<isize>> = const { Cell::new(None) };
+}
+
+/// vsn: shows `cursor` (an `HCURSOR`) instead of gpui's cursor styles until
+/// it's cleared, for a webview that draws its own.
+pub fn set_cursor_override(cursor: Option<isize>) {
+    if CURSOR_OVERRIDE.replace(cursor) != cursor {
+        if let Some(cursor) = cursor {
+            unsafe { SetCursor(Some(HCURSOR(cursor as _))) };
+        }
+    }
+}
+
 pub(crate) const WM_GPUI_CURSOR_STYLE_CHANGED: u32 = WM_USER + 1;
 pub(crate) const WM_GPUI_CLOSE_ONE_WINDOW: u32 = WM_USER + 2;
 pub(crate) const WM_GPUI_TASK_DISPATCHED_ON_MAIN_THREAD: u32 = WM_USER + 3;
@@ -474,6 +489,11 @@ impl WindowsWindowInner {
         lparam: LPARAM,
     ) -> Option<isize> {
         unsafe { SetCapture(handle) };
+        // vsn: a click back from a child window (vsn's WebView2 webviews)
+        // returns keyboard focus to the app.
+        if unsafe { GetFocus() } != handle {
+            unsafe { SetFocus(Some(handle)) }.ok();
+        }
 
         let Some(mut func) = self.state.callbacks.input.take() else {
             return Some(1);
@@ -1188,7 +1208,9 @@ impl WindowsWindowInner {
         {
             return None;
         }
-        let cursor = if self.state.cursor_visible.load(Ordering::Relaxed) {
+        let cursor = if let Some(cursor) = CURSOR_OVERRIDE.get() {
+            Some(HCURSOR(cursor as _))
+        } else if self.state.cursor_visible.load(Ordering::Relaxed) {
             self.state.current_cursor.get()
         } else {
             None

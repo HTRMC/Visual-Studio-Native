@@ -149,6 +149,15 @@ impl Lsp {
     }
 }
 
+// vsn: lets the app re-fetch, as for a server's semanticTokens/refresh.
+impl InputBaseState<EditorMode> {
+    /// Fetches the semantic tokens again, though the text hasn't changed.
+    pub fn refresh_semantic_tokens(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.text().clone();
+        self.extras.lsp.update_semantic_tokens(&text, window, cx);
+    }
+}
+
 /// Decode the LSP delta-encoding of `tokens` into absolute
 /// (position-range, type-name) pairs, sorted by start position.
 ///

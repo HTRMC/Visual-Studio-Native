@@ -190,10 +190,67 @@ impl InputBaseState<EditorMode> {
             range = range.end..range.end;
         }
         self.completion_inserting = true;
-        let range = self.range_to_utf16(&range);
-        self.replace_text_in_range_silent(Some(range), &new_text, window, cx);
+        // vsn: additionalTextEdits (an auto-import's `use` line) apply with the
+        // main edit as one undo step; the cursor ends after the main insertion.
+        let extra: Vec<(Range<usize>, String)> = item
+            .additional_text_edits
+            .iter()
+            .flatten()
+            .map(|edit| {
+                (
+                    self.text.position_to_offset(&edit.range.start)
+                        ..self.text.position_to_offset(&edit.range.end),
+                    edit.new_text.clone(),
+                )
+            })
+            .filter(|(r, _)| r.end <= range.start || r.start >= range.end)
+            .collect();
+        if extra.is_empty() {
+            let range = self.range_to_utf16(&range);
+            self.replace_text_in_range_silent(Some(range), &new_text, window, cx);
+        } else {
+            let shift: isize = extra
+                .iter()
+                .filter(|(r, _)| r.end <= range.start)
+                .map(|(r, text)| text.len() as isize - r.len() as isize)
+                .sum();
+            let cursor = (range.start as isize + shift) as usize + new_text.len();
+            let mut edits = extra;
+            edits.push((range, new_text));
+            self.silent_replace_text = true;
+            self.replace_text_in_ranges(&edits, window, cx);
+            self.silent_replace_text = false;
+            self.move_to(cursor, None, cx);
+        }
         self.completion_inserting = false;
         self.focus(window, cx);
+        // vsn: the provider may resolve it for the edits and command it left out.
+        if let Some(provider) = self.extras.lsp.completion_provider.clone() {
+            provider.completion_accepted(item, cx.entity(), window, cx);
+        }
+    }
+
+    /// vsn: applies `edits`, byte ranges in the current text, as one undo
+    /// step; the cursor stays on the text it was in.
+    pub fn apply_text_edits(
+        &mut self,
+        edits: Vec<(Range<usize>, String)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if edits.is_empty() {
+            return;
+        }
+        let cursor = self.cursor();
+        let shift: isize = (edits.iter())
+            .filter(|(r, _)| r.end <= cursor)
+            .map(|(r, text)| text.len() as isize - r.len() as isize)
+            .sum();
+        self.silent_replace_text = true;
+        self.replace_text_in_ranges(&edits, window, cx);
+        self.silent_replace_text = false;
+        let cursor = ((cursor as isize + shift).max(0) as usize).min(self.text.len());
+        self.move_to(cursor, None, cx);
     }
 
     #[doc(hidden)]

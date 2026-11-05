@@ -23,6 +23,9 @@ mod cursor;
 mod decorations;
 #[path = "editor/diagnostics.rs"]
 mod diagnostics;
+// vsn: inlay hints and CodeLens.
+#[path = "editor/inlays.rs"]
+mod inlays;
 #[path = "editor/display_map/mod.rs"]
 mod display_map;
 mod editor;
@@ -90,6 +93,8 @@ pub use diagnostics::{
     Diagnostic, DiagnosticEntry, DiagnosticRelatedInformation, DiagnosticSet, DiagnosticSeverity,
     DiagnosticSummary, DiagnosticTag, RelatedInformation,
 };
+// vsn: inlay hints and CodeLens.
+pub use inlays::{CodeLens, InlayHint, InlayLabelPart};
 pub use display_map::{BufferPoint, DisplayMap, DisplayPoint, FoldRange, WrappingIndent};
 pub use editor::{Editor, EditorState};
 pub use highlighting::{
@@ -104,7 +109,7 @@ pub use kind::{
 pub(crate) use language::EditorLanguage;
 pub use language::{LanguageProvider, set_language_config, set_language_provider};
 pub(crate) use language_config::LanguageConfig;
-pub use language_config::{AutoClosingPair, BracketPair, IndentationRules};
+pub use language_config::{AutoClosingPair, BracketPair, IndentAction, IndentationRules, OnEnterRule};
 pub use lsp::{
     CodeActionItem, CodeActionMenuState, CodeActionProvider, CompletionHighlighter,
     CompletionMenuOptions, CompletionMenuState, CompletionProvider, DefinitionProvider,

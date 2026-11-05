@@ -7,9 +7,12 @@
 ///
 /// The goal is to provide a clean, unified API where Editor only needs to know
 /// about `BufferPoint ↔ DisplayPoint` mapping, without worrying about internal wrap/fold complexity.
+// vsn: rows above buffer lines that aren't display rows (CodeLens).
+mod block_rows;
 mod display_map;
 mod inline_line;
-pub(crate) use inline_line::{InlineFragment, InputLine};
+// vsn: HintFragment for inlay hints.
+pub(crate) use inline_line::{HintFragment, InlineFragment, InputLine};
 mod fold_map;
 mod folding;
 mod text_wrapper;

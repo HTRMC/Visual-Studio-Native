@@ -39,6 +39,13 @@ impl InputModeKind for EditorMode {
         state.extras.hover_popover = None;
         state.extras.decorations.clear();
         state.extras.range_decorations.clear();
+        // vsn: offsets into the old text point at nothing now.
+        state.extras.inlay_hints.clear();
+        if !state.extras.code_lenses.is_empty() {
+            state.extras.code_lenses.clear();
+            state.extras.code_lens_anchors.clear();
+            state.display_map.set_block_lines(Vec::new());
+        }
     }
 
     fn editing_syntax_context(state: &InputBaseState<Self>, offset: usize) -> super::SyntaxContext {
@@ -55,6 +62,25 @@ impl InputModeKind for EditorMode {
             .extras
             .range_decorations
             .adjust_for_edit(range, new_len);
+        // vsn: hints and lenses follow the edit; the caller rebuilds the
+        // display map right after, which places the lens rows.
+        super::inlays::adjust_hints_for_edit(&mut state.extras.inlay_hints, range, new_len);
+        if !state.extras.code_lenses.is_empty() {
+            let extras = &mut state.extras;
+            super::inlays::adjust_anchors_for_edit(
+                &mut extras.code_lenses,
+                &mut extras.code_lens_anchors,
+                range,
+                new_len,
+            );
+            use super::RopeExt as _;
+            let text = &state.text;
+            for (lens, &anchor) in extras.code_lenses.iter_mut().zip(&extras.code_lens_anchors) {
+                lens.line = text.offset_to_point(anchor.min(text.len())).row;
+            }
+            let lines = extras.code_lenses.iter().map(|lens| lens.line).collect();
+            state.display_map.set_block_lines_deferred(lines);
+        }
     }
 
     fn refresh_language_features(
@@ -207,6 +233,50 @@ impl EditorState {
         &mut self.extras.lsp
     }
 
+    /// vsn: replace the inlay hints. Edits shift them until the next call;
+    /// a hint inside replaced text is dropped.
+    pub fn set_inlay_hints(&mut self, mut hints: Vec<super::InlayHint>, cx: &mut gpui::Context<Self>) {
+        if hints.is_empty() && self.extras.inlay_hints.is_empty() {
+            return;
+        }
+        let len = self.text.len();
+        hints.retain(|hint| hint.offset <= len && !hint.label.is_empty());
+        hints.sort_by_key(|hint| hint.offset);
+        self.extras.inlay_hints = hints;
+        cx.notify();
+    }
+
+    /// vsn: the inlay hints, sorted by offset and shifted by edits since they
+    /// were set.
+    pub fn inlay_hints(&self) -> &[super::InlayHint] {
+        &self.extras.inlay_hints
+    }
+
+    /// vsn: replace the CodeLens rows. Lenses on one line are merged into one
+    /// row; edits move a row with its line until the next call.
+    pub fn set_code_lenses(&mut self, lenses: Vec<super::CodeLens>, cx: &mut gpui::Context<Self>) {
+        if lenses.is_empty() && self.extras.code_lenses.is_empty() {
+            return;
+        }
+        use super::RopeExt as _;
+        let line_count = self.text.lines_len();
+        let mut lenses = super::inlays::normalize_lenses(lenses);
+        lenses.retain(|lens| lens.line < line_count);
+        self.extras.code_lens_anchors = lenses
+            .iter()
+            .map(|lens| self.text.line_start_offset(lens.line))
+            .collect();
+        let lines = lenses.iter().map(|lens| lens.line).collect();
+        self.extras.code_lenses = lenses;
+        self.display_map.set_block_lines(lines);
+        cx.notify();
+    }
+
+    /// vsn: the CodeLens rows, one per line, sorted by line.
+    pub fn code_lenses(&self) -> &[super::CodeLens] {
+        &self.extras.code_lenses
+    }
+
     /// Syntax context at `offset`, or `Code` when the language has no provider.
     pub(crate) fn syntax_context_at(&self, offset: usize) -> super::SyntaxContext {
         self.mode.syntax_context_at(&self.text, offset)
@@ -275,5 +345,15 @@ impl crate::input::InputExtras for super::EditorExtras {
             self.lsp.definition_provider.is_some(),
             !self.lsp.code_action_providers.is_empty(),
         )
+    }
+
+    // vsn
+    fn inlay_hints(&self) -> &[super::InlayHint] {
+        &self.inlay_hints
+    }
+
+    // vsn
+    fn code_lenses(&self) -> &[super::CodeLens] {
+        &self.code_lenses
     }
 }

@@ -199,7 +199,8 @@ class TextDocument {
   }
   get fileName() { return this.uri.fsPath; }
   get lineCount() { return this._lines.length; }
-  async save() { return false; }
+  // vsn saves its editor of the file; false if it has none open.
+  async save() { return !!(await ask({ m: 'saveDoc', path: this.uri.fsPath })); }
   getText(r) { return r ? this._text.slice(this.offsetAt(r.start), this.offsetAt(r.end)) : this._text; }
   lineAt(l) {
     if (typeof l !== 'number') l = l.line;
@@ -250,8 +251,14 @@ const changed = new EventEmitter();
 const closed = new EventEmitter();
 const saved = new EventEmitter();
 const activeChanged = new EventEmitter();
+const selectionChanged = new EventEmitter();
 // Each language feature's providers: { selector, provider }.
-const providers = { hover: [], completion: [], definition: [], formatting: [], rangeFormatting: [], codeAction: [], rename: [], references: [], signatureHelp: [] };
+const providers = {
+  hover: [], completion: [], definition: [], typeDefinition: [], implementation: [], declaration: [], formatting: [],
+  rangeFormatting: [], onTypeFormatting: [], codeAction: [], rename: [], references: [], signatureHelp: [],
+  documentSymbol: [], workspaceSymbol: [], documentHighlight: [], selectionRange: [], semanticTokens: [],
+  callHierarchy: [], inlayHints: [], codeLens: [], foldingRange: [],
+};
 
 // ---- the vscode API ----------------------------------------------------------
 
@@ -375,6 +382,148 @@ function createOutputChannel(name) {
   };
 }
 
+// ---- webviews ----------------------------------------------------------------
+
+// vsn shows each webview in WebView2, serving the extension's files from
+// this origin (see webview.rs).
+const RESOURCE_ORIGIN = 'file.vscode-resource.vscode-cdn.net';
+const CSP_SOURCE = 'https://*.vscode-cdn.net';
+
+let colorTheme = { kind: 2 };
+const themeChanged = new EventEmitter();
+
+// Each webview panel and custom editor's: the panel, its message and state
+// emitters, and for a custom editor its document and provider.
+const panels = new Map();
+// Panels the host makes count up from 1; vsn's custom editors from 2^32.
+let nextPanel = 0;
+
+// A webview's localResourceRoots as paths: by default every extension's
+// folder and the workspace's, as VS Code's are its own extension's and the
+// workspace's.
+const webviewRoots = (o) => (o && o.localResourceRoots
+  ? o.localResourceRoots.map((u) => u.fsPath)
+  : [...[...extensions.values()].map((e) => e.dir), ...(root ? [root] : [])]);
+
+function makePanel(handle, viewType, title, options = {}) {
+  const messages = new EventEmitter();
+  const viewState = new EventEmitter();
+  const disposed = new EventEmitter();
+  const p = { messages, viewState, disposed, active: true, visible: true, gone: false };
+  let html = '';
+  let opts = { ...options };
+  const webview = {
+    get options() { return opts; },
+    set options(o) { opts = { ...o }; send({ m: 'webview', handle, roots: webviewRoots(opts) }); },
+    get html() { return html; },
+    set html(h) { html = String(h); send({ m: 'webview', handle, html, roots: webviewRoots(opts) }); },
+    onDidReceiveMessage: messages.event,
+    async postMessage(message) {
+      if (p.gone) return false;
+      send({ m: 'webviewPost', handle, message });
+      return true;
+    },
+    asWebviewUri: (uri) => (uri.scheme === 'file' ? new Uri('https', RESOURCE_ORIGIN, uri.path) : uri),
+    cspSource: CSP_SOURCE,
+  };
+  let name = title;
+  p.panel = {
+    viewType, webview, options: opts, viewColumn: 1, iconPath: undefined,
+    get title() { return name; },
+    set title(t) { name = String(t); send({ m: 'webviewTitle', handle, title: name }); },
+    get active() { return p.active; },
+    get visible() { return p.visible; },
+    onDidChangeViewState: viewState.event,
+    onDidDispose: disposed.event,
+    reveal() { send({ m: 'webviewReveal', handle }); },
+    dispose() {
+      if (p.gone) return;
+      send({ m: 'webviewDispose', handle });
+      panelGone(handle);
+    },
+  };
+  panels.set(handle, p);
+  return p;
+}
+
+function panelGone(handle) {
+  const p = panels.get(handle);
+  if (!p || p.gone) return;
+  p.gone = true;
+  panels.delete(handle);
+  p.disposed.fire();
+  [p.messages, p.viewState, p.disposed].forEach((e) => e.dispose());
+  // A custom text editor's document stays while vsn has the file open.
+  if (p.document && p.binary) p.document.dispose?.();
+}
+
+function createWebviewPanel(viewType, title, showOptions, options = {}) {
+  const handle = ++nextPanel;
+  const p = makePanel(handle, viewType, title, options);
+  send({ m: 'webviewPanel', handle, viewType, title: String(title), roots: webviewRoots(options) });
+  return p.panel;
+}
+
+// Custom editor providers by view type: { provider, options }.
+const customEditors = new Map();
+function registerCustomEditorProvider(viewType, provider, options = {}) {
+  const entry = { provider, options };
+  customEditors.set(viewType, entry);
+  // A binary editor's edits mark vsn's tab dirty.
+  const sub = provider.onDidChangeCustomDocument && provider.onDidChangeCustomDocument((e) => {
+    for (const [handle, p] of panels) if (p.document === e.document) send({ m: 'customDirty', handle, dirty: true });
+  });
+  return new Disposable(() => { sub?.dispose(); if (customEditors.get(viewType) === entry) customEditors.delete(viewType); });
+}
+
+// vsn opened a file in a custom editor: the provider fills its webview.
+async function resolveCustomEditor(msg) {
+  if (!customEditors.has(msg.viewType)) await Promise.all([...extensions.values()].map((e) => e.activating));
+  const entry = customEditors.get(msg.viewType);
+  if (!entry) return send({ m: 'error', text: `No custom editor '${msg.viewType}' is registered.` });
+  const { provider } = entry;
+  const uri = Uri.file(msg.path);
+  const p = makePanel(msg.handle, msg.viewType, path.basename(msg.path), entry.options.webviewOptions);
+  const token = new CancellationTokenSource().token;
+  try {
+    if (provider.resolveCustomTextEditor) {
+      let doc = documents.get(msg.uri);
+      if (!doc) {
+        doc = new TextDocument(msg.uri, msg.languageId, 1, msg.text);
+        documents.set(msg.uri, doc);
+        opened.fire(doc);
+      }
+      doc.isDirty = !!msg.dirty;
+      p.document = doc;
+      send({ m: 'customKind', handle: msg.handle, text: true });
+      await provider.resolveCustomTextEditor(doc, p.panel, token);
+    } else {
+      p.binary = true;
+      send({ m: 'customKind', handle: msg.handle, text: false });
+      p.document = await provider.openCustomDocument(uri, { backupId: undefined, untitledDocumentData: undefined }, token);
+      p.provider = provider;
+      await provider.resolveCustomEditor(p.document, p.panel, token);
+    }
+  } catch (err) {
+    send({ m: 'error', text: `Opening '${msg.path}' in '${msg.viewType}' failed: ${errorText(err)}` });
+  }
+}
+
+// vsn's Save, Save As and Revert of a binary custom editor.
+async function customFile(msg) {
+  const p = panels.get(msg.handle);
+  if (!p || !p.binary) return;
+  const token = new CancellationTokenSource().token;
+  try {
+    if (msg.m === 'customSave') await p.provider.saveCustomDocument(p.document, token);
+    else if (msg.m === 'customSaveAs') await p.provider.saveCustomDocumentAs(p.document, Uri.file(msg.path), token);
+    else await p.provider.revertCustomDocument(p.document, token);
+    send({ m: 'customDirty', handle: msg.handle, dirty: false, saved: msg.m !== 'customRevert' });
+  } catch (err) {
+    send({ m: 'error', text: `Saving '${p.document.uri.fsPath}' failed: ${errorText(err)}` });
+  }
+}
+
 const vscodeWindow = {
   // No notebooks, and tabs only as far as vsn tells extensions of them.
   activeNotebookEditor: undefined, visibleNotebookEditors: [],
@@ -384,8 +533,15 @@ const vscodeWindow = {
   showErrorMessage: message('error'),
   showQuickPick,
   showInputBox,
-  showOpenDialog: async () => undefined,
-  showSaveDialog: async () => undefined,
+  // vsn's file dialogs; filters and titles aren't shown.
+  async showOpenDialog(o = {}) {
+    const paths = await ask({ m: 'openDialog', files: o.canSelectFiles !== false, folders: !!o.canSelectFolders, many: !!o.canSelectMany, dir: o.defaultUri?.fsPath ?? null });
+    return paths ? paths.map((p) => Uri.file(p)) : undefined;
+  },
+  async showSaveDialog(o = {}) {
+    const p = await ask({ m: 'saveDialog', path: o.defaultUri?.fsPath ?? null });
+    return p ? Uri.file(p) : undefined;
+  },
   createStatusBarItem,
   createOutputChannel,
   createTreeView,
@@ -396,11 +552,25 @@ const vscodeWindow = {
     return new Disposable(() => item.dispose());
   },
   withProgress: async (_options, task) => task({ report() {} }, new CancellationTokenSource().token),
+  showTextDocument,
   activeTextEditor: undefined,
   visibleTextEditors: [],
   onDidChangeActiveTextEditor: activeChanged.event,
+  // ponytail: fires for the extensions' own selection changes only.
+  onDidChangeTextEditorSelection: selectionChanged.event,
+  onDidChangeVisibleTextEditors: never,
   terminals: [],
   state: { focused: true },
+  createWebviewPanel,
+  registerCustomEditorProvider,
+  registerWebviewPanelSerializer: () => new Disposable(() => {}),
+  // ponytail: vsn has no `vsn://` links to hand an extension, so a handler
+  // is kept but never called.
+  registerUriHandler: () => new Disposable(() => {}),
+  // ponytail: decorations aren't drawn in vsn's editor.
+  createTextEditorDecorationType: () => ({ key: `decoration-${++nextItem}`, dispose() {} }),
+  get activeColorTheme() { return colorTheme; },
+  onDidChangeActiveColorTheme: themeChanged.event,
 };
 
 function configuration(section) {
@@ -429,10 +599,13 @@ function configuration(section) {
     ...lookup(),
     get(key, defaultValue) { const v = lookup(key); return v === undefined ? defaultValue : v; },
     has(key) { return lookup(key) !== undefined; },
-    inspect(key) { const k = full(key); return { key: k, defaultValue: defaults[k], globalValue: settings[k] }; },
+    // ponytail: vsn has user settings only, so every target writes those.
+    inspect(key) { const k = full(key); return { key: k, defaultValue: defaults[k], globalValue: settings[k], workspaceValue: undefined, workspaceFolderValue: undefined }; },
     async update(key, value) {
       const k = full(key);
-      if (value === undefined) delete settings[k]; else settings[k] = value;
+      const next = { ...settings };
+      if (value === undefined) delete next[k]; else next[k] = value;
+      settingsChanged(next);
       send({ m: 'setting', key: k, value: value === undefined ? null : value });
       // Resolves a turn later, as VS Code's round trip to its main process
       // does; the Zig extension's setup needs that time for libsodium to load.
@@ -504,6 +677,117 @@ const l10n = {
   },
 };
 
+// Extensions' file systems by scheme (registerFileSystemProvider).
+const fsProviders = new Map();
+// workspace.registerTextDocumentContentProvider's, by scheme: read-only
+// documents vsn shows with the text they provide.
+const contentProviders = new Map();
+const shownVirtual = new Set();
+async function virtualDocument(uri) {
+  const p = contentProviders.get(uri.scheme);
+  const text = (await p.provideTextDocumentContent(uri, new CancellationTokenSource().token)) ?? '';
+  const key = uri.toString();
+  let doc = documents.get(key);
+  if (doc) setDocText(key, text);
+  else {
+    doc = new TextDocument(key, languageFor(uri.path), 1, text);
+    documents.set(key, doc);
+    opened.fire(doc);
+  }
+  if (shownVirtual.has(key)) send({ m: 'virtualText', uri: key, text });
+  return doc;
+}
+function registerTextDocumentContentProvider(scheme, provider) {
+  contentProviders.set(scheme, provider);
+  const sub = provider.onDidChange && provider.onDidChange((uri) => {
+    if (documents.has(uri.toString())) virtualDocument(uri).catch((e) => log(errorText(e)));
+  });
+  return new Disposable(() => { sub && sub.dispose(); contentProviders.get(scheme) === provider && contentProviders.delete(scheme); });
+}
+// A path's language id, by the extensions' contributed file extensions.
+function languageFor(p) {
+  const ext = path.extname(p).toLowerCase();
+  for (const e of extensions.values()) {
+    for (const l of (e.manifest.contributes || {}).languages || []) if ((l.extensions || []).includes(ext)) return l.id;
+  }
+  return { '.rs': 'rust', '.json': 'json', '.md': 'markdown', '.txt': 'plaintext' }[ext] || ext.slice(1) || 'plaintext';
+}
+
+// window.showTextDocument: vsn opens it (an extension's document with its
+// text), and it becomes the active editor.
+async function showTextDocument(d, columnOrOptions, preserveFocus) {
+  const doc = d instanceof Uri || typeof d === 'string' ? await vscodeWorkspace.openTextDocument(d) : d;
+  const options = typeof columnOrOptions === 'object' ? columnOrOptions : { preserveFocus };
+  const key = doc.uri.toString();
+  const virtual = doc.uri.scheme !== 'file';
+  if (virtual) shownVirtual.add(key);
+  const r = options.selection;
+  await ask({ m: 'showDocument', uri: key, text: virtual ? doc._text : null, selection: r ? lspRange(r) : null });
+  const sel = r ? [r.start, r.end] : [new Position(0, 0), new Position(0, 0)];
+  setActiveEditor({ uri: key, languageId: doc.languageId, text: doc._text, selection: sel });
+  return vscodeWindow.activeTextEditor;
+}
+function providerFs(k, uri, [b, o]) {
+  const p = fsProviders.get(uri.scheme);
+  return Promise.resolve().then(() => {
+    switch (k) {
+      case 'writeFile': return p.writeFile(uri, b, { create: true, overwrite: true });
+      case 'delete': return p.delete(uri, { recursive: !!b?.recursive });
+      case 'copy': return p.copy(uri, b, { overwrite: !!o?.overwrite });
+      case 'rename': return p.rename(uri, b, { overwrite: !!o?.overwrite });
+      default: return p[k](uri);
+    }
+  });
+}
+
+// File events under the folder, from one recursive watch shared by the
+// watchers extensions make.
+const fileEvents = new EventEmitter();
+let rootWatch;
+function createFileSystemWatcher(pattern, ignoreCreate, ignoreChange, ignoreDelete) {
+  const base = typeof pattern === 'string' ? root : pattern.base;
+  const re = globRe(typeof pattern === 'string' ? pattern : pattern.pattern);
+  const [created, changedFile, deleted] = [new EventEmitter(), new EventEmitter(), new EventEmitter()];
+  if (!rootWatch && root) {
+    try {
+      rootWatch = fs.watch(root, { recursive: true }, (type, name) => {
+        if (!name) return;
+        const file = path.join(root, name);
+        const kind = type === 'change' ? 'change' : fs.existsSync(file) ? 'create' : 'delete';
+        fileEvents.fire({ file, kind });
+      });
+      rootWatch.on('error', () => {});
+    } catch {}
+  }
+  const sub = fileEvents.event(({ file, kind }) => {
+    if (!base) return;
+    const rel = path.relative(base, file).replace(/\\/g, '/');
+    if (rel.startsWith('..') || !re.test(rel)) return;
+    const uri = Uri.file(file);
+    if (kind === 'create' && !ignoreCreate) created.fire(uri);
+    if (kind === 'change' && !ignoreChange) changedFile.fire(uri);
+    if (kind === 'delete' && !ignoreDelete) deleted.fire(uri);
+  });
+  return {
+    ignoreCreateEvents: !!ignoreCreate, ignoreChangeEvents: !!ignoreChange, ignoreDeleteEvents: !!ignoreDelete,
+    onDidCreate: created.event, onDidChange: changedFile.event, onDidDelete: deleted.event,
+    dispose() { sub.dispose(); },
+  };
+}
+
+// Fired when vsn's settings change, with the keys that did.
+const configChanged = new EventEmitter();
+function settingsChanged(next) {
+  const old = settings;
+  settings = next;
+  const keys = [...new Set([...Object.keys(old), ...Object.keys(next)])]
+    .filter((k) => JSON.stringify(old[k]) !== JSON.stringify(next[k]));
+  if (!keys.length) return;
+  configChanged.fire({
+    affectsConfiguration: (section) => keys.some((k) => k === section || k.startsWith(section + '.') || section.startsWith(k + '.')),
+  });
+}
+
 const vscodeWorkspace = {
   notebookDocuments: [],
   getConfiguration: configuration,
@@ -519,22 +803,33 @@ const vscodeWorkspace = {
   onDidChangeTextDocument: changed.event,
   onDidCloseTextDocument: closed.event,
   onDidSaveTextDocument: saved.event,
-  // ponytail: always applied; vsn doesn't say whether the edit held.
+  // Resolves once vsn has applied it, its documents' new text sent here first.
   async applyEdit(edit) {
-    send({ m: 'applyEdit', edit: lspWorkspaceEdit(edit) });
-    return true;
+    return (await ask({ m: 'applyEdit', edit: lspWorkspaceEdit(edit) })) !== false;
   },
   async openTextDocument(u) {
     // ponytail: files vsn hasn't opened are read from disk and never kept in sync.
+    if (u && typeof u === 'object' && !(u instanceof Uri) && !u.scheme) {
+      return new TextDocument(`untitled:Untitled-${++nextItem}`, u.language || 'plaintext', 1, u.content || '');
+    }
     const uri = typeof u === 'string' ? Uri.file(u) : u;
-    const doc = [...documents.values()].find((d) => d.uri.fsPath === uri.fsPath);
-    return doc || new TextDocument(uri.toString(), path.extname(uri.fsPath).slice(1), 1, await fs.promises.readFile(uri.fsPath, 'utf8'));
+    const doc = [...documents.values()].find((d) => d.uri.toString() === uri.toString() || (uri.scheme === 'file' && d.uri.fsPath === uri.fsPath));
+    if (doc) return doc;
+    if (contentProviders.has(uri.scheme)) return virtualDocument(uri);
+    const fsp = fsProviders.get(uri.scheme);
+    const text = fsp ? Buffer.from(await fsp.readFile(uri)).toString('utf8') : await fs.promises.readFile(uri.fsPath, 'utf8');
+    return new TextDocument(uri.toString(), path.extname(uri.path).slice(1), 1, text);
   },
-  // ponytail: no file events reach the host yet.
-  createFileSystemWatcher: () => ({ onDidCreate: never, onDidChange: never, onDidDelete: never, dispose() {} }),
+  createFileSystemWatcher,
+  registerTextDocumentContentProvider,
+  registerFileSystemProvider(scheme, provider) {
+    fsProviders.set(scheme, provider);
+    return new Disposable(() => fsProviders.get(scheme) === provider && fsProviders.delete(scheme));
+  },
   isTrusted: true,
-  onDidChangeConfiguration: never,
-  // Node's errors come out as VS Code's, which extensions test by code.
+  onDidChangeConfiguration: configChanged.event,
+  // Node's errors come out as VS Code's, which extensions test by code. A
+  // scheme an extension provides goes to its provider.
   fs: Object.fromEntries(Object.entries({
     readFile: async (uri) => new Uint8Array(await fs.promises.readFile(uri.fsPath)),
     writeFile: async (uri, data) => fs.promises.writeFile(uri.fsPath, data),
@@ -544,15 +839,22 @@ const vscodeWorkspace = {
     delete: async (uri, o) => fs.promises.rm(uri.fsPath, { recursive: !!(o && o.recursive), force: true }),
     copy: async (from, to, o) => fs.promises.cp(from.fsPath, to.fsPath, { recursive: true, force: !!o?.overwrite, errorOnExist: !o?.overwrite }),
     rename: async (from, to) => fs.promises.rename(from.fsPath, to.fsPath),
-  }).map(([k, f]) => [k, (uri, ...a) => f(uri, ...a).catch((err) => {
+  }).map(([k, f]) => [k, (uri, ...a) => (fsProviders.has(uri.scheme) ? providerFs(k, uri, a) : f(uri, ...a)).catch((err) => {
+    if (err instanceof FileSystemError) throw err;
     const code = { ENOENT: 'FileNotFound', EEXIST: 'FileExists', ERR_FS_CP_EEXIST: 'FileExists', ENOTDIR: 'FileNotADirectory', EISDIR: 'FileIsADirectory', EPERM: 'NoPermissions', EACCES: 'NoPermissions' }[err.code];
     throw code ? FileSystemError[code](uri) : err;
   })]).concat([['isWritableFileSystem', () => true]])),
 };
 
+// vsn's debugger runs lldb-dap itself; rust-analyzer looks for this
+// extension before it builds a debug configuration for it.
+const LLDB_DAP = 'llvm-vs-code-extensions.lldb-dap';
 const vscodeExtensions = {
   getExtension(id) {
     const e = extensions.get(String(id).toLowerCase());
+    if (!e && String(id).toLowerCase() === LLDB_DAP) {
+      return { id: LLDB_DAP, extensionPath: '', extensionUri: Uri.file(''), packageJSON: { name: 'lldb-dap', publisher: 'llvm-vs-code-extensions' }, isActive: true, exports: undefined, activate: async () => undefined };
+    }
     return e && { id: e.id, extensionPath: e.dir, extensionUri: Uri.file(e.dir), packageJSON: e.manifest, get isActive() { return !!e.isActive; }, get exports() { return e.exports; }, activate: () => activate(e.id).then(() => e.exports) };
   },
   get all() { return [...extensions.keys()].map((id) => vscodeExtensions.getExtension(id)); },
@@ -564,9 +866,14 @@ const env = {
   language: 'en', machineId: os.hostname(), sessionId: String(process.pid), uriScheme: 'vsn',
   shell: process.env.ComSpec || '/bin/sh', uiKind: 1, remoteName: undefined, isTelemetryEnabled: false,
   onDidChangeTelemetryEnabled: never,
-  // ponytail: no clipboard or browser reach from the host yet.
-  clipboard: { readText: async () => '', writeText: async () => {} },
-  openExternal: async () => false,
+  clipboard: {
+    readText: async () => (await ask({ m: 'clipboardRead' })) || '',
+    writeText: async (text) => { send({ m: 'clipboardWrite', text: String(text) }); },
+  },
+  async openExternal(uri) {
+    send({ m: 'openExternal', url: uri.toString() });
+    return true;
+  },
   asExternalUri: async (u) => u,
   // Telemetry is off, so the sender is never called.
   createTelemetryLogger: () => ({
@@ -754,12 +1061,22 @@ function match(selector, doc) {
 }
 
 function register(feature) {
-  return (selector, provider) => {
-    const entry = { selector, provider };
+  return (selector, provider, ...extra) => {
+    const entry = { selector, provider, extra };
     providers[feature].push(entry);
     // vsn sends this language's documents here from now on.
     send({ m: 'languages', ids: selectorLanguages(selector) });
     return new Disposable(() => providers[feature].splice(providers[feature].indexOf(entry), 1));
+  };
+}
+
+// A provider whose `event` asks vsn to fetch again, as the server's
+// `method` request would.
+function refreshing(feature, event, method) {
+  return (selector, provider, ...extra) => {
+    const d = register(feature)(selector, provider, ...extra);
+    const sub = provider[event] && provider[event](() => send({ m: 'lsp', msg: { method, params: null } }));
+    return new Disposable(() => { d.dispose(); sub && sub.dispose(); });
   };
 }
 
@@ -770,18 +1087,52 @@ const lspLocation = (l) => (l.targetUri
   ? { targetUri: l.targetUri.toString(), targetRange: lspRange(l.targetRange), targetSelectionRange: lspRange(l.targetSelectionRange || l.targetRange), originSelectionRange: lspRange(l.originSelectionRange) }
   : { targetUri: l.uri.toString(), targetRange: lspRange(l.range), targetSelectionRange: lspRange(l.range) });
 
-function lspCompletion(c) {
+// The provider and items of the last completion list sent, for resolving
+// the one accepted by its index.
+let lastCompletion = { provider: null, items: [] };
+const lspTextEdit = (e, uri) => ({
+  range: lspRange(e.range),
+  newText: e.newText ?? indentSnippet(plainSnippet(e.snippet?.value ?? ''), uri && openDocument(uri), e.range.start),
+});
+// The open document at `uri`, whichever case its drive letter is in.
+function openDocument(uri) {
+  const k = uri.toString();
+  return documents.get(k) || [...documents.values()].find((d) => d.uri.toString().toLowerCase() === k.toLowerCase());
+}
+// As vscode inserts a snippet: its later lines take the indentation of the
+// line it starts on.
+function indentSnippet(text, doc, at) {
+  if (!doc || !text.includes('\n')) return text;
+  const indent = /^[ \t]*/.exec(doc.lineAt(at.line).text)[0];
+  return text.replace(/\r?\n/g, (nl) => nl + indent);
+}
+// A snippet's text without its tab stops, placeholders keeping their text.
+function plainSnippet(s) {
+  let prev;
+  do {
+    prev = s;
+    s = s.replace(/\$\{\d+:((?:[^{}$\\]|\\.)*)\}/g, '$1').replace(/\$\{\d+\|([^,|]*)[^|]*\|\}/g, '$1');
+  } while (s !== prev);
+  return s.replace(/\$\{?\d+\}?/g, '').replace(/\\([$}\\])/g, '$1');
+}
+
+function lspCompletion(c, i) {
   const label = typeof c.label === 'string' ? c.label : c.label.label;
-  let text = c.insertText === undefined ? label : typeof c.insertText === 'string' ? c.insertText : c.insertText.value;
-  // ponytail: vsn's editor takes no snippets, so tab stops become plain text.
-  if (c.insertText instanceof SnippetString) text = text.replace(/\$\{\d+:([^}]*)\}/g, '$1').replace(/\$\{?\d+\}?/g, '');
+  const snippet = c.insertText instanceof SnippetString;
+  const text = c.insertText === undefined ? label : typeof c.insertText === 'string' ? c.insertText : c.insertText.value;
   const r = c.range && (c.range.replacing || c.range);
   const doc = c.documentation;
+  const cmd = c.command;
   return {
     label, kind: c.kind === undefined ? undefined : c.kind + 1, detail: c.detail,
+    labelDetails: typeof c.label === 'object' ? { detail: c.label.detail, description: c.label.description } : undefined,
     documentation: doc && (typeof doc === 'string' ? doc : { kind: 'markdown', value: doc.value }),
-    sortText: c.sortText, filterText: c.filterText,
+    sortText: c.sortText, filterText: c.filterText, preselect: c.preselect,
+    insertTextFormat: snippet ? 2 : 1,
     ...(r ? { textEdit: { range: lspRange(r), newText: text } } : { insertText: text }),
+    additionalTextEdits: c.additionalTextEdits && c.additionalTextEdits.map((e) => lspTextEdit(e)),
+    command: cmd && { title: cmd.title || '', command: cmd.command, arguments: cmd.arguments },
+    data: i === undefined ? undefined : { vsn: i },
   };
 }
 
@@ -812,6 +1163,59 @@ function createDiagnosticCollection(name) {
   return c;
 }
 
+// ---- tasks: each run in a terminal of vsn's --------------------------------
+
+// The task providers, by the task type they provide.
+const taskProviders = new Map();
+// A command line from argv, quoted for cmd.exe.
+const cmdQuote = (a) => (/^[\w.\/\\:=@+-]+$/.test(a) ? a : `"${String(a).replace(/"/g, '""')}"`);
+const vscodeTasks = {
+  registerTaskProvider(type, provider) {
+    taskProviders.set(type, provider);
+    return new Disposable(() => taskProviders.delete(type));
+  },
+  async fetchTasks(filter) {
+    const token = new CancellationTokenSource().token;
+    const lists = await Promise.all([...taskProviders].filter(([type]) => !filter?.type || type === filter.type)
+      .map(([, p]) => Promise.resolve(p.provideTasks(token)).catch(() => [])));
+    return lists.flat().filter(Boolean);
+  },
+  async executeTask(task) {
+    let exec = task.execution;
+    // A task the provider fills in on demand.
+    const provider = !exec && taskProviders.get(task.definition?.type);
+    if (provider?.resolveTask) exec = (await provider.resolveTask(task, new CancellationTokenSource().token))?.execution;
+    const options = exec?.options || {};
+    let commandLine;
+    if (exec instanceof classes.ProcessExecution) commandLine = [exec.process, ...(exec.args || [])].map(cmdQuote).join(' ');
+    else if (exec instanceof classes.ShellExecution) {
+      // (commandLine, options) or (command, args, options).
+      commandLine = Array.isArray(exec.args)
+        ? [exec.commandLine, ...exec.args].map((a) => cmdQuote(typeof a === 'string' ? a : a.value)).join(' ')
+        : (typeof exec.commandLine === 'string' ? exec.commandLine : exec.commandLine?.value);
+      if (!Array.isArray(exec.args)) Object.assign(options, exec.args || {});
+    }
+    // ponytail: a CustomExecution's pseudoterminal isn't hosted.
+    if (!commandLine) throw new Error(`vsn can't run the task '${task.name}'`);
+    const env = Object.entries(options.env || {}).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)]);
+    send({ m: 'task', name: task.name || 'Task', commandLine, cwd: options.cwd || root, env });
+    return { task, terminate() {} };
+  },
+  taskExecutions: [],
+};
+
+// Sessions run in vsn's debugger; a configuration's `${...}` variables are
+// filled there, from launch.json when it's a name.
+const vscodeDebug = {
+  startDebugging(folder, config) {
+    send(typeof config === 'string' ? { m: 'debug', name: config } : { m: 'debug', config });
+    return Promise.resolve(true);
+  },
+  activeDebugSession: undefined,
+  activeDebugConsole: { append() {}, appendLine() {} },
+  breakpoints: [],
+};
+
 const vscodeLanguages = {
   match,
   createDiagnosticCollection,
@@ -826,6 +1230,29 @@ const vscodeLanguages = {
   registerRenameProvider: register('rename'),
   registerReferenceProvider: register('references'),
   registerSignatureHelpProvider: register('signatureHelp'),
+  registerTypeDefinitionProvider: register('typeDefinition'),
+  registerImplementationProvider: register('implementation'),
+  registerDeclarationProvider: register('declaration'),
+  registerDocumentSymbolProvider: register('documentSymbol'),
+  registerWorkspaceSymbolProvider: (provider) => register('workspaceSymbol')('*', provider),
+  registerDocumentHighlightProvider: register('documentHighlight'),
+  registerSelectionRangeProvider: register('selectionRange'),
+  registerFoldingRangeProvider: register('foldingRange'),
+  registerOnTypeFormattingEditProvider: register('onTypeFormatting'),
+  registerCallHierarchyProvider: register('callHierarchy'),
+  registerDocumentSemanticTokensProvider: refreshing('semanticTokens', 'onDidChangeSemanticTokens', 'workspace/semanticTokens/refresh'),
+  registerDocumentRangeSemanticTokensProvider: refreshing('semanticTokens', 'onDidChangeSemanticTokens', 'workspace/semanticTokens/refresh'),
+  registerInlayHintsProvider: refreshing('inlayHints', 'onDidChangeInlayHints', 'workspace/inlayHint/refresh'),
+  registerCodeLensProvider: refreshing('codeLens', 'onDidChangeCodeLenses', 'workspace/codeLens/refresh'),
+  // Its RegExps go as their sources; the editor has no lookaround, so a
+  // rule using it is skipped there.
+  setLanguageConfiguration(lang, config) {
+    const plain = (v) => v instanceof RegExp ? { pattern: v.source, flags: v.flags }
+      : Array.isArray(v) ? v.map(plain)
+      : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, plain(x)])) : v;
+    send({ m: 'languageConfiguration', lang, config: plain(config) });
+    return new Disposable(() => send({ m: 'languageConfiguration', lang, config: null }));
+  },
   onDidChangeDiagnostics: never,
 };
 
@@ -836,38 +1263,106 @@ function vsDiagnostic(d) {
   return Object.assign(v, { source: d.source, code: d.code });
 }
 
-// The commands of the last code actions sent, which can carry arguments
-// JSON can't, so vsn gets their index instead.
-let actionCommands = [];
+// The commands sent to vsn (code actions', lenses', hints'), which can
+// carry arguments JSON can't, so vsn gets an id instead. The oldest go.
+const sentCommands = new Map();
+let nextCommand = 0;
 function lspCommand(c) {
   if (!c) return undefined;
-  actionCommands.push(c);
-  return { title: c.title, command: '_vsn.codeAction', arguments: [actionCommands.length - 1] };
+  sentCommands.set(nextCommand, c);
+  sentCommands.delete(nextCommand - 5000);
+  return { title: c.title, command: '_vsn.codeAction', arguments: [nextCommand++] };
 }
+// ponytail: a SnippetTextEdit's tab stops are dropped, its text kept.
 function lspWorkspaceEdit(edit) {
-  return edit && { changes: Object.fromEntries(edit.entries().map(([uri, edits]) => [uri.toString(), edits.map((e) => ({ range: lspRange(e.range), newText: e.newText }))])) };
+  return edit && { changes: Object.fromEntries(edit.entries().map(([uri, edits]) => [uri.toString(), edits.map((e) => lspTextEdit(e, uri))])) };
 }
-function lspCodeAction(a) {
+const lspSymbol = (s) => (s.location
+  ? { name: s.name, kind: s.kind + 1, containerName: s.containerName, location: { uri: s.location.uri.toString(), range: lspRange(s.location.range) } }
+  : { name: s.name, detail: s.detail, kind: s.kind + 1, range: lspRange(s.range), selectionRange: lspRange(s.selectionRange), children: (s.children || []).map(lspSymbol) });
+const lspSelectionRange = (s) => s && { range: lspRange(s.range), parent: lspSelectionRange(s.parent) };
+// The call hierarchy items sent, by index, for their calls.
+let callItems = [];
+function lspCallItem(c) {
+  callItems.push(c);
+  return {
+    name: c.name, kind: c.kind + 1, detail: c.detail, uri: c.uri.toString(),
+    range: lspRange(c.range), selectionRange: lspRange(c.selectionRange), data: { vsn: callItems.length - 1 },
+  };
+}
+const tooltip = (t) => t && (typeof t === 'string' ? t : { kind: 'markdown', value: t.value });
+function lspInlayHint(h) {
+  const label = typeof h.label === 'string' ? h.label : h.label.map((l) => ({
+    value: l.value, tooltip: tooltip(l.tooltip), command: lspCommand(l.command),
+    location: l.location && { uri: l.location.uri.toString(), range: lspRange(l.location.range) },
+  }));
+  return {
+    position: { line: h.position.line, character: h.position.character }, label, kind: h.kind,
+    tooltip: tooltip(h.tooltip), paddingLeft: h.paddingLeft, paddingRight: h.paddingRight,
+    textEdits: h.textEdits && h.textEdits.map((e) => lspTextEdit(e)),
+  };
+}
+
+// The provider and actions of the last list sent, for resolving one by index.
+let lastActions = { provider: null, actions: [] };
+function lspCodeAction(a, i) {
   // A plain Command rather than a CodeAction.
   if (typeof a.command === 'string') return { title: a.title, command: lspCommand(a) };
-  return { title: a.title, kind: a.kind && a.kind.value, isPreferred: a.isPreferred, edit: lspWorkspaceEdit(a.edit), command: lspCommand(a.command) };
+  const resolve = !a.edit && lastActions.provider?.resolveCodeAction;
+  return {
+    title: a.title, kind: a.kind && a.kind.value, isPreferred: a.isPreferred, edit: lspWorkspaceEdit(a.edit), command: lspCommand(a.command),
+    data: resolve ? { vsn: i } : undefined,
+  };
 }
 
 // vsn's requests for a document, answered by the extensions' providers.
 async function provide(method, params) {
   if (method === 'workspace/executeCommand') {
-    const c = actionCommands[params.arguments[0]];
+    const c = sentCommands.get(params.arguments[0]);
     return c && vscodeCommands.executeCommand(c.command, ...(c.arguments || []));
   }
+  const token = new CancellationTokenSource().token;
+  if (method === 'completionItem/resolve') {
+    const { provider, items } = lastCompletion;
+    const item = items[params.data?.vsn];
+    if (!item) return params;
+    const r = provider.resolveCompletionItem ? (await provider.resolveCompletionItem(item, token)) || item : item;
+    return lspCompletion(r);
+  }
+  if (method === 'codeAction/resolve') {
+    const { provider, actions } = lastActions;
+    const a = actions[params.data?.vsn];
+    if (!a) return params;
+    return lspCodeAction((await provider.resolveCodeAction(a, token)) || a);
+  }
+  if (method === 'workspace/symbol') {
+    const found = await Promise.all(providers.workspaceSymbol.map(async ({ provider }) => {
+      try { return (await provider.provideWorkspaceSymbols(params.query, token)) || []; } catch (e) { log(errorText(e)); return []; }
+    }));
+    return found.flat().map(lspSymbol);
+  }
+  if (method === 'callHierarchy/incomingCalls' || method === 'callHierarchy/outgoingCalls') {
+    const item = callItems[params.item.data?.vsn];
+    const p = item && providers.callHierarchy[0]?.provider;
+    if (!p) return null;
+    const incoming = method === 'callHierarchy/incomingCalls';
+    const calls = await (incoming ? p.provideCallHierarchyIncomingCalls(item, token) : p.provideCallHierarchyOutgoingCalls(item, token));
+    return calls && calls.map((c) => ({ [incoming ? 'from' : 'to']: lspCallItem(incoming ? c.from : c.to), fromRanges: c.fromRanges.map(lspRange) }));
+  }
   const doc = documents.get(params.textDocument.uri);
-  let feature = { 'textDocument/hover': 'hover', 'textDocument/completion': 'completion', 'textDocument/definition': 'definition', 'textDocument/formatting': 'formatting', 'textDocument/rangeFormatting': 'rangeFormatting', 'textDocument/codeAction': 'codeAction', 'textDocument/rename': 'rename', 'textDocument/references': 'references', 'textDocument/signatureHelp': 'signatureHelp' }[method];
+  let feature = { 'textDocument/hover': 'hover', 'textDocument/completion': 'completion', 'textDocument/definition': 'definition', 'textDocument/formatting': 'formatting', 'textDocument/rangeFormatting': 'rangeFormatting', 'textDocument/codeAction': 'codeAction', 'textDocument/rename': 'rename', 'textDocument/references': 'references', 'textDocument/signatureHelp': 'signatureHelp',
+    'textDocument/typeDefinition': 'typeDefinition', 'textDocument/implementation': 'implementation', 'textDocument/declaration': 'declaration',
+    'textDocument/documentSymbol': 'documentSymbol', 'textDocument/documentHighlight': 'documentHighlight',
+    'textDocument/selectionRange': 'selectionRange', 'textDocument/semanticTokens/full': 'semanticTokens',
+    'textDocument/prepareCallHierarchy': 'callHierarchy', 'textDocument/onTypeFormatting': 'onTypeFormatting',
+    'textDocument/inlayHint': 'inlayHints', 'textDocument/codeLens': 'codeLens', 'textDocument/foldingRange': 'foldingRange',
+  }[method];
   const find = (f) => doc && f && providers[f].find((p) => match(p.selector, doc));
   let entry = find(feature);
   // Format Document falls back on formatting the whole range.
   if (!entry && feature === 'formatting') [entry, feature] = [find('rangeFormatting'), 'rangeFormatting'];
   if (!entry) return null;
   const p = entry.provider;
-  const token = new CancellationTokenSource().token;
   const pos = params.position && new Position(params.position.line, params.position.character);
   switch (feature) {
     case 'hover': {
@@ -876,11 +1371,60 @@ async function provide(method, params) {
     }
     case 'completion': {
       const r = await p.provideCompletionItems(doc, pos, token, { triggerKind: 0 });
-      return r && { isIncomplete: !!r.isIncomplete, items: (Array.isArray(r) ? r : r.items).map(lspCompletion) };
+      if (!r) return null;
+      const items = Array.isArray(r) ? r : r.items;
+      lastCompletion = { provider: p, items };
+      return { isIncomplete: !!r.isIncomplete, items: items.map((c, i) => lspCompletion(c, p.resolveCompletionItem ? i : undefined)) };
     }
-    case 'definition': {
-      const r = await p.provideDefinition(doc, pos, token);
+    case 'definition':
+    case 'typeDefinition':
+    case 'implementation':
+    case 'declaration': {
+      const call = { definition: 'provideDefinition', typeDefinition: 'provideTypeDefinition', implementation: 'provideImplementation', declaration: 'provideDeclaration' }[feature];
+      const r = await p[call](doc, pos, token);
       return r && (Array.isArray(r) ? r : [r]).map(lspLocation);
+    }
+    case 'documentSymbol':
+      return ((await p.provideDocumentSymbols(doc, token)) || []).map(lspSymbol);
+    case 'documentHighlight': {
+      const r = await p.provideDocumentHighlights(doc, pos, token);
+      return r && r.map((h) => ({ range: lspRange(h.range), kind: (h.kind ?? 0) + 1 }));
+    }
+    case 'foldingRange': {
+      const r = await p.provideFoldingRanges(doc, {}, token);
+      return r && r.map((f) => ({ startLine: f.start, endLine: f.end, kind: f.kind && ['comment', 'imports', 'region'][f.kind - 1] }));
+    }
+    case 'selectionRange': {
+      const r = await p.provideSelectionRanges(doc, params.positions.map((q) => new Position(q.line, q.character)), token);
+      return r && r.map(lspSelectionRange);
+    }
+    case 'semanticTokens': {
+      // With the legend, which vsn has no other way to learn.
+      const [legend] = entry.extra;
+      const r = p.provideDocumentSemanticTokens
+        ? await p.provideDocumentSemanticTokens(doc, token)
+        : await p.provideDocumentRangeSemanticTokens(doc, new Range(new Position(0, 0), doc.positionAt(doc._text.length)), token);
+      return r && r.data && { data: Array.from(r.data), legend: legend && { tokenTypes: legend.tokenTypes, tokenModifiers: legend.tokenModifiers || [] } };
+    }
+    case 'callHierarchy': {
+      callItems = [];
+      const r = await p.prepareCallHierarchy(doc, pos, token);
+      return r && (Array.isArray(r) ? r : [r]).map(lspCallItem);
+    }
+    case 'onTypeFormatting': {
+      if (!entry.extra.includes(params.ch)) return null;
+      const r = await p.provideOnTypeFormattingEdits(doc, pos, params.ch, params.options, token);
+      return r && r.map((e) => lspTextEdit(e, doc.uri));
+    }
+    case 'inlayHints': {
+      const r = await p.provideInlayHints(doc, doc.validateRange(vsRange(params.range)), token);
+      return r && r.map(lspInlayHint);
+    }
+    case 'codeLens': {
+      // Resolved here, as vsn shows them all at once.
+      const lenses = (await p.provideCodeLenses(doc, token)) || [];
+      const resolved = await Promise.all(lenses.map(async (l) => (!l.command && p.resolveCodeLens ? (await p.resolveCodeLens(l, token)) || l : l)));
+      return resolved.filter((l) => l.command).map((l) => ({ range: lspRange(l.range), command: lspCommand(l.command) }));
     }
     case 'formatting': {
       const r = await p.provideDocumentFormattingEdits(doc, params.options, token);
@@ -892,12 +1436,12 @@ async function provide(method, params) {
       return r && r.map((e) => ({ range: lspRange(e.range), newText: e.newText }));
     }
     case 'codeAction': {
-      // ponytail: only the first matching provider answers, and actions
-      // needing resolveCodeAction for their edit apply nothing.
+      // ponytail: only the first matching provider answers.
       const context = { diagnostics: params.context.diagnostics.map(vsDiagnostic), only: undefined, triggerKind: 1 };
       const r = await p.provideCodeActions(doc, vsRange(params.range), context, token);
-      actionCommands = [];
-      return r && r.filter((a) => !a.disabled).map(lspCodeAction);
+      const actions = (r || []).filter((a) => !a.disabled);
+      lastActions = { provider: p, actions };
+      return actions.map(lspCodeAction);
     }
     case 'rename':
       return lspWorkspaceEdit(await p.provideRenameEdits(doc, pos, params.newName, token));
@@ -920,30 +1464,39 @@ async function provide(method, params) {
   return null;
 }
 
+// A document's new text from vsn, as one change of the whole text; the same
+// text again (from both the language sync and a custom editor's) is no change.
+function setDocText(uri, text, dirty) {
+  const doc = documents.get(uri);
+  if (!doc) return;
+  if (dirty !== undefined) doc.isDirty = dirty;
+  const old = doc._text;
+  if (old === text) return;
+  const range = new Range(new Position(0, 0), doc.positionAt(old.length));
+  doc.setText(text);
+  doc.version++;
+  changed.fire({ document: doc, contentChanges: [{ range, rangeOffset: 0, rangeLength: old.length, text }], reason: undefined });
+}
+
 // vsn talks to the host as to a language server for the languages it serves.
 function onLsp(msg) {
   const p = msg.params || {};
   const td = p.textDocument || {};
   switch (msg.method) {
     case 'textDocument/didOpen': {
+      // A custom text editor may have it already: the same object stays.
+      if (documents.has(td.uri)) return setDocText(td.uri, td.text);
       const doc = new TextDocument(td.uri, td.languageId, td.version, td.text);
       documents.set(td.uri, doc);
       return opened.fire(doc);
     }
-    case 'textDocument/didChange': {
-      const doc = documents.get(td.uri);
-      if (!doc) return;
-      const old = doc._text;
-      const range = new Range(new Position(0, 0), doc.positionAt(old.length));
-      doc.setText(p.contentChanges[0].text);
-      doc.version = td.version;
-      return changed.fire({ document: doc, contentChanges: [{ range, rangeOffset: 0, rangeLength: old.length, text: doc._text }], reason: undefined });
-    }
+    case 'textDocument/didChange':
+      return setDocText(td.uri, p.contentChanges[0].text);
     case 'textDocument/didSave':
       return documents.has(td.uri) && saved.fire(documents.get(td.uri));
     case 'textDocument/didClose': {
       const doc = documents.get(td.uri);
-      if (!doc) return;
+      if (!doc || [...panels.values()].some((q) => q.document === doc)) return;
       documents.delete(td.uri);
       doc.isClosed = true;
       return closed.fire(doc);
@@ -966,8 +1519,19 @@ function setActiveEditor(e) {
     const doc = documents.get(e.uri) || new TextDocument(e.uri, e.languageId, 1, e.text);
     const [s, end] = e.selection;
     const selection = new Selection(s.line, s.character, end.line, end.character);
+    let selections = [selection];
+    // Setting the selection selects in vsn (the first only).
+    const select = (sels) => {
+      selections = sels;
+      send({ m: 'select', uri: e.uri, range: lspRange(sels[0]) });
+      selectionChanged.fire({ textEditor: editor, selections: sels, kind: 3 });
+    };
     editor = {
-      document: doc, selection, selections: [selection], visibleRanges: [],
+      document: doc, visibleRanges: [],
+      get selection() { return selections[0]; },
+      set selection(s) { select([s]); },
+      get selections() { return selections; },
+      set selections(s) { select(s); },
       options: { tabSize: 4, insertSpaces: true }, viewColumn: 1,
       async edit(cb) {
         const edit = new WorkspaceEdit();
@@ -981,10 +1545,12 @@ function setActiveEditor(e) {
       },
       // ponytail: tab stops are dropped, placeholders kept as text.
       async insertSnippet(snippet, at) {
-        const text = String(snippet.value ?? snippet).replace(/\$\{\d+:([^}]*)\}/g, '$1').replace(/\$\{?\d+\}?/g, '');
-        return this.edit((b) => b.replace(at || selection, text));
+        const r = at instanceof Position ? new Range(at, at) : at || selections[0];
+        const text = indentSnippet(plainSnippet(String(snippet.value ?? snippet)), doc, r.start);
+        return this.edit((b) => b.replace(r, text));
       },
-      setDecorations() {}, revealRange() {}, show() {}, hide() {},
+      revealRange(r) { send({ m: 'select', uri: e.uri, range: lspRange(r), reveal: true }); },
+      setDecorations() {}, show() {}, hide() {},
     };
   }
   const was = vscodeWindow.activeTextEditor;
@@ -1138,6 +1704,10 @@ for (const [id, label] of [['clean', 'Clean'], ['build', 'Build'], ['rebuild', '
   classes.TaskGroup[label] = new classes.TaskGroup(id, label);
 }
 classes.QuickInputButtons.Back = { iconPath: new ThemeIcon('arrow-left') };
+// Extensions set a task's presentation options field by field.
+classes.Task = class Task extends classes.Task {
+  constructor(...a) { super(...a); this.presentationOptions = {}; this.runOptions = {}; }
+};
 
 class CancellationError extends Error {
   constructor() { super('Canceled'); this.name = 'Canceled'; }
@@ -1161,8 +1731,9 @@ const known = {
   commands: vscodeCommands, extensions: vscodeExtensions, env, l10n, RelativePattern,
   window: withStubs('window', vscodeWindow), workspace: withStubs('workspace', vscodeWorkspace), languages: withStubs('languages', vscodeLanguages),
   scm: withStubs('scm', { createSourceControl }),
+  tasks: withStubs('tasks', vscodeTasks), debug: withStubs('debug', vscodeDebug),
   // Present from the start: esbuild's `__toESM` copies only what's there.
-  ...Object.fromEntries('debug tests tasks notebooks authentication comments chat lm interactive'.split(' ').map((n) => [n, stubs(n)])),
+  ...Object.fromEntries('tests notebooks authentication comments chat lm interactive'.split(' ').map((n) => [n, stubs(n)])),
   Disposable, EventEmitter, Uri, Position, Range, Selection, ThemeColor, ThemeIcon, CancellationTokenSource,
   TreeItem, Location, Diagnostic, DiagnosticRelatedInformation, MarkdownString, Hover, SnippetString, CompletionItem, CompletionList, TextEdit, CodeActionKind,
   WorkspaceEdit, CodeAction, SignatureHelp, SignatureInformation, ParameterInformation, CancellationError, FileSystemError,
@@ -1272,6 +1843,9 @@ rl.on('line', (line) => {
     asking.delete(msg.id);
     return;
   }
+  // Ahead of the queue too, so an applyEdit's answer finds the text in.
+  if (msg.m === 'docText') return setDocText(msg.uri, msg.text, msg.dirty);
+  if (msg.m === 'webviewMessage') return panels.get(msg.handle)?.messages.fire(msg.message);
   queue = queue.then(() => {
     switch (msg.m) {
       case 'init':
@@ -1279,12 +1853,30 @@ rl.on('line', (line) => {
         defaults = msg.defaults || {};
         root = msg.root || null;
         builtins = msg.builtins || [];
+        colorTheme = { kind: msg.themeKind || 2 };
         folders = root ? [{ uri: Uri.file(root), name: path.basename(root), index: 0 }] : undefined;
         for (const e of msg.extensions || []) extensions.set(e.id, { ...e, active: false });
         return;
       case 'settings':
-        settings = msg.settings || {};
+        return settingsChanged(msg.settings || {});
+      case 'theme':
+        colorTheme = { kind: msg.kind };
+        return themeChanged.fire(colorTheme);
+      case 'resolveCustomEditor':
+        // Not awaited: the provider may ask vsn things first.
+        resolveCustomEditor(msg);
         return;
+      case 'customSave': case 'customSaveAs': case 'customRevert':
+        customFile(msg);
+        return;
+      case 'webviewView': {
+        const p = panels.get(msg.handle);
+        if (!p || (p.active === msg.active && p.visible === msg.visible)) return;
+        [p.active, p.visible] = [msg.active, msg.visible];
+        return p.viewState.fire({ webviewPanel: p.panel });
+      }
+      case 'webviewClosed':
+        return panelGone(msg.handle);
       case 'activate':
         activate(msg.id);
         return;

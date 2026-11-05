@@ -129,6 +129,8 @@ impl<M: InputModeKind> TextElement<M> {
         {
             let line = state.text.slice_line(buffer_line);
             let mut current_indents = vec![];
+            // vsn: guides run on through a CodeLens row above the line.
+            let guide_height = line_layout.text_top(line_height) + line_height;
             if line.len() > 0 {
                 let indent_count = tab_size.indent_count(&line);
                 for offset in (0..indent_count).step_by(tab_size.tab_size) {
@@ -141,19 +143,20 @@ impl<M: InputModeKind> TextElement<M> {
                     let pos = point(x + last_layout.line_number_width, offset_y);
 
                     builder.move_to(pos);
-                    builder.line_to(point(pos.x, pos.y + line_height));
+                    builder.line_to(point(pos.x, pos.y + guide_height));
                     current_indents.push(pos.x);
                 }
             } else if last_indents.len() > 0 {
                 for x in &last_indents {
                     let pos = point(*x, offset_y);
                     builder.move_to(pos);
-                    builder.line_to(point(pos.x, pos.y + line_height));
+                    builder.line_to(point(pos.x, pos.y + guide_height));
                 }
                 current_indents = last_indents.clone();
             }
 
-            offset_y += line_layout.wrapped_lines.len() * line_height;
+            // vsn: a CodeLens row counts.
+            offset_y += line_layout.size(line_height).height;
             last_indents = current_indents;
         }
 

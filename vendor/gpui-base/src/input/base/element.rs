@@ -624,7 +624,12 @@ impl<M: InputModeKind> TextElement<M> {
         let visible_buffer_lines = &last_layout.visible_buffer_lines;
         let caret_for = |row: usize, offset: usize, affinity: bool| -> Point<Pixels> {
             // y of the top of buffer line `row` in content space.
-            let top = line_height * state.display_map.buffer_line_to_display_row(row);
+            // vsn: the top of the line includes a CodeLens row above it, which
+            // `position_for_index` steps over.
+            let top = line_height
+                * state
+                    .display_map
+                    .display_row_block_top(state.display_map.buffer_line_to_display_row(row));
             let line_origin = point(px(0.), top);
 
             if let Some(vi) = visible_buffer_lines.iter().position(|&bl| bl == row) {
@@ -640,7 +645,11 @@ impl<M: InputModeKind> TextElement<M> {
             }
             point(
                 px(0.),
-                line_height * state.display_map.offset_to_display_row(offset, affinity),
+                // vsn: in visual rows, which count CodeLens rows too.
+                line_height
+                    * state.display_map.display_row_to_visual_row(
+                        state.display_map.offset_to_display_row(offset, affinity),
+                    ),
             )
         };
 
@@ -831,6 +840,8 @@ impl<M: InputModeKind> TextElement<M> {
         {
             let mut offset = line_offset;
             let alignment = last_layout.alignment_offset(line.longest_width);
+            // vsn: step over a CodeLens row above the text.
+            y += line.text_top(last_layout.line_height);
             for (row, shaped) in line.wrapped_lines.iter().enumerate() {
                 let end = offset + shaped.len;
                 let start_ix = range.start.max(offset);
@@ -1113,7 +1124,8 @@ impl<M: InputModeKind> TextElement<M> {
         // Clamp as `layout_cursors` does, so we lay out the rows we paint.
         // Ghost lines are left out: a tighter clamp only lays out extra rows
         // above, and the last row stays in range.
-        let scroll_height = line_height * total_lines
+        // vsn: CodeLens rows take height too.
+        let scroll_height = line_height * (total_lines + state.display_map.block_row_count())
             + empty_bottom_height(
                 state.is_code_editor(),
                 state.scroll_beyond_last_line,
@@ -1127,10 +1139,17 @@ impl<M: InputModeKind> TextElement<M> {
         let viewport_top = (-scroll_top).max(px(0.));
         let viewport_bottom = viewport_top + input_height;
         let line_height_f = f32::from(line_height);
-        let first_display =
-            ((f32::from(viewport_top) / line_height_f).floor() as usize).min(display_count - 1);
-        let last_display =
-            ((f32::from(viewport_bottom) / line_height_f).ceil() as usize).min(display_count - 1);
+        // vsn: the viewport is measured in visual rows, which count CodeLens
+        // rows too; a CodeLens row belongs to the display row under it.
+        let visual_count = state.display_map.visual_row_count();
+        let first_display = state.display_map.visual_row_to_display_row(
+            ((f32::from(viewport_top) / line_height_f).floor() as usize).min(visual_count - 1),
+        )
+        .min(display_count - 1);
+        let last_display = state.display_map.visual_row_to_display_row(
+            ((f32::from(viewport_bottom) / line_height_f).ceil() as usize).min(visual_count - 1),
+        )
+        .min(display_count - 1);
 
         let start_line = state.display_map.display_row_to_buffer_line(first_display);
         let end_line = state.display_map.display_row_to_buffer_line(last_display);
@@ -1140,8 +1159,9 @@ impl<M: InputModeKind> TextElement<M> {
             .display_map
             .buffer_line_to_display_row_range(start_line)
         {
-            Some(range) => line_height * range.start,
-            None => line_height * first_display,
+            // vsn: from the top of a CodeLens row above the line, if it has one.
+            Some(range) => line_height * state.display_map.display_row_block_top(range.start),
+            None => line_height * state.display_map.display_row_block_top(first_display),
         };
 
         let visible_range = start_line..(end_line + 1 + extra_rows).min(buffer_line_count);
@@ -1394,11 +1414,13 @@ impl<M: InputModeKind> TextElement<M> {
                         buffer_line,
                         is_folded,
                         display_row: buffer_line,
-                        offset_y,
+                        // vsn: beside the text, below a CodeLens row.
+                        offset_y: offset_y + line.text_top(last_layout.line_height),
                     });
                 }
 
-                offset_y += line.wrapped_lines.len() * last_layout.line_height;
+                // vsn: a CodeLens row counts.
+                offset_y += line.size(last_layout.line_height).height;
             }
 
             infos
@@ -1495,6 +1517,215 @@ impl<M: InputModeKind> TextElement<M> {
     /// - Mouse click handling to toggle fold state
     /// - Cursor style changes on hover
     /// - Only show icon on hover or for current line
+    /// vsn: shape the visible CodeLens rows and place hit areas over them and
+    /// over clickable inlay hint parts. Costs nothing with neither.
+    #[allow(clippy::too_many_arguments)]
+    fn layout_inlays(
+        &self,
+        last_layout: &LastLayout,
+        bounds: &Bounds<Pixels>,
+        input_bounds: Bounds<Pixels>,
+        current_row: Option<usize>,
+        ghost_lines_height: Pixels,
+        text_size: Pixels,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> InlayLayout {
+        let state = self.state.read(cx);
+        let lenses = state.extras.code_lenses();
+        let has_hints = !state.extras.inlay_hints().is_empty();
+        let mut layout = InlayLayout::default();
+        if lenses.is_empty() && !has_hints {
+            return layout;
+        }
+        let line_height = last_layout.line_height;
+        let text_x = bounds.origin.x + last_layout.line_number_width;
+        // Clickable over the text only, not over the gutter it scrolls under.
+        let text_area = Bounds::from_corners(
+            point(
+                input_bounds.origin.x + last_layout.line_number_width,
+                input_bounds.origin.y,
+            ),
+            input_bounds.bottom_right(),
+        );
+        let font = window.text_style().font();
+        let color = state.editor_style.muted_foreground;
+        // (bounds, is a lens, id)
+        let mut areas: Vec<(Bounds<Pixels>, bool, usize)> = Vec::new();
+        let mut y = bounds.origin.y + last_layout.visible_top;
+        for (line, &buffer_line) in last_layout
+            .lines
+            .iter()
+            .zip(last_layout.visible_buffer_lines.iter())
+        {
+            let alignment = last_layout.alignment_offset(line.longest_width);
+            if line.top_rows > 0
+                && let Ok(ix) = lenses.binary_search_by_key(&buffer_line, |lens| lens.line)
+            {
+                let lens = &lenses[ix];
+                // Indented like the line under it.
+                let indent: usize = state
+                    .text
+                    .slice_line(buffer_line)
+                    .chars()
+                    .take_while(|c| matches!(c, ' ' | '\t'))
+                    .map(char::len_utf8)
+                    .sum();
+                let indent_x = line
+                    .wrapped_lines
+                    .first()
+                    .map_or(px(0.), |row| row.x_for_index(indent.min(row.len)));
+                let mut label = String::new();
+                let mut items = Vec::with_capacity(lens.items.len());
+                for (title, id) in &lens.items {
+                    if !label.is_empty() {
+                        label.push_str(" | ");
+                    }
+                    let start = label.len();
+                    label.push_str(title);
+                    items.push((start..label.len(), *id));
+                }
+                let len = label.len();
+                let shaped = window.text_system().shape_line(
+                    label.into(),
+                    text_size * 0.9,
+                    &[TextRun {
+                        len,
+                        font: font.clone(),
+                        color,
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    }],
+                    None,
+                );
+                let origin = point(text_x + alignment + indent_x, y);
+                for (range, id) in items {
+                    let left = shaped.x_for_index(range.start);
+                    let right = shaped.x_for_index(range.end);
+                    areas.push((
+                        Bounds::new(origin + point(left, px(0.)), size(right - left, line_height)),
+                        true,
+                        id,
+                    ));
+                }
+                layout.lens_rows.push((origin, shaped));
+            }
+            if has_hints {
+                let mut row_y = y + line.text_top(line_height);
+                for (sub_ix, row) in line.wrapped_lines.iter().enumerate() {
+                    let row_x = text_x + alignment + line.line_indent(sub_ix);
+                    for (fragment, hint) in row.hint_fragments() {
+                        for (part_x, id) in &hint.parts {
+                            let Some(id) = id else { continue };
+                            let x = row_x + fragment.x + hint.label_x + part_x.start;
+                            areas.push((
+                                Bounds::new(
+                                    point(x, row_y),
+                                    size(part_x.end - part_x.start, line_height),
+                                ),
+                                false,
+                                *id,
+                            ));
+                        }
+                    }
+                    row_y += line_height;
+                }
+            }
+            y += line.size(line_height).height;
+            // Ghost lines shift every later line down.
+            if Some(buffer_line) == current_row {
+                y += ghost_lines_height;
+            }
+        }
+
+        let underline_y = (line_height * 0.82).round();
+        for (area, lens, id) in areas {
+            let area = area.intersect(&text_area);
+            if area.size.width <= px(0.) || area.size.height <= px(0.) {
+                continue;
+            }
+            layout.targets.push(InlayTarget {
+                hitbox: window.insert_hitbox(area, HitboxBehavior::Normal),
+                underline: Bounds::new(
+                    point(area.origin.x, area.origin.y + underline_y),
+                    size(area.size.width, px(1.)),
+                ),
+                lens,
+                id,
+            });
+        }
+        layout
+    }
+
+    /// vsn: underline the hovered CodeLens item or inlay hint part, show a
+    /// pointer over them, and emit their id when clicked.
+    fn paint_inlay_targets(
+        &self,
+        layout: &InlayLayout,
+        underline_color: Hsla,
+        window: &mut Window,
+        _cx: &mut App,
+    ) {
+        if layout.targets.is_empty() {
+            return;
+        }
+        let hovered = layout
+            .targets
+            .iter()
+            .position(|target| target.hitbox.is_hovered(window));
+        if let Some(ix) = hovered {
+            window.paint_quad(fill(layout.targets[ix].underline, underline_color));
+        }
+        for target in &layout.targets {
+            window.set_cursor_style(gpui::CursorStyle::PointingHand, &target.hitbox);
+        }
+
+        let targets: Rc<[(Hitbox, bool, usize)]> = layout
+            .targets
+            .iter()
+            .map(|target| (target.hitbox.clone(), target.lens, target.id))
+            .collect();
+        // Mouse moves do not repaint the editor, so repaint when the hovered
+        // item changes to move the underline.
+        window.on_mouse_event({
+            let targets = targets.clone();
+            let entity_id = self.state.entity_id();
+            move |_: &MouseMoveEvent, phase, window, cx| {
+                if phase.bubble()
+                    && targets.iter().position(|target| target.0.is_hovered(window)) != hovered
+                {
+                    cx.notify(entity_id);
+                }
+            }
+        });
+        // Capture phase: a click on an item is the item's, not the text's.
+        window.on_mouse_event({
+            let state = self.state.clone();
+            move |event: &gpui::MouseDownEvent, phase, window, cx| {
+                if !phase.capture() || event.button != MouseButton::Left {
+                    return;
+                }
+                let Some(&(_, lens, id)) = targets.iter().find(|target| target.0.is_hovered(window))
+                else {
+                    return;
+                };
+                window.prevent_default();
+                cx.stop_propagation();
+                if event.click_count > 1 {
+                    return;
+                }
+                state.update(cx, |_, cx| {
+                    cx.emit(if lens {
+                        super::InputEvent::CodeLensClicked(id)
+                    } else {
+                        super::InputEvent::InlayClicked(id)
+                    })
+                });
+            }
+        });
+    }
+
     fn paint_fold_icons(
         &mut self,
         fold_icon_layout: &mut FoldIconLayout,
@@ -1935,6 +2166,8 @@ impl<M: InputModeKind> TextElement<M> {
                                 x,
                                 width,
                                 text: Some(shaped),
+                                // vsn
+                                hint: None,
                             });
                             x += width;
                         }
@@ -1944,6 +2177,8 @@ impl<M: InputModeKind> TextElement<M> {
                             x,
                             width,
                             text: None,
+                            // vsn
+                            hint: None,
                         });
                         x += width;
                         offset = local.end;
@@ -1962,6 +2197,8 @@ impl<M: InputModeKind> TextElement<M> {
                             x,
                             width,
                             text: Some(shaped),
+                            // vsn
+                            hint: None,
                         });
                     }
                     lines.push(InputLine::inline(text[range].to_owned().into(), fragments));
@@ -2126,9 +2363,29 @@ impl<M: InputModeKind> TextElement<M> {
         // This is separate from the visible_text offset because runs from highlight_lines
         // only cover visible (non-folded) lines.
         let mut run_offset = 0;
+        // vsn: inlay hints, laid out only on the lines that have some.
+        let hints = if state.masked {
+            &[][..]
+        } else {
+            state.extras.inlay_hints()
+        };
+        let hint_style = (!hints.is_empty()).then(|| InlayHintStyle::new(state, font_size, window));
 
         for (vi, &buffer_line) in last_layout.visible_buffer_lines.iter().enumerate() {
             let line_text: String = display_text.slice_line(buffer_line).into();
+            // vsn: the hints on this line, end of line included.
+            let line_hints = match &hint_style {
+                Some(_) => {
+                    let line_start = last_layout.visible_line_byte_offsets[vi];
+                    let line_end = line_start + line_text.len();
+                    let first = hints.partition_point(|hint| hint.offset < line_start);
+                    let last = hints.partition_point(|hint| hint.offset <= line_end);
+                    &hints[first..last]
+                }
+                None => &[][..],
+            };
+            let mut hint_lines: SmallVec<[crate::input::display_map::InputLine; 1]> =
+                SmallVec::new();
             let line_item = state
                 .display_map
                 .line(buffer_line)
@@ -2139,7 +2396,8 @@ impl<M: InputModeKind> TextElement<M> {
             let mut wrapped_lines: SmallVec<[ShapedLine; 1]> = SmallVec::with_capacity(1);
             let mut line_has_background = false;
 
-            for range in &line_item.wrapped_lines {
+            let sub_line_count = line_item.wrapped_lines.len();
+            for (sub_ix, range) in line_item.wrapped_lines.iter().enumerate() {
                 let line_runs = runs_for_range(runs, run_offset, &range);
                 let line_runs = if bg_segments.is_empty() {
                     line_runs
@@ -2154,6 +2412,32 @@ impl<M: InputModeKind> TextElement<M> {
                 let sub_line: SharedString = line_text[range.clone()].to_string().into();
                 let line_runs =
                     align_runs_to_char_boundaries(&sub_line, &line_runs).unwrap_or(line_runs);
+                // vsn: a line with hints is laid out as fragments: text, hint, text.
+                if let Some(hint_style) = &hint_style
+                    && !line_hints.is_empty()
+                {
+                    let line_start = last_layout.visible_line_byte_offsets[vi];
+                    let is_last = sub_ix + 1 == sub_line_count;
+                    let row_hints: SmallVec<[(usize, &crate::input::InlayHint); 4]> = line_hints
+                        .iter()
+                        .map(|hint| (hint.offset - line_start, hint))
+                        .filter(|&(local, _)| {
+                            (local >= range.start && local < range.end)
+                                || (is_last && local == range.end)
+                        })
+                        .map(|(local, hint)| (local - range.start, hint))
+                        .collect();
+                    line_has_background |= has_background(&line_runs);
+                    hint_lines.push(layout_hint_row(
+                        sub_line,
+                        &line_runs,
+                        &row_hints,
+                        hint_style,
+                        font_size,
+                        window,
+                    ));
+                    continue;
+                }
                 let shaped_line = window
                     .text_system()
                     .shape_line(sub_line, font_size, &line_runs, None);
@@ -2163,19 +2447,28 @@ impl<M: InputModeKind> TextElement<M> {
             }
 
             // Use the first visual line's indentation width for continuation lines.
-            let wrap_indent = if line_item.indent > 0 && wrapped_lines.len() > 1 {
+            let wrap_indent = if line_item.indent > 0 && sub_line_count > 1 {
                 let indent_byte_len = line_text
                     .char_indices()
                     .nth(line_item.indent as usize)
                     .map(|(ix, _)| ix)
                     .unwrap_or(line_text.len());
-                wrapped_lines[0].x_for_index(indent_byte_len)
+                // vsn: or the first row with hints in it.
+                match wrapped_lines.first() {
+                    Some(line) => line.x_for_index(indent_byte_len),
+                    None => hint_lines[0].x_for_index(indent_byte_len),
+                }
             } else {
                 px(0.)
             };
 
-            let line_layout = LineLayout::new()
-                .lines(wrapped_lines)
+            // vsn: a line with hints carries fragment rows instead.
+            let line_layout = if hint_lines.is_empty() {
+                LineLayout::new().lines(wrapped_lines)
+            } else {
+                LineLayout::new().inline_lines(hint_lines)
+            };
+            let line_layout = line_layout
                 .wrap_indent(wrap_indent)
                 .with_background(line_has_background)
                 .with_whitespaces(whitespace_indicators.clone());
@@ -2382,6 +2675,25 @@ pub(super) struct PrepaintState {
     /// First line of inline completion (painted after cursor on same line)
     ghost_first_line: Option<ShapedLine>,
     ghost_lines_height: Pixels,
+    /// vsn: CodeLens rows and clickable inlay hint parts.
+    inlay_layout: InlayLayout,
+}
+
+/// vsn: what prepaint placed for CodeLens rows and inlay hint parts.
+#[derive(Default)]
+struct InlayLayout {
+    /// Each CodeLens row's label, at its origin.
+    lens_rows: Vec<(Point<Pixels>, ShapedLine)>,
+    targets: Vec<InlayTarget>,
+}
+
+/// vsn: a clickable CodeLens item or inlay hint label part.
+struct InlayTarget {
+    hitbox: Hitbox,
+    underline: Bounds<Pixels>,
+    /// A CodeLens item, rather than an inlay hint part.
+    lens: bool,
+    id: usize,
 }
 
 impl PrepaintState {
@@ -2813,6 +3125,13 @@ impl<M: InputModeKind> Element for TextElement<M> {
             whitespace_indicators,
             window,
         );
+        // vsn: a CodeLens row above a line is laid out as part of that line.
+        let mut lines = lines;
+        if state.display_map.block_row_count() > 0 {
+            for (line, &buffer_line) in lines.iter_mut().zip(&last_layout.visible_buffer_lines) {
+                line.top_rows = state.display_map.has_block_above(buffer_line) as usize;
+            }
+        }
 
         let mut longest_line_width = wrap_width.unwrap_or(px(0.));
         // 1. Single line
@@ -2857,6 +3176,13 @@ impl<M: InputModeKind> Element for TextElement<M> {
             state
                 .longest_line_width
                 .set(Some((key, longest_line_width)));
+            // vsn: inlay hints widen the lines they're on; the longest row is
+            // measured without them, so widen to the visible lines too.
+            if !state.extras.inlay_hints().is_empty() {
+                for line in &lines {
+                    longest_line_width = longest_line_width.max(line.size(line_height).width);
+                }
+            }
         }
         if state.tokens_visible() {
             longest_line_width = if let Some(width) = wrap_width {
@@ -2897,7 +3223,8 @@ impl<M: InputModeKind> Element for TextElement<M> {
             } else {
                 longest_line_width
             },
-            (total_wrapped_lines as f32 * line_height
+            // vsn: CodeLens rows take height too.
+            ((total_wrapped_lines + state.display_map.block_row_count()) as f32 * line_height
                 + empty_bottom_height.max(ghost_lines_height))
             .max(bounds.size.height),
         );
@@ -3047,6 +3374,10 @@ impl<M: InputModeKind> Element for TextElement<M> {
                 };
 
                 let mut sub_lines: SmallVec<[ShapedLine; 1]> = SmallVec::new();
+                // vsn: a CodeLens row has no line number.
+                for _ in 0..line.top_rows {
+                    sub_lines.push(ShapedLine::default());
+                }
                 sub_lines.push(
                     window
                         .text_system()
@@ -3077,6 +3408,17 @@ impl<M: InputModeKind> Element for TextElement<M> {
         let fold_icon_layout =
             self.layout_fold_icons(original_x, &bounds, &last_layout, window, cx);
         let hitbox = window.insert_hitbox(input_bounds, HitboxBehavior::Normal);
+        // vsn: CodeLens rows and clickable inlay hint parts.
+        let inlay_layout = self.layout_inlays(
+            &last_layout,
+            &bounds,
+            input_bounds,
+            current_row,
+            ghost_lines_height,
+            text_size,
+            window,
+            cx,
+        );
 
         let token_elements = self.prepaint_tokens(&last_layout, bounds, token_elements, window, cx);
         PrepaintState {
@@ -3101,6 +3443,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
             ghost_first_line,
             ghost_lines,
             ghost_lines_height,
+            inlay_layout,
         }
     }
 
@@ -3155,18 +3498,21 @@ impl<M: InputModeKind> Element for TextElement<M> {
             offset_y += invisible_top_padding;
 
             // Each item is the normal lines.
-            for (lines, &buffer_line) in line_numbers
+            for ((lines, &buffer_line), line) in line_numbers
                 .iter()
                 .zip(prepaint.last_layout.visible_buffer_lines.iter())
+                .zip(prepaint.last_layout.lines.iter())
             {
                 let is_active = prepaint.current_row == Some(buffer_line);
-                let p = point(input_bounds.origin.x, origin.y + offset_y);
                 let height = line_height * lines.len() as f32;
+                // vsn: a CodeLens row above the line is not part of it.
+                let lens_height = line.text_top(line_height);
+                let p = point(input_bounds.origin.x, origin.y + offset_y + lens_height);
                 // Paint the current line background
                 if is_active {
                     if let Some(bg_color) = active_line_color {
                         window.paint_quad(fill(
-                            Bounds::new(p, size(bounds.size.width, height)),
+                            Bounds::new(p, size(bounds.size.width, height - lens_height)),
                             bg_color,
                         ));
                     }
@@ -3330,6 +3676,11 @@ impl<M: InputModeKind> Element for TextElement<M> {
             }
         }
 
+        // vsn: CodeLens rows, in the space their lines reserved above the text.
+        for (origin, label) in &prepaint.inlay_layout.lens_rows {
+            _ = label.paint(*origin, line_height, TextAlign::Left, None, window, cx);
+        }
+
         for element in &mut prepaint.token_elements {
             element.paint(window, cx);
         }
@@ -3365,21 +3716,24 @@ impl<M: InputModeKind> Element for TextElement<M> {
             window.paint_quad(fill(gutter_bounds, gutter_bg));
 
             // Each item is the normal lines.
-            for (lines, &buffer_line) in line_numbers
+            for ((lines, &buffer_line), line) in line_numbers
                 .iter()
                 .zip(prepaint.last_layout.visible_buffer_lines.iter())
+                .zip(prepaint.last_layout.lines.iter())
             {
                 let p = point(input_bounds.origin.x, origin.y + offset_y);
                 let is_active = prepaint.current_row == Some(buffer_line);
 
                 let height = line_height * lines.len() as f32;
+                // vsn: a CodeLens row above the line is not part of it.
+                let lens_height = line.text_top(line_height);
                 // paint active line number background
                 if is_active {
                     if let Some(bg_color) = active_line_color {
                         window.paint_quad(fill(
                             Bounds::new(
-                                point(gutter_bounds.origin.x, p.y),
-                                size(gutter_bounds.size.width, height),
+                                point(gutter_bounds.origin.x, p.y + lens_height),
+                                size(gutter_bounds.size.width, height - lens_height),
                             ),
                             bg_color,
                         ));
@@ -3387,6 +3741,8 @@ impl<M: InputModeKind> Element for TextElement<M> {
                 }
 
                 for line in lines {
+                    // vsn: each row at its own y, so a number sits below its lens row.
+                    let p = point(p.x, origin.y + offset_y);
                     _ = line.paint(p, line_height, TextAlign::Left, None, window, cx);
                     offset_y += line_height;
                 }
@@ -3457,6 +3813,9 @@ impl<M: InputModeKind> Element for TextElement<M> {
                 }
             }
         }
+
+        // vsn: hover and clicks for CodeLens items and inlay hint parts.
+        self.paint_inlay_targets(&prepaint.inlay_layout, editor_style.muted_foreground, window, cx);
 
         self.paint_mouse_listeners(&prepaint.hitbox, window, cx);
     }
@@ -3630,6 +3989,117 @@ fn split_run_for_ime_underline(
 
 /// Whether any of these runs paints a glyph background, used to skip the background
 /// paint pass for lines without highlights.
+/// vsn: how inlay hints look: VS Code's muted label on a faint rounded chip.
+struct InlayHintStyle {
+    font: gpui::Font,
+    font_size: Pixels,
+    color: Hsla,
+    background: Hsla,
+    /// The gap a hint's `padding_left`/`padding_right` asks for.
+    padding: Pixels,
+    /// Room between the chip's edge and its label.
+    inner: Pixels,
+}
+
+impl InlayHintStyle {
+    fn new<M: InputModeKind>(state: &InputBaseState<M>, font_size: Pixels, window: &Window) -> Self {
+        let color = state.editor_style.muted_foreground;
+        Self {
+            font: window.text_style().font(),
+            font_size: font_size * 0.9,
+            color,
+            background: color.opacity(0.13),
+            padding: (font_size * 0.3).round(),
+            inner: (font_size * 0.2).round(),
+        }
+    }
+}
+
+/// vsn: lay out one visual row that has inlay hints as inline fragments: the
+/// text between hints keeps its own runs, and each hint is an empty-range
+/// fragment as wide as its chip. `hints` are at offsets local to the row.
+fn layout_hint_row(
+    text: SharedString,
+    runs: &[TextRun],
+    hints: &[(usize, &crate::input::InlayHint)],
+    style: &InlayHintStyle,
+    font_size: Pixels,
+    window: &mut Window,
+) -> crate::input::display_map::InputLine {
+    use crate::input::display_map::{HintFragment, InlineFragment, InputLine};
+    let mut fragments = Vec::with_capacity(hints.len() * 2 + 1);
+    let push_text = |part: Range<usize>, fragments: &mut Vec<InlineFragment>, window: &mut Window| {
+        let shaped = window.text_system().shape_line(
+            text[part.clone()].to_owned().into(),
+            font_size,
+            &runs_for_range(runs, 0, &part),
+            None,
+        );
+        fragments.push(InlineFragment {
+            range: part,
+            x: px(0.),
+            width: shaped.width,
+            text: Some(shaped),
+            hint: None,
+        });
+    };
+    let mut pos = 0;
+    for &(offset, hint) in hints {
+        if offset > pos {
+            push_text(pos..offset, &mut fragments, window);
+            pos = offset;
+        }
+        let label: String = hint.label.iter().map(|part| part.text.as_ref()).collect();
+        let label_len = label.len();
+        let shaped = window.text_system().shape_line(
+            label.into(),
+            style.font_size,
+            &[TextRun {
+                len: label_len,
+                font: style.font.clone(),
+                color: style.color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }],
+            None,
+        );
+        let mut parts = Vec::with_capacity(hint.label.len());
+        let mut byte = 0;
+        for part in &hint.label {
+            let start = shaped.x_for_index(byte);
+            byte += part.text.len();
+            parts.push((start..shaped.x_for_index(byte), part.id));
+        }
+        let pad_left = if hint.padding_left { style.padding } else { px(0.) };
+        let pad_right = if hint.padding_right { style.padding } else { px(0.) };
+        let chip_width = shaped.width + style.inner * 2.;
+        fragments.push(InlineFragment {
+            range: offset..offset,
+            x: px(0.),
+            width: pad_left + chip_width + pad_right,
+            text: None,
+            hint: Some(Box::new(HintFragment {
+                label_x: pad_left + style.inner,
+                chip: pad_left..pad_left + chip_width,
+                background: style.background,
+                parts,
+                attach_left: hint.attaches_left() || offset == text.len(),
+                label: shaped,
+            })),
+        });
+    }
+    if pos < text.len() || fragments.is_empty() {
+        push_text(pos..text.len(), &mut fragments, window);
+    }
+    let mut x = px(0.);
+    for fragment in &mut fragments {
+        fragment.x = x;
+        x += fragment.width;
+    }
+    InputLine::inline(text, fragments)
+}
+
 fn has_background(runs: &[TextRun]) -> bool {
     runs.iter().any(|run| run.background_color.is_some())
 }

@@ -1,6 +1,6 @@
 use crate::input::EditorMode;
 use anyhow::Result;
-use gpui::{App, Context, EntityInputHandler, Pixels, Task, Window, px};
+use gpui::{App, Context, Entity, EntityInputHandler, Pixels, Task, Window, px};
 use lsp_types::{
     CompletionContext, CompletionItem, CompletionResponse, InlineCompletionContext,
     InlineCompletionItem, InlineCompletionResponse, InlineCompletionTriggerKind,
@@ -206,6 +206,16 @@ pub trait CompletionProvider {
     ///
     /// This is called on the main thread.
     fn is_completion_trigger(&self, offset: usize, new_text: &str, cx: &mut App) -> bool;
+
+    /// vsn: `item` was just inserted into `state`'s text.
+    fn completion_accepted(
+        &self,
+        _item: &CompletionItem,
+        _state: Entity<InputBaseState<EditorMode>>,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) {
+    }
 }
 
 pub(crate) struct InlineCompletion {

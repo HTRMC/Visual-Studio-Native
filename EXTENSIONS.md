@@ -27,7 +27,7 @@ offers something VS Code can't: plugins that are fast and safe by design.
   editor through the same core API.
 
 Not goals: the Microsoft Marketplace, Microsoft's VS Code-only extensions,
-webviews, and every corner of the `vscode` API. Coverage grows as real
+and every corner of the `vscode` API. Coverage grows as real
 extensions need it.
 
 ## Decisions
@@ -39,7 +39,7 @@ extensions need it.
 | Native plugins | **WebAssembly** (wasmtime, WIT interface) | Sandboxed, any source language, stable ABI across vsn versions |
 | Native DLL plugins | **No** | No stable Rust ABI, can't be sandboxed, a bad one crashes the editor |
 | Gallery | **Open VSX** (open-vsx.org) and local `.vsix` files | The Microsoft Marketplace's terms allow only Microsoft's products |
-| Webviews | Out of scope | Needs a browser engine |
+| Webviews | **WebView2**, composited into vsn's window under a hole in gpui's drawing (Windows) | Ships with Windows 11; custom editors such as Draw.io need a real browser |
 
 Microsoft's own extensions (Pylance, C/C++, Remote-*, Live Share) are
 licensed for VS Code only and aren't on Open VSX; their open counterparts
@@ -113,7 +113,10 @@ there.
 | `env`, `Uri`, `EventEmitter`, `Disposable` | 3 | Plain JS in the shim |
 | `scm` | 2 | `createSourceControl`, resource groups, `inputBox`, `acceptInputCommand` |
 | `window` (views) | 2 | `createTreeView`, `registerTreeDataProvider`, `TreeItem` |
-| `debug`, `tasks`, `notebooks`, webviews | later / never | |
+| `window` (webviews) | 5 | `createWebviewPanel`, `registerCustomEditorProvider` (text and binary), `asWebviewUri` |
+| `tasks` | 4 | `registerTaskProvider`, `fetchTasks`, `executeTask` (process and shell executions, in a terminal) |
+| `debug` | 4 | `startDebugging` runs vsn's debugger with the given configuration (or a launch.json name); `register*` providers and session events are stubs |
+| `notebooks` | later / never | |
 
 ## Phases
 
@@ -204,7 +207,17 @@ there.
    their commands. Format Selection (Ctrl+K Ctrl+F). Rename Symbol (F2),
    its new name asked for in the palette. Find All References (Shift+F12),
    a pick list grouped by file. Parameter hints after `(` and `,`, or on
-   Ctrl+Shift+Space, with the active parameter in bold. Done.
+   Ctrl+Shift+Space, with the active parameter in bold. Semantic coloring,
+   inlay hints and CodeLens rows (both patched into gpui-base), highlights of
+   the symbol under the cursor, Expand/Shrink Selection by `selectionRange`,
+   and the palette's `@` and `#` symbols from the server; completions' extra
+   edits (auto-imports) and commands. rust-analyzer's own extension runs its
+   server (with `rust-analyzer.server.path` set, as the universal VSIX ships
+   none): types as hints, "N references/implementations" lenses as a pick
+   list, Run/Run Test lenses as tasks in a terminal, and Debug lenses in vsn's
+   debugger through LLVM's lldb-dap (on PATH or in `C:\Program Files\LLVM\bin`).
+   Folding ranges from the server, and `setLanguageConfiguration`'s
+   `onEnterRules` (doc comments continue on Enter). Done.
 5. **WASM host.** wasmtime, a WIT world generated from the core API, and a
    sample plugin in Rust.
    *Done:* `wit/vsn.wit` (messages, a status bar item, a log channel,
@@ -274,7 +287,7 @@ all activated at once in a folder with a `.py`, `.go` and `.c` file:
 | devsense.phptools-vscode | yes | ms-toolsai.jupyter | yes |
 
 Activating isn't working: what they register beyond vsn's API (debug
-adapters, tests, tasks, webviews, CodeLens, inlay hints, semantic tokens,
+adapters, tests, tasks, webview views, CodeLens, inlay hints, semantic tokens,
 notebooks and others, listed in [GAPS.md](GAPS.md)) is accepted and does
 nothing. Getting them there took every VS Code enum and class in the
 shim, `extensionDependencies` activating first, `workspace.findFiles`,

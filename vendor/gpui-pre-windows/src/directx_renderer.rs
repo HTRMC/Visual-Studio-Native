@@ -1,4 +1,6 @@
 use std::{
+    cell::RefCell,
+    collections::HashMap,
     slice,
     sync::{Arc, OnceLock},
 };
@@ -7,7 +9,7 @@ use anyhow::{Context, Result};
 use gpui_util::ResultExt;
 use windows::{
     Win32::{
-        Foundation::HWND,
+        Foundation::{HWND, RECT},
         Graphics::{
             Direct3D::*,
             Direct3D11::*,
@@ -28,6 +30,31 @@ const RENDER_TARGET_FORMAT: DXGI_FORMAT = DXGI_FORMAT_B8G8R8A8_UNORM;
 // This configuration is used for MSAA rendering on paths only, and it's guaranteed to be supported by DirectX 11.
 const PATH_MULTISAMPLE_COUNT: u32 = 4;
 const MAX_INSTANCE_BUFFER_SIZE: usize = 256 * 1024 * 1024;
+
+/// vsn: a quad of this exact color is drawn as a hole, clearing its pixels to
+/// transparent so the window's webview layer (`webview_layer`) shows through
+/// it. Whatever is drawn above it in z-order, such as menus, covers the
+/// webview as it would any other element.
+pub const WEBVIEW_HOLE: Hsla = Hsla {
+    h: 0.5,
+    s: 0.25,
+    l: 0.125,
+    a: 1.0 / 256.0,
+};
+
+thread_local! {
+    /// vsn: each window's composition device and webview layer, a visual
+    /// behind the swap chain's.
+    static WEBVIEW_LAYERS: RefCell<HashMap<isize, (IDCompositionDevice, IDCompositionVisual)>> =
+        RefCell::default();
+}
+
+/// vsn: window `hwnd`'s composition device and the visual to add webviews
+/// to, which shows through `WEBVIEW_HOLE` quads. None without
+/// DirectComposition. Both change when the GPU device is lost.
+pub fn webview_layer(hwnd: isize) -> Option<(IDCompositionDevice, IDCompositionVisual)> {
+    WEBVIEW_LAYERS.with_borrow(|layers| layers.get(&hwnd).cloned())
+}
 
 pub(crate) struct FontInfo {
     pub gamma_ratios: [f32; 4],
@@ -119,6 +146,9 @@ struct DirectComposition {
     comp_device: IDCompositionDevice,
     comp_target: IDCompositionTarget,
     comp_visual: IDCompositionVisual,
+    /// vsn: the target's root, holding `webview_layer` under `comp_visual`.
+    comp_root: IDCompositionVisual,
+    hwnd: HWND,
 }
 
 impl DirectXRendererDevices {
@@ -368,7 +398,7 @@ impl DirectXRenderer {
                 .map(|annotation| Annotation::new(annotation, HSTRING::from(batch.label())));
             match batch {
                 PrimitiveBatch::Shadows(range) => self.draw_shadows(range.start, range.len()),
-                PrimitiveBatch::Quads(range) => self.draw_quads(range.start, range.len()),
+                PrimitiveBatch::Quads(range) => self.draw_quads_and_holes(scene, range),
                 PrimitiveBatch::Paths(range) => {
                     let paths = &scene.paths[range];
                     self.draw_paths_to_intermediate(paths)?;
@@ -594,6 +624,40 @@ impl DirectXRenderer {
             start as u32,
             len as u32,
         )
+    }
+
+    /// vsn: quads, with `WEBVIEW_HOLE` ones cleared in their place.
+    fn draw_quads_and_holes(&mut self, scene: &Scene, range: std::ops::Range<usize>) -> Result<()> {
+        let mut start = range.start;
+        for ix in range.clone() {
+            let quad = &scene.quads[ix];
+            if quad.background.as_solid() != Some(WEBVIEW_HOLE) {
+                continue;
+            }
+            self.draw_quads(start, ix - start)?;
+            self.clear_hole(quad)?;
+            start = ix + 1;
+        }
+        self.draw_quads(start, range.end - start)
+    }
+
+    fn clear_hole(&mut self, quad: &Quad) -> Result<()> {
+        let bounds = quad.bounds.intersect(&quad.content_mask.bounds);
+        if bounds.is_empty() {
+            return Ok(());
+        }
+        let devices = self.devices.as_ref().context("devices missing")?;
+        let resources = self.resources.as_ref().context("resources missing")?;
+        let view = resources.render_target_view.as_ref().context("missing render target view")?;
+        let context: ID3D11DeviceContext1 = devices.device_context.cast()?;
+        let rect = RECT {
+            left: bounds.origin.x.0.round() as i32,
+            top: bounds.origin.y.0.round() as i32,
+            right: (bounds.origin.x.0 + bounds.size.width.0).round() as i32,
+            bottom: (bounds.origin.y.0 + bounds.size.height.0).round() as i32,
+        };
+        unsafe { context.ClearView(view, &[0.0; 4], Some(&[rect])) };
+        Ok(())
     }
 
     fn draw_quads(&mut self, start: usize, len: usize) -> Result<()> {
@@ -1016,21 +1080,44 @@ impl DirectComposition {
         let comp_device = get_comp_device(dxgi_device)?;
         let comp_target = unsafe { comp_device.CreateTargetForHwnd(hwnd, true) }?;
         let comp_visual = unsafe { comp_device.CreateVisual() }?;
+        let comp_root = unsafe { comp_device.CreateVisual() }?;
+        let webviews = unsafe { comp_device.CreateVisual() }?;
+        unsafe {
+            comp_root.AddVisual(&comp_visual, true, None)?;
+            comp_root.AddVisual(&webviews, false, &comp_visual)?;
+        }
+        WEBVIEW_LAYERS.with_borrow_mut(|layers| {
+            layers.insert(hwnd.0 as isize, (comp_device.clone(), webviews))
+        });
 
         Ok(Self {
             comp_device,
             comp_target,
             comp_visual,
+            comp_root,
+            hwnd,
         })
     }
 
     pub fn set_swap_chain(&self, swap_chain: &IDXGISwapChain1) -> Result<()> {
         unsafe {
             self.comp_visual.SetContent(swap_chain)?;
-            self.comp_target.SetRoot(&self.comp_visual)?;
+            self.comp_target.SetRoot(&self.comp_root)?;
             self.comp_device.Commit()?;
         }
         Ok(())
+    }
+}
+
+impl Drop for DirectComposition {
+    fn drop(&mut self) {
+        let hwnd = self.hwnd.0 as isize;
+        WEBVIEW_LAYERS.with_borrow_mut(|layers| {
+            let ours = (layers.get(&hwnd)).is_some_and(|(device, _)| *device == self.comp_device);
+            if ours {
+                layers.remove(&hwnd);
+            }
+        });
     }
 }
 

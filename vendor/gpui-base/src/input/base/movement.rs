@@ -155,7 +155,9 @@ impl<M: InputModeKind> InputBaseState<M> {
                 if let Some((x, line_end_affinity)) = line.closest_index_for_position(
                     Point {
                         x: preferred_x,
-                        y: next_display_point.local_row * last_layout.line_height,
+                        // vsn: below any rows reserved above the text (a CodeLens).
+                        y: line.text_top(last_layout.line_height)
+                            + next_display_point.local_row * last_layout.line_height,
                     },
                     last_layout,
                 ) {

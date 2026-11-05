@@ -121,6 +121,16 @@ pub trait InputExtras: Default + 'static {
     fn context_menu_capabilities(&self) -> (bool, bool) {
         (false, false)
     }
+
+    /// vsn: inlay hints, sorted by offset.
+    fn inlay_hints(&self) -> &[crate::input::InlayHint] {
+        &[]
+    }
+
+    /// vsn: CodeLens rows, one per line, sorted by line.
+    fn code_lenses(&self) -> &[crate::input::CodeLens] {
+        &[]
+    }
 }
 
 /// A mode with nothing extra to render.
@@ -359,6 +369,12 @@ pub struct EditorExtras {
     pub(crate) hover_popover: Option<HoverPopoverState>,
     pub(crate) hover_definition: HoverDefinition,
     pub(crate) context_menu_task: Task<anyhow::Result<()>>,
+    // vsn: inlay hints, sorted by offset.
+    pub(crate) inlay_hints: Vec<crate::input::InlayHint>,
+    // vsn: one CodeLens row per line, sorted by line, and the byte offset of
+    // each one's line start, which edits shift to keep `line` current.
+    pub(crate) code_lenses: Vec<crate::input::CodeLens>,
+    pub(crate) code_lens_anchors: Vec<usize>,
 }
 
 impl Default for EditorExtras {
@@ -372,6 +388,9 @@ impl Default for EditorExtras {
             hover_popover: None,
             hover_definition: HoverDefinition::default(),
             context_menu_task: Task::ready(Ok(())),
+            inlay_hints: Vec::new(),
+            code_lenses: Vec::new(),
+            code_lens_anchors: Vec::new(),
         }
     }
 }

@@ -317,6 +317,31 @@ impl Workbench {
         self.launch(config, no_debug, window, cx);
     }
 
+    /// An extension's `debug.startDebugging`: its configuration, or a
+    /// launch.json one by name.
+    pub(super) fn debug_with(
+        &mut self,
+        config: Option<Value>,
+        name: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.debug.session.is_some() {
+            return self.note("A debug session is already running".into(), Severity::Info, cx);
+        }
+        let config = config.or_else(|| {
+            let configs = self.launch_configs()?;
+            configs.iter().find(|c| c["name"].as_str() == name.as_deref()).cloned()
+        });
+        let Some(mut config) = config else {
+            let name = name.unwrap_or_default();
+            return self.note(format!("No launch configuration named '{name}'").into(), Severity::Error, cx);
+        };
+        substitute(&mut config, &self.variables(cx));
+        let no_debug = config["noDebug"] == true;
+        self.launch(config, no_debug, window, cx);
+    }
+
     fn launch(
         &mut self,
         mut config: Value,
@@ -2135,6 +2160,19 @@ fn substitute(value: &mut Value, vars: &HashMap<&str, String>) {
     }
 }
 
+/// lldb-dap on PATH, else where LLVM's Windows installer puts it, which
+/// isn't on PATH unless asked for.
+fn lldb_dap() -> String {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let on_path = std::env::split_paths(&path)
+        .any(|d| d.join("lldb-dap.exe").is_file() || d.join("lldb-dap").is_file());
+    let llvm = Path::new(r"C:\Program Files\LLVM\bin\lldb-dap.exe");
+    match !on_path && llvm.is_file() {
+        true => llvm.display().to_string(),
+        false => "lldb-dap".into(),
+    }
+}
+
 /// The adapter for a configuration's `type`, with VS Code's C++ and Go
 /// extension options mapped onto the debuggers' own DAP ones. Any other
 /// adapter works once started in server mode and named by `debugServer`.
@@ -2162,11 +2200,14 @@ fn adapter(config: &mut Value) -> Result<Adapter, String> {
                 config["env"] = env.into();
             }
             match config["MIMode"].as_str() {
-                Some("lldb") => Ok(Adapter::Stdio("lldb-dap".into(), vec![])),
+                Some("lldb") => Ok(Adapter::Stdio(lldb_dap(), vec![])),
                 _ => Ok(gdb(&config["miDebuggerPath"])),
             }
         }
-        "lldb" | "lldb-dap" => Ok(Adapter::Stdio(tool("lldbDapPath", "lldb-dap"), vec![])),
+        "lldb" | "lldb-dap" => Ok(Adapter::Stdio(
+            config["lldbDapPath"].as_str().map_or_else(lldb_dap, str::to_string),
+            vec![],
+        )),
         "debugpy" | "python" => Ok(Adapter::Stdio(
             tool("python", "python"),
             vec!["-m".into(), "debugpy.adapter".into()],

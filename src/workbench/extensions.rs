@@ -19,7 +19,9 @@ use std::{
 use serde_json::{Map, Value, json};
 
 use gpui_kit::base::input::language_config::LanguageConfig;
-use gpui_kit::base::input::{AutoClosingPair, BracketPair, IndentationRules, SyntaxContext};
+use gpui_kit::base::input::{
+    AutoClosingPair, BracketPair, IndentAction, IndentationRules, OnEnterRule, SyntaxContext,
+};
 use gpui_kit::component::{Theme, ThemeConfig, ThemeMode, ThemeRegistry, text::TextView};
 
 use super::debug::strip_jsonc;
@@ -459,8 +461,16 @@ pub(crate) fn language_of(name: &str) -> Option<&'static str> {
     let name = name.to_lowercase();
     let langs = LANGS.read().unwrap();
     (langs.iter().find(|l| l.filenames.contains(&name)))
+        // The longest ending wins, as in VS Code: .drawio.svg over .svg.
         .or_else(|| {
-            (langs.iter()).find(|l| l.extensions.iter().any(|e| name.ends_with(e.as_str())))
+            (langs.iter())
+                .filter_map(|l| {
+                    let e = l.extensions.iter().filter(|e| name.ends_with(e.as_str()));
+                    Some((e.map(|e| e.len()).max()?, l))
+                })
+                .rev()
+                .max_by_key(|(len, _)| *len)
+                .map(|(_, l)| l)
         })
         .map(|l| l.id)
 }
@@ -488,13 +498,33 @@ pub(crate) fn comments(id: &str) -> Option<(Option<&'static str>, Option<BlockCo
         .then_some((l.line_comment, l.block_comment))
 }
 
-/// An extension language's brackets, auto-closing pairs and indentation
-/// rules, over the editor's defaults.
+/// Languages' configurations from extensions' `setLanguageConfiguration`,
+/// over their language-configuration.json.
+static SET_CONFIGS: LazyLock<RwLock<HashMap<String, Value>>> = LazyLock::new(Default::default);
+
+/// An extension's `setLanguageConfiguration` for `id`, or its dispose (null).
+pub(crate) fn set_config(id: &str, config: Value) {
+    let mut set = SET_CONFIGS.write().unwrap();
+    match config {
+        Value::Object(_) => set.insert(id.to_string(), config),
+        _ => set.remove(id),
+    };
+}
+
+/// An extension language's brackets, auto-closing pairs, indentation and
+/// on-Enter rules, over the editor's defaults.
 pub(crate) fn editing(id: &str) -> Option<LanguageConfig> {
     let langs = LANGS.read().unwrap();
-    Some(editing_of(
-        langs.iter().find(|l| l.id == id)?.config.as_ref()?,
-    ))
+    let file = langs.iter().find(|l| l.id == id).and_then(|l| l.config.as_ref());
+    let set = SET_CONFIGS.read().unwrap();
+    let mut config = match (file, set.get(id)) {
+        (None, None) => return None,
+        (file, _) => file.cloned().unwrap_or_else(|| json!({})),
+    };
+    for (k, v) in set.get(id).and_then(Value::as_object).into_iter().flatten() {
+        config[k] = v.clone();
+    }
+    Some(editing_of(&config))
 }
 
 // ponytail: the regex crate has no lookaround, which some VS Code
@@ -541,6 +571,38 @@ fn editing_of(config: &Value) -> LanguageConfig {
         r.increase_indent_pattern = pattern("increaseIndentPattern");
         r.decrease_indent_pattern = pattern("decreaseIndentPattern");
         out = out.indentation_rules(r);
+    }
+    // `"x"`, `{ "pattern": "x" }`, or from the JS host a RegExp's source.
+    let regex = |p: &Value| {
+        let p = p.as_str().or(p["pattern"].as_str())?;
+        regex::Regex::new(p).ok().map(std::sync::Arc::new)
+    };
+    if let Some(list) = config["onEnterRules"].as_array() {
+        out = out.on_enter_rules(list.iter().filter_map(|r| {
+            let action = &r["action"];
+            Some(OnEnterRule {
+                before: regex(&r["beforeText"])?,
+                after: (!r["afterText"].is_null()).then(|| regex(&r["afterText"])).flatten(),
+                previous_line: (!r["previousLineText"].is_null())
+                    .then(|| regex(&r["previousLineText"]))
+                    .flatten(),
+                // Numbers from the JS host, names in language-configuration.json.
+                action: match &action["indent"].as_str().or(action["indentAction"].as_str()) {
+                    Some("indent") => IndentAction::Indent,
+                    Some("indentOutdent") => IndentAction::IndentOutdent,
+                    Some("outdent") => IndentAction::Outdent,
+                    Some(_) => IndentAction::None,
+                    None => match action["indentAction"].as_u64() {
+                        Some(1) => IndentAction::Indent,
+                        Some(2) => IndentAction::IndentOutdent,
+                        Some(3) => IndentAction::Outdent,
+                        _ => IndentAction::None,
+                    },
+                },
+                append_text: action["appendText"].as_str().unwrap_or_default().to_string().into(),
+                remove_text: action["removeText"].as_u64().unwrap_or(0) as usize,
+            })
+        }));
     }
     out
 }
@@ -596,12 +658,21 @@ pub(crate) fn snippets(lang: &str) -> Vec<Snippet> {
 }
 
 thread_local! {
-    /// The snippets the completion menu last offered: their file, where
-    /// they'd start, and each one's text and tab stops.
+    /// The snippets the completion menu last offered: their file, and each
+    /// one's start, text and tab stops.
     pub(crate) static OFFERED: std::cell::RefCell<Option<Offered>> = const { std::cell::RefCell::new(None) };
 }
 
-pub(crate) type Offered = (PathBuf, usize, Vec<(String, Vec<Range<usize>>)>);
+pub(crate) type Offered = (PathBuf, Vec<(usize, String, Vec<Range<usize>>)>);
+
+/// Adds `list` to the snippets offered in `path`, replacing those offered in
+/// another file.
+pub(crate) fn offer(path: &Path, list: Vec<(usize, String, Vec<Range<usize>>)>) {
+    OFFERED.with_borrow_mut(|offered| match offered {
+        Some((p, old)) if p == path => old.extend(list),
+        _ => *offered = Some((path.to_path_buf(), list)),
+    });
+}
 
 /// A snippet just inserted, while Tab moves between its tab stops: its
 /// editor, the stops, the one selected and the text's length then.
@@ -1998,6 +2069,9 @@ impl Workbench {
                 self.go_to(path, at, window, cx);
             }
             super::palette::Picker::Host(id) => self.ext.answer(id, json!(ix)),
+            super::palette::Picker::OpenWith(path, mut views) => {
+                self.open_with(path, views.swap_remove(ix), window, cx)
+            }
         }
     }
 
@@ -2074,18 +2148,16 @@ impl Workbench {
         };
         let editor = doc.editor.clone();
         // The rope, not a copy of its text: that stalled big files per keystroke.
-        let (text, cursor) = editor.read_with(cx, |e, _| (e.text().clone(), e.selected_range().end));
+        let (text, cursor) =
+            editor.read_with(cx, |e, _| (e.text().clone(), e.selected_range().end));
+        // An auto-import inserted above along with it moves its start down.
         let found = OFFERED.with_borrow(|offered| {
-            let (_, start, list) = offered.as_ref().filter(|o| o.0 == doc.path)?;
-            let typed = (*start <= cursor && cursor <= text.len()).then(|| text.slice(*start..cursor));
-            let (_, stops) =
-                (list.iter()).find(|(new, _)| typed.is_some_and(|t| t == new.as_str()))?;
-            Some(
-                stops
-                    .iter()
-                    .map(|r| start + r.start..start + r.end)
-                    .collect(),
-            )
+            let (_, list) = offered.as_ref().filter(|o| o.0 == doc.path)?;
+            list.iter().find_map(|(start, new, stops)| {
+                let at = cursor.checked_sub(new.len()).filter(|at| at >= start)?;
+                (cursor <= text.len() && text.slice(at..cursor) == new.as_str())
+                    .then(|| stops.iter().map(|r| at + r.start..at + r.end).collect())
+            })
         });
         if let Some(stops) = found {
             OFFERED.set(None);
@@ -2143,7 +2215,7 @@ impl Workbench {
 mod tests {
     use serde_json::Value;
 
-    use super::{editing_of, expand, hex, token_style};
+    use super::{IndentAction, editing_of, expand, hex, token_style};
 
     #[test]
     fn language_configuration() {
@@ -2179,6 +2251,25 @@ mod tests {
                 .is_none()
         );
         assert_eq!(c.brackets.len(), 3);
+    }
+
+    #[test]
+    fn on_enter_rules() {
+        // As rust-analyzer's setLanguageConfiguration sends them.
+        let config = serde_json::json!({ "onEnterRules": [
+            { "beforeText": { "pattern": r"^\s*\/{3}.*$" }, "action": { "indentAction": 0, "appendText": "/// " } },
+            { "beforeText": { "pattern": r"^(?!\s*\/\/).*$" }, "action": { "indentAction": 1 } },
+            { "beforeText": r"^\s*/\*\*", "afterText": r"^\s*\*/$", "action": { "indent": "indentOutdent", "appendText": " * " } },
+        ]});
+        let c = editing_of(&config);
+        // The lookaround rule doesn't compile and is skipped.
+        assert_eq!(c.on_enter_rules.len(), 2);
+        let doc = &c.on_enter_rules[0];
+        assert!(doc.before.is_match("    /// docs"));
+        assert_eq!((doc.action, &*doc.append_text), (IndentAction::None, "/// "));
+        let block = &c.on_enter_rules[1];
+        assert_eq!(block.action, IndentAction::IndentOutdent);
+        assert!(block.after.as_ref().unwrap().is_match(" */"));
     }
 
     #[test]

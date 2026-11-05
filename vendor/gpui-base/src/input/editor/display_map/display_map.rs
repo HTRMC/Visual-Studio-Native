@@ -9,6 +9,7 @@ use std::ops::Range;
 use gpui::{App, Font, Pixels};
 use ropey::Rope;
 
+use super::block_rows::BlockRows;
 use super::fold_map::FoldMap;
 use super::folding::FoldRange;
 pub use super::text_wrapper::WrappingIndent;
@@ -29,6 +30,8 @@ use crate::input::rope_ext::RopeExt as _;
 pub struct DisplayMap {
     wrap_map: WrapMap,
     fold_map: FoldMap,
+    // vsn: rows above buffer lines (CodeLens), layered over display rows.
+    blocks: BlockRows,
 }
 
 impl DisplayMap {
@@ -36,6 +39,7 @@ impl DisplayMap {
         Self {
             wrap_map: WrapMap::new(font, font_size, wrap_width),
             fold_map: FoldMap::new(),
+            blocks: BlockRows::default(),
         }
     }
 
@@ -281,6 +285,83 @@ impl DisplayMap {
             self.fold_map
                 .mark_dirty_with_wrap_count(self.wrap_map.wrap_row_count());
         }
+        self.rebuild_blocks();
+    }
+
+    // ==================== vsn: Block Rows (CodeLens) ====================
+    //
+    // A block row is painted above a buffer line's first display row and is
+    // one line tall. Display rows keep meaning text rows; "visual rows" count
+    // the blocks too and are what pixel geometry is measured in. With no
+    // blocks, a visual row is a display row.
+
+    /// vsn: place the visible blocks after any change to the text, wrapping or
+    /// folds. Costs nothing with no blocks.
+    fn rebuild_blocks(&mut self) {
+        if self.blocks.is_empty() {
+            self.blocks.rebuild(|_| None);
+            return;
+        }
+        let line_count = self.wrap_map.buffer_line_count();
+        let wrap_map = &self.wrap_map;
+        let fold_map = &self.fold_map;
+        self.blocks.rebuild(|line| {
+            if line >= line_count {
+                return None;
+            }
+            wrap_map
+                .buffer_line_to_wrap_row_range(line)
+                .find_map(|wrap_row| fold_map.wrap_row_to_display_row(wrap_row))
+        });
+    }
+
+    /// vsn: the buffer lines that get a block row above them, and rebuild.
+    pub(crate) fn set_block_lines(&mut self, lines: Vec<usize>) {
+        self.blocks.set_lines(lines);
+        self.rebuild_blocks();
+    }
+
+    /// vsn: the buffer lines that get a block row above them, for a caller
+    /// that is about to rebuild anyway (an edit, before `on_text_changed`).
+    pub(crate) fn set_block_lines_deferred(&mut self, lines: Vec<usize>) {
+        self.blocks.set_lines(lines);
+    }
+
+    /// vsn: whether a visible block row sits above this buffer line.
+    #[inline]
+    pub(crate) fn has_block_above(&self, line: usize) -> bool {
+        self.blocks.has_block_above(line)
+    }
+
+    /// vsn: how many block rows are visible.
+    #[inline]
+    pub fn block_row_count(&self) -> usize {
+        self.blocks.row_count()
+    }
+
+    /// vsn: the visual row a display row's text is drawn at.
+    #[inline]
+    pub fn display_row_to_visual_row(&self, display_row: usize) -> usize {
+        self.blocks.display_row_to_visual_row(display_row)
+    }
+
+    /// vsn: the visual row of the top of a display row, block included.
+    #[inline]
+    pub fn display_row_block_top(&self, display_row: usize) -> usize {
+        self.blocks.display_row_block_top(display_row)
+    }
+
+    /// vsn: the display row a visual row belongs to; a block row belongs to
+    /// the display row under it.
+    #[inline]
+    pub fn visual_row_to_display_row(&self, visual_row: usize) -> usize {
+        self.blocks.visual_row_to_display_row(visual_row)
+    }
+
+    /// vsn: display rows plus block rows.
+    #[inline]
+    pub fn visual_row_count(&self) -> usize {
+        self.display_row_count() + self.blocks.row_count()
     }
 
     // ==================== Wrap Display Point Operations ====================

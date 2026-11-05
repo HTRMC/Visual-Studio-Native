@@ -1,5 +1,7 @@
 //! A visual row whose offsets remain in source UTF-8 bytes.
-use gpui::{App, Pixels, Point, ShapedLine, SharedString, TextAlign, Window, point, px};
+use gpui::{
+    App, Bounds, Hsla, Pixels, Point, ShapedLine, SharedString, TextAlign, Window, point, px, size,
+};
 use std::ops::Range;
 
 pub(crate) struct InlineFragment {
@@ -7,6 +9,24 @@ pub(crate) struct InlineFragment {
     pub(crate) x: Pixels,
     pub(crate) width: Pixels,
     pub(crate) text: Option<ShapedLine>,
+    /// vsn: an inlay hint, painted in this fragment's empty range.
+    pub(crate) hint: Option<Box<HintFragment>>,
+}
+
+/// vsn: an inlay hint laid out as an inline fragment: `range` is empty, at
+/// the offset the hint is painted at, so the hint takes space but no text.
+pub(crate) struct HintFragment {
+    /// The whole label, shaped once.
+    pub(crate) label: ShapedLine,
+    /// Where the label starts, from the fragment's left edge.
+    pub(crate) label_x: Pixels,
+    /// The rounded background, from the fragment's left edge.
+    pub(crate) chip: Range<Pixels>,
+    pub(crate) background: Hsla,
+    /// Each label part's x range, from the label's left edge, and its id.
+    pub(crate) parts: Vec<(Range<Pixels>, Option<usize>)>,
+    /// A caret at the hint's offset is drawn before the hint, not after it.
+    pub(crate) attach_left: bool,
 }
 
 pub(crate) struct InputLine {
@@ -42,11 +62,27 @@ impl InputLine {
             content: Content::Inline(fragments),
         }
     }
+    /// vsn: the inlay hints in this row, with their fragments.
+    pub(crate) fn hint_fragments(&self) -> impl Iterator<Item = (&InlineFragment, &HintFragment)> {
+        let fragments = match &self.content {
+            Content::Inline(fragments) => fragments.as_slice(),
+            Content::Text(_) => &[],
+        };
+        fragments
+            .iter()
+            .filter_map(|f| f.hint.as_deref().map(|hint| (f, hint)))
+    }
+
     pub(crate) fn x_for_index(&self, ix: usize) -> Pixels {
         match &self.content {
             Content::Text(line) => line.x_for_index(ix),
             Content::Inline(fragments) => {
                 for f in fragments {
+                    // vsn: a caret at a hint that belongs to the text before
+                    // it is drawn before the hint.
+                    if f.hint.as_ref().is_some_and(|hint| hint.attach_left) && ix == f.range.start {
+                        return f.x;
+                    }
                     if ix < f.range.end {
                         return f.x
                             + f.text.as_ref().map_or(
@@ -139,6 +175,26 @@ impl InputLine {
                     _ => px(0.),
                 };
                 for f in fragments {
+                    // vsn: an inlay hint: a faint rounded chip, then its label.
+                    if let Some(hint) = &f.hint {
+                        if !background {
+                            let inset = (height / 10.).round();
+                            let chip = Bounds::new(
+                                pos + point(offset + f.x + hint.chip.start, inset),
+                                size(hint.chip.end - hint.chip.start, height - inset * 2.),
+                            );
+                            window.paint_quad(gpui::fill(chip, hint.background).corner_radii(px(3.)));
+                            let _ = hint.label.paint(
+                                pos + point(offset + f.x + hint.label_x, px(0.)),
+                                height,
+                                TextAlign::Left,
+                                None,
+                                window,
+                                cx,
+                            );
+                        }
+                        continue;
+                    }
                     if let Some(line) = &f.text {
                         paint(
                             line,

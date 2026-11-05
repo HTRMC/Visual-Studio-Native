@@ -68,6 +68,35 @@ impl IndentationRules {
     }
 }
 
+/// vsn: what Enter does to the new line's indentation under an [`OnEnterRule`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum IndentAction {
+    /// The current line's indentation.
+    #[default]
+    None,
+    /// One level more.
+    Indent,
+    /// One level more, and the text after the caret on a further line at the
+    /// current indentation.
+    IndentOutdent,
+    /// One level less.
+    Outdent,
+}
+
+/// vsn: VS Code's `onEnterRules`: the first rule whose patterns match the
+/// text before the caret (and after it, and the previous line, when given)
+/// decides the new line's indentation and adds `append_text` to it.
+#[derive(Debug, Clone)]
+pub struct OnEnterRule {
+    pub before: Arc<Regex>,
+    pub after: Option<Arc<Regex>>,
+    pub previous_line: Option<Arc<Regex>>,
+    pub action: IndentAction,
+    pub append_text: SharedString,
+    /// Characters removed from the end of the new line's indentation.
+    pub remove_text: usize,
+}
+
 /// Declarative language editing rules, independent of editor preferences and parsers.
 ///
 /// Mirrors the supported subset of Monaco's language configuration. `None` for
@@ -83,6 +112,8 @@ pub struct LanguageConfig {
     /// Automatic insertion is allowed before these characters, whitespace, or EOF.
     pub auto_close_before: SharedString,
     pub indentation_rules: Option<IndentationRules>,
+    // vsn: VS Code's onEnterRules, tried in order.
+    pub on_enter_rules: Vec<OnEnterRule>,
 }
 
 impl Default for LanguageConfig {
@@ -112,6 +143,7 @@ impl Default for LanguageConfig {
             auto_closing_pairs: Some(pairs),
             auto_close_before: ";:.,=}])>".into(),
             indentation_rules: None,
+            on_enter_rules: Vec::new(),
         }
     }
 }
@@ -132,6 +164,21 @@ impl LanguageConfig {
     pub fn indentation_rules(mut self, rules: IndentationRules) -> Self {
         self.indentation_rules = Some(rules);
         self
+    }
+    /// vsn: VS Code's onEnterRules.
+    pub fn on_enter_rules(mut self, rules: impl IntoIterator<Item = OnEnterRule>) -> Self {
+        self.on_enter_rules = rules.into_iter().collect();
+        self
+    }
+
+    /// vsn: the first on-Enter rule for a caret with `before` and `after` on
+    /// its line, below `previous`.
+    pub(crate) fn on_enter(&self, before: &str, after: &str, previous: &str) -> Option<&OnEnterRule> {
+        self.on_enter_rules.iter().find(|r| {
+            r.before.is_match(before)
+                && r.after.as_ref().is_none_or(|p| p.is_match(after))
+                && r.previous_line.as_ref().is_none_or(|p| p.is_match(previous))
+        })
     }
 
     pub(crate) fn closing_pairs(&self) -> impl Iterator<Item = (&str, &str, &[SyntaxContext])> {

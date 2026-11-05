@@ -85,7 +85,7 @@ pub(super) struct Host {
     generation: usize,
     crashes: usize,
     /// The window, for the palette an extension's quick pick or input box opens.
-    window: Option<AnyWindowHandle>,
+    pub(super) window: Option<AnyWindowHandle>,
     /// Notifications with an extension's buttons: the host's question and the
     /// buttons' titles.
     pub(super) buttons: HashMap<SharedString, (u64, Vec<String>)>,
@@ -105,7 +105,7 @@ pub(super) struct Host {
 }
 
 impl Host {
-    fn send(&self, msg: Value) {
+    pub(super) fn send(&self, msg: Value) {
         if let Some(out) = &self.out {
             out.send(msg.to_string() + "\n").ok();
         }
@@ -188,6 +188,12 @@ fn wants(ext: &Extension, event: &str, root: Option<&Path>) -> bool {
                 .flat_map(|views| views.as_array().into_iter().flatten())
                 .any(|v| v["id"].as_str() == Some(view))
         })
+        || event
+            .strip_prefix("onCustomEditor:")
+            .is_some_and(|view_type| {
+                ext.contributes("customEditors")
+                    .any(|c| c["viewType"].as_str() == Some(view_type))
+            })
 }
 
 /// An extension's view container in the activity bar.
@@ -613,6 +619,11 @@ impl When<'_> {
 pub(super) fn editor_context_menu(menu: NativeMenu, path: &Path, window: &Window) -> NativeMenu {
     let menu = menu
         .menu("Go to Definition", Box::new(input::GoToDefinition))
+        .menu("Go to Type Definition", Box::new(GoToTypeDefinition))
+        .menu("Go to Implementations", Box::new(GoToImplementation))
+        .menu("Go to References", Box::new(FindAllReferences))
+        .menu("Show Call Hierarchy", Box::new(ShowCallHierarchy))
+        .separator()
         .menu("Show Code Actions", Box::new(input::ToggleCodeActions))
         .separator()
         .menu("Cut", Box::new(input::Cut))
@@ -686,6 +697,7 @@ const BUILTINS: &[Builtin] = builtins! {
     "workbench.action.files.saveAll" => SaveAll,
     "workbench.action.files.saveAs" => SaveAs,
     "workbench.action.files.revert" => RevertFile,
+    "workbench.action.reopenWithEditor" => ReopenEditorWith,
     "workbench.action.files.openFile" => OpenFile,
     "workbench.action.files.openFolder" => OpenFolder,
     "workbench.action.files.newUntitledFile" => NewTextFile,
@@ -832,6 +844,11 @@ const BUILTINS: &[Builtin] = builtins! {
     "editor.action.rename" => RenameSymbol,
     "editor.action.goToReferences" => FindAllReferences,
     "editor.action.referenceSearch.trigger" => FindAllReferences,
+    "editor.action.goToTypeDefinition" => GoToTypeDefinition,
+    "editor.action.goToImplementation" => GoToImplementation,
+    "editor.action.revealDeclaration" => GoToDeclaration,
+    "editor.showCallHierarchy" => ShowCallHierarchy,
+    "references-view.showCallHierarchy" => ShowCallHierarchy,
     "editor.action.triggerParameterHints" => TriggerParameterHints,
     "editor.action.trimTrailingWhitespace" => TrimTrailingWhitespace,
     "editor.action.indentUsingSpaces" => IndentUsingSpaces,
@@ -976,7 +993,7 @@ impl Workbench {
             let sel = e.selected_range();
             let [start, end] = [sel.start, sel.end].map(|o| e.text().offset_to_position(o));
             json!({
-                "uri": super::lsp::path_uri(&d.path),
+                "uri": d.uri.clone().unwrap_or_else(|| super::lsp::path_uri(&d.path)),
                 "path": d.path,
                 "languageId": d.lang,
                 "text": e.value(),
@@ -991,6 +1008,65 @@ impl Workbench {
         wasmhost::World {
             settings: terminal::settings(),
             editor: self.active_editor(cx),
+        }
+    }
+
+    /// Opens what window.showTextDocument names: a file, or an extension's
+    /// read-only document, then selects `selection` there.
+    fn show_document(&mut self, msg: &Value, window: &mut Window, cx: &mut Context<Self>) {
+        let uri = msg["uri"].as_str().unwrap_or_default().to_string();
+        match super::lsp::uri_path(&uri) {
+            Some(path) => self.open_path(path, window, cx),
+            None => match self.docs.iter().position(|d| d.uri.as_ref() == Some(&uri)) {
+                Some(ix) => {
+                    let editor = self.docs[ix].editor.clone();
+                    set_virtual_text(
+                        &editor,
+                        msg["text"].as_str().unwrap_or_default(),
+                        window,
+                        cx,
+                    );
+                    self.activate(ix, window, cx);
+                }
+                None => {
+                    // Named by its uri's last segment, as VS Code's tab is.
+                    let name = uri.trim_end_matches('/').rsplit('/').next().unwrap_or(&uri);
+                    let path = PathBuf::from(name);
+                    let text = msg["text"].as_str().unwrap_or_default().to_string();
+                    self.push_doc(path, text, Encoding::Utf8, false, true, window, cx);
+                    let doc = self.docs.last_mut().unwrap();
+                    doc.uri = Some(uri);
+                    doc.editor.update(cx, |e, cx| e.set_readonly(true, cx));
+                }
+            },
+        }
+        let sel = msg["selection"].clone();
+        if let (Ok(sel), Some(doc)) = (
+            serde_json::from_value::<lsp_types::Range>(sel),
+            self.docs.get(self.active),
+        ) {
+            let editor = doc.editor.clone();
+            reveal(&editor, sel.start, window, cx);
+            editor.update(cx, |e, cx| {
+                let text = e.text().clone();
+                let [a, b] = [sel.start, sel.end].map(|p| text.position_to_offset(&p));
+                e.set_selected_range(a..b, cx);
+            });
+        }
+    }
+
+    /// Runs command `id`: one of VS Code's own as vsn's action, else an
+    /// extension's.
+    pub(super) fn run_any_command(
+        &mut self,
+        id: String,
+        args: Vec<Value>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match builtin_action(&id) {
+            Some(action) => window.dispatch_action(action, cx),
+            None => self.run_extension_command(id, args, cx),
         }
     }
 
@@ -1164,6 +1240,7 @@ impl Workbench {
             "settings": terminal::settings(),
             "defaults": defaults,
             "root": self.root,
+            "themeKind": if col::editor().l < 0.5 { 2 } else { 1 },
             "extensions": extensions,
             "builtins": (BUILTINS.iter().map(|b| b.0))
                 .chain(["vscode.open", "vscode.openWith", "workbench.action.reloadWindow"])
@@ -1174,6 +1251,9 @@ impl Workbench {
     }
 
     fn on_host(&mut self, msg: Value, cx: &mut Context<Self>) {
+        if self.on_webview_host(&msg, cx) {
+            return;
+        }
         let text = |k: &str| msg[k].as_str().unwrap_or_default().to_string();
         match msg["m"].as_str().unwrap_or_default() {
             "message" => {
@@ -1242,6 +1322,28 @@ impl Workbench {
                 self.error(text.lines().next().unwrap_or_default().to_string(), cx);
             }
             "log" => self.log(&text("channel"), &text("text"), cx),
+            "task" => {
+                let (name, line) = (text("name"), text("commandLine"));
+                let cwd = msg["cwd"].as_str().map(PathBuf::from);
+                let env = (msg["env"].as_array().into_iter().flatten())
+                    .filter_map(|kv| Some((kv[0].as_str()?.to_string(), kv[1].as_str()?.to_string())))
+                    .collect();
+                self.in_window(cx, move |this, window, cx| {
+                    this.run_task(name, line, cwd, env, window, cx)
+                });
+            }
+            "languageConfiguration" => {
+                let lang = text("lang");
+                extensions::set_config(&lang, msg["config"].clone());
+                // Disposed with nothing else configured: the editor's defaults.
+                let config = extensions::editing(&lang).unwrap_or_default();
+                gpui_kit::base::input::set_language_config(editor_language(&lang), config, cx);
+            }
+            "debug" => {
+                let config = msg.get("config").filter(|c| c.is_object()).cloned();
+                let name = msg["name"].as_str().map(String::from);
+                self.in_window(cx, move |this, window, cx| this.debug_with(config, name, window, cx));
+            }
             "languages" => {
                 let ids = (msg["ids"].as_array().into_iter().flatten())
                     .filter_map(|id| Some(id.as_str()?.to_string()))
@@ -1263,19 +1365,76 @@ impl Workbench {
                 };
                 self.lsp_from_host(msg["msg"].clone(), host, cx)
             }
-            "applyEdit" => {
-                let (Ok(edit), Some(window)) = (
-                    serde_json::from_value::<lsp_types::WorkspaceEdit>(msg["edit"].clone()),
-                    self.ext.window,
-                ) else {
+            // window.showTextDocument: a file, or an extension's document
+            // with its text.
+            "showDocument" => {
+                let (id, msg) = (msg["id"].as_u64(), msg.clone());
+                self.in_window(cx, move |this, window, cx| {
+                    this.show_document(&msg, window, cx);
+                    if let Some(id) = id {
+                        this.ext.answer(id, true.into());
+                    }
+                });
+            }
+            // An editor's selection set, or revealRange (`reveal`: scrolled
+            // to only).
+            "select" => {
+                let uri = text("uri");
+                let reveal_only = msg["reveal"] == true;
+                let Ok(range) = serde_json::from_value::<lsp_types::Range>(msg["range"].clone())
+                else {
                     return;
                 };
-                let this = cx.entity();
-                cx.defer(move |cx| {
-                    (window.update(cx, |_, window, cx| {
-                        this.update(cx, |this, cx| this.apply_workspace_edit(edit, window, cx))
-                    }))
-                    .ok();
+                let doc = self.docs.iter().find(|d| {
+                    d.uri.as_ref() == Some(&uri)
+                        || super::lsp::uri_path(&uri).is_some_and(|p| p == d.path)
+                });
+                let Some(editor) = doc.map(|d| d.editor.clone()) else {
+                    return;
+                };
+                self.in_window(cx, move |_, window, cx| {
+                    if reveal_only {
+                        editor.update(cx, |e, cx| {
+                            let from = e.scroll_offset();
+                            center_line(e, range.start.line, Some(from), cx)
+                        });
+                        return;
+                    }
+                    reveal(&editor, range.start, window, cx);
+                    editor.update(cx, |e, cx| {
+                        let text = e.text().clone();
+                        let [a, b] = [range.start, range.end].map(|p| text.position_to_offset(&p));
+                        e.set_selected_range(a..b, cx);
+                    });
+                });
+            }
+            "virtualText" => {
+                let uri = text("uri");
+                if let Some(doc) = self.docs.iter().find(|d| d.uri.as_ref() == Some(&uri)) {
+                    let editor = doc.editor.clone();
+                    let new = text("text");
+                    self.in_window(cx, move |this, window, cx| {
+                        set_virtual_text(&editor, &new, window, cx);
+                        if let Some(doc) = this.docs.iter_mut().find(|d| d.editor == editor) {
+                            doc.saved = text_hash(&editor, cx);
+                            doc.dirty = false;
+                        }
+                    });
+                }
+            }
+            "applyEdit" => {
+                let (id, edit) = (msg["id"].as_u64(), msg["edit"].clone());
+                let Ok(edit) = serde_json::from_value::<lsp_types::WorkspaceEdit>(edit) else {
+                    if let Some(id) = id {
+                        self.ext.answer(id, false.into());
+                    }
+                    return;
+                };
+                self.in_window(cx, move |this, window, cx| {
+                    this.apply_workspace_edit(edit, window, cx);
+                    if let Some(id) = id {
+                        this.ext.answer(id, true.into());
+                    }
                 });
             }
             "status" => {
@@ -1343,6 +1502,32 @@ impl Workbench {
                     return cx.notify();
                 }
                 let action = builtin_action(&command);
+                // draw.io posts the shortcuts pressed in it, which vsn ran already.
+                if action.is_some() && self.webview_key_echo() {
+                    return;
+                }
+                // A lens' "N references": VS Code peeks them, vsn lists them.
+                if command == "editor.action.showReferences" {
+                    let found: Vec<_> = (msg["args"][2].as_array().into_iter().flatten())
+                        .filter_map(|l| {
+                            let path = PathBuf::from(l["uri"]["fsPath"].as_str()?);
+                            Some((path, serde_json::from_value(l["range"]["start"].clone()).ok()?))
+                        })
+                        .collect();
+                    return self.in_window(cx, move |this, window, cx| match found.len() {
+                        0 => this.note("No references found".into(), Severity::Info, cx),
+                        _ => this.pick_locations(found, "References".into(), window, cx),
+                    });
+                }
+                if command == "vscode.openWith"
+                    && let Some(path) = path
+                {
+                    let view = msg["args"][1].as_str().filter(|v| *v != "default");
+                    let view = view.map(str::to_string);
+                    return self.in_window(cx, move |this, window, cx| {
+                        this.open_with(path, view, window, cx)
+                    });
+                }
                 let (Some(window), true) = (
                     self.ext.window,
                     action.is_some()
@@ -1930,4 +2115,16 @@ mod tests {
         assert_eq!(status_label("$(sync~spin)").len(), 1);
         assert_eq!(status_label("plain").len(), 1);
     }
+}
+
+/// An extension's read-only document given new text.
+fn set_virtual_text(editor: &Entity<EditorState>, text: &str, window: &mut Window, cx: &mut App) {
+    editor.update(cx, |e, cx| {
+        if e.value() == text {
+            return;
+        }
+        e.set_readonly(false, cx);
+        e.replace_all(text.to_string(), window, cx);
+        e.set_readonly(true, cx);
+    });
 }
