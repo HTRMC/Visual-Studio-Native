@@ -1323,6 +1323,8 @@ pub struct Workbench {
     /// The row with the focus outline that the keys move from: the
     /// selection, or a row right-clicked since.
     tree_cursor: Option<PathBuf>,
+    /// The explorer's type-to-find prefix and when its last key came.
+    tree_find: Option<(String, Instant)>,
     tree_focus: FocusHandle,
     /// Explorer listings (folders first, then name), dropped when the watcher sees them change.
     dirs: HashMap<PathBuf, Vec<(PathBuf, bool)>>,
@@ -1445,6 +1447,7 @@ impl Workbench {
             tree_scroll: UniformListScrollHandle::new(),
             tree_sel: None,
             tree_cursor: None,
+            tree_find: None,
             tree_focus: cx.focus_handle(),
             dirs: HashMap::new(),
             watcher: None,
@@ -4552,6 +4555,33 @@ impl Workbench {
             .saturating_sub(1)
             .max(1);
         let top = (-scroll.offset().y / px(22.)).ceil() as usize;
+        // Typing a name goes to the next row starting with it; keys within a
+        // second extend it, as VS Code's keyboard navigation does.
+        let typed = (ev.keystroke.key_char.as_deref())
+            .filter(|c| c.chars().count() == 1 && !c.chars().all(char::is_whitespace));
+        if let Some(c) = typed {
+            let now = Instant::now();
+            let prefix = match self.tree_find.take() {
+                Some((p, at)) if now - at < Duration::from_secs(1) => p + &c.to_lowercase(),
+                _ => c.to_lowercase(),
+            };
+            // A fresh letter moves on from the current row; a longer prefix may stay.
+            let start = cur.map_or(0, |i| i + usize::from(prefix.chars().count() == 1));
+            let name = |i: usize| {
+                let p = &rows[i % rows.len()].0;
+                p.file_name().unwrap_or_default().to_string_lossy().to_lowercase()
+            };
+            let hit = (start..start + rows.len()).find(|&i| name(i).starts_with(&prefix));
+            self.tree_find = Some((prefix, now));
+            let Some(to) = hit.map(|i| i % rows.len()) else {
+                return cx.stop_propagation();
+            };
+            cx.stop_propagation();
+            self.tree_sel = Some(rows[to].0.clone());
+            self.tree_cursor = self.tree_sel.clone();
+            self.tree_scroll.scroll_to_item(to, ScrollStrategy::Nearest);
+            return cx.notify();
+        }
         let to = match (ev.keystroke.key.as_str(), cur, &row) {
             ("down" | "up" | "pagedown" | "pageup", None, _) | ("home", ..) => 0,
             ("end", ..) => last,

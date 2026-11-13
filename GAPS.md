@@ -224,7 +224,10 @@ Differences from VS Code still to close, smallest first within each area.
       in its menu too. F2 in an editor is still Rename Symbol.
 - [x] A deleted file's open editor is marked: its tab struck through, its
       tooltip "• Deleted"; saving writes the file back.
-- [ ] The explorer lacks type-to-find and Ctrl/Shift multi-select.
+- [x] Typing a name in the explorer goes to the next row starting with it
+      (keys within a second extend it).
+- [ ] The explorer lacks VS Code's find widget (filter/highlight mode) and
+      Ctrl/Shift multi-select.
 - [x] Ctrl+Shift+E (View: Show Explorer, View > Explorer) opens the
       explorer and puts focus in it, instead of toggling the side bar.
 - [x] The explorer's files and folders have a right-click menu: Open,
