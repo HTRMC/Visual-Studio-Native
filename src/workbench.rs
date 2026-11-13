@@ -806,8 +806,6 @@ fn lines_moved(
     })
 }
 
-/// The byte range of the whole lines `sel` touches in `text`, without the
-/// last one's line break.
 /// Cursor Undo/Redo's selections for one editor: earlier, later, and now.
 struct CursorHistory {
     editor: EntityId,
@@ -901,19 +899,21 @@ fn line_inserted(
     let line = &text[lines.start..lines.end];
     let line = line.strip_suffix('\r').unwrap_or(line);
     let indent = &line[..line.len() - line.trim_start().len()];
+    // A CRLF text gets CRLF, as Enter does.
+    let nl = if text.contains('\r') { "\r\n" } else { "\n" };
     Some(match (above, lines.end < text.len()) {
         (true, _) => {
             let at = lines.start + indent.len();
-            (lines.start..lines.start, format!("{indent}\n"), at..at)
+            (lines.start..lines.start, format!("{indent}{nl}"), at..at)
         }
         // Before the next line, so a CRLF break stays whole.
         (false, true) => {
             let at = lines.end + 1 + indent.len();
-            (lines.end + 1..lines.end + 1, format!("{indent}\n"), at..at)
+            (lines.end + 1..lines.end + 1, format!("{indent}{nl}"), at..at)
         }
         (false, false) => {
-            let at = text.len() + 1 + indent.len();
-            (text.len()..text.len(), format!("\n{indent}"), at..at)
+            let at = text.len() + nl.len() + indent.len();
+            (text.len()..text.len(), format!("{nl}{indent}"), at..at)
         }
     })
 }
@@ -1029,6 +1029,8 @@ fn edit_each(
     Some((start..text.len() - tail, out[start..out.len() - tail].to_string(), after))
 }
 
+/// The byte range of the whole lines `sel` touches in `text`, without the
+/// last one's line break.
 fn selected_lines(text: &str, sel: &Range<usize>) -> Range<usize> {
     let line_start = |i: usize| text[..i].rfind('\n').map_or(0, |n| n + 1);
     // A selection ending at a line's start doesn't take that line, as in VS Code.
@@ -8126,8 +8128,8 @@ mod tests {
         assert_eq!(apply("x", lines_deleted("x", 0..0)), ("".into(), 0..0));
         // Insert Line Below / Above keep the indent and CRLF breaks whole.
         let t = "  a\r\nb";
-        assert_eq!(apply(t, line_inserted(t, 1..1, false)), ("  a\r\n  \nb".into(), 7..7));
-        assert_eq!(apply(t, line_inserted(t, 1..1, true)), ("  \n  a\r\nb".into(), 2..2));
+        assert_eq!(apply(t, line_inserted(t, 1..1, false)), ("  a\r\n  \r\nb".into(), 7..7));
+        assert_eq!(apply(t, line_inserted(t, 1..1, true)), ("  \r\n  a\r\nb".into(), 2..2));
         assert_eq!(apply("b", line_inserted("b", 0..0, false)), ("b\n".into(), 2..2));
         // Expand Line Selection grows a line at a time.
         assert_eq!(line_selection("ab\ncd\n", 1..1), 0..3);
