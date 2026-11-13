@@ -89,6 +89,11 @@ fn builtin() -> Map<String, Value> {
             "default": "onExit",
             "markdownDescription": "[Hot Exit](https://aka.ms/vscode-hot-exit) controls whether unsaved files are remembered between sessions, allowing the save prompt when exiting the editor to be skipped.",
         },
+        "zenMode.centerLayout": {
+            "type": "boolean",
+            "default": true,
+            "description": "Controls whether turning on Zen Mode also centers the layout.",
+        },
         "editor.wordWrap": {
             "type": "string",
             "enum": ["off", "on", "wordWrapColumn", "bounded"],

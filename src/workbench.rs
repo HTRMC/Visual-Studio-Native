@@ -1462,9 +1462,9 @@ pub struct Workbench {
     minimap_drag: Rc<std::cell::Cell<Option<(Pixels, f32)>>>,
     /// Files whose editors closed, latest last, for Reopen Closed Editor.
     closed: Vec<PathBuf>,
-    /// Zen Mode: the side bar's and panel's visibility to restore, and
-    /// whether it made the window full screen.
-    zen: Option<(bool, bool, bool)>,
+    /// Zen Mode: the side bar's and panel's visibility to restore, whether
+    /// it made the window full screen, and whether the editor is centered.
+    zen: Option<(bool, bool, bool, bool)>,
     /// When Escape was last pressed in Zen Mode: a second one soon after leaves.
     zen_escape: Option<Instant>,
     /// Cursor Undo's history: the editor, its earlier selections, and the
@@ -3397,10 +3397,9 @@ impl Workbench {
 
     /// View: Toggle Zen Mode (Ctrl+K Z): full screen with only the editor,
     /// as VS Code's zenMode defaults have it.
-    // ponytail: no centered layout.
     fn toggle_zen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.zen.take() {
-            Some((sidebar, panel, full)) => {
+            Some((sidebar, panel, full, _)) => {
                 (self.sidebar, self.panel) = (sidebar, panel);
                 if full && window.is_fullscreen() {
                     window.toggle_fullscreen();
@@ -3408,7 +3407,9 @@ impl Workbench {
             }
             None => {
                 let full = !window.is_fullscreen();
-                self.zen = Some((self.sidebar, self.panel, full));
+                // zenMode.centerLayout: VS Code's golden-ratio margins.
+                let centered = terminal::settings()["zenMode.centerLayout"] != false;
+                self.zen = Some((self.sidebar, self.panel, full, centered));
                 (self.sidebar, self.panel) = (false, false);
                 if full {
                     window.toggle_fullscreen();
@@ -6851,6 +6852,7 @@ impl Render for Workbench {
         let editor = div()
             .relative()
             .size_full()
+            .when(self.zen.is_some_and(|z| z.3), |d| d.px(relative(0.1909)))
             .on_drop(cx.listener(|this, file: &DraggedFile, window, cx| {
                 this.open_path(file.0.clone(), window, cx)
             }))

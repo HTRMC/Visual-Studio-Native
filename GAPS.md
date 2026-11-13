@@ -589,7 +589,8 @@ Differences from VS Code still to close, smallest first within each area.
       Folder's Ctrl+K F.
 - [x] Zen Mode had no Escape Escape to leave; two Escapes within half a
       second now leave it.
-- [ ] Zen Mode has no centered layout.
+- [x] Zen Mode centers the editor (`zenMode.centerLayout`, VS Code's
+      golden-ratio margins); there's no View > Centered Layout outside it.
 - [x] Menus and the command palette showed only a chord's first key
       ("Ctrl+K" for Last Edit Location's Ctrl+K Ctrl+Q, Save All's Ctrl+K S).
 - [x] Do Not Disturb (the center's bell-slash button, Notifications: Toggle Do Not Disturb Mode): the bell turns bell-slash and warnings skip the toast.
