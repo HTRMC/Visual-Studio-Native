@@ -328,12 +328,12 @@ Differences from VS Code still to close, smallest first within each area.
       only, and View > Word Wrap's check follows the active editor.
 - [x] With no editor open, View > Word Wrap was still enabled; it's greyed
       out as in VS Code.
-- [ ] Still-inert menu entries: Open Recent > More..., Preferences >
-      Keyboard Shortcuts / Themes; View > Editor Layout > Split Up/Down;
-      Run > Add Configuration..., Run Task..., Run Build Task...;
-      Help's Documentation, Release Notes, Keyboard Shortcuts Reference,
-      Report Issue (VS Code opens web pages), View License, Toggle Developer
-      Tools.
+- [x] Open Recent > More..., Preferences > Themes, Run > Add
+      Configuration... (opens launch.json) and Help's Documentation, Release
+      Notes, Keyboard Shortcuts Reference and Report Issue (web pages) work.
+- [ ] Still-inert menu entries: Preferences > Keyboard Shortcuts; View >
+      Editor Layout > Split Up/Down; Run Task..., Run Build Task... (no
+      tasks); Help > View License (no license file), Toggle Developer Tools.
 - [x] File > Open Recent held only More...; it lists recent folders (not
       the open one) and files opened from outside the explorer, as VS Code.
 - [x] Reopen Closed Editor (Ctrl+Shift+T, Open Recent's first entry, the
@@ -548,8 +548,10 @@ Differences from VS Code still to close, smallest first within each area.
       Code's Ctrl+0 focuses the side bar); View > Appearance has no zoom
       items; title-bar menus that don't fit are cut off instead of moving
       into a "..." menu.
-- [ ] No Zen Mode (Ctrl+K Z), Open Recent picker (Ctrl+R) or Close Folder
-      (Ctrl+K F).
+- [x] Zen Mode (Ctrl+K Z: full screen, only the editor), Open Recent's
+      picker (Ctrl+R outside the terminal, Open Recent > More...) and Close
+      Folder's Ctrl+K F.
+- [ ] Zen Mode has no Escape Escape to leave and no centered layout.
 - [x] Menus and the command palette showed only a chord's first key
       ("Ctrl+K" for Last Edit Location's Ctrl+K Ctrl+Q, Save All's Ctrl+K S).
 - [x] Do Not Disturb (the center's bell-slash button, Notifications: Toggle Do Not Disturb Mode): the bell turns bell-slash and warnings skip the toast.

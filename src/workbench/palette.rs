@@ -79,6 +79,8 @@ fn builtin_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("File: Open Folder...", Box::new(OpenFolder)),
         ("File: Clear Recently Opened...", Box::new(ClearRecent)),
         ("View: Reopen Closed Editor", Box::new(ReopenClosedEditor)),
+        ("File: Open Recent...", Box::new(OpenRecentPicker)),
+        ("View: Toggle Zen Mode", Box::new(ToggleZenMode)),
         ("File: Save", Box::new(Save)),
         ("File: Save As...", Box::new(SaveAs)),
         ("File: Save All", Box::new(SaveAll)),
@@ -467,6 +469,8 @@ pub(super) enum Picker {
     Host(u64),
     /// Reopen Editor With...: a file's custom editors, None for text.
     OpenWith(PathBuf, Vec<Option<String>>),
+    /// File: Open Recent...: paths, true for a folder.
+    Recent(Vec<(PathBuf, bool)>),
 }
 
 pub(super) struct Palette {

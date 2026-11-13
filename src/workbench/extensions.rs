@@ -2072,6 +2072,10 @@ impl Workbench {
             super::palette::Picker::OpenWith(path, mut views) => {
                 self.open_with(path, views.swap_remove(ix), window, cx)
             }
+            super::palette::Picker::Recent(mut paths) => match paths.swap_remove(ix) {
+                (path, true) => self.set_root(path, cx),
+                (path, false) => self.open_recent(path, window, cx),
+            },
         }
     }
 

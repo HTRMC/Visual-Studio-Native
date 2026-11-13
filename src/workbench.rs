@@ -157,6 +157,8 @@ actions!(
         ZoomIn,
         ToggleMinimap,
         ReopenClosedEditor,
+        OpenRecentPicker,
+        ToggleZenMode,
         ToggleStickyScroll,
         ZoomOut,
         ZoomReset,
@@ -364,6 +366,10 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         // VS Code: Ctrl+NumPad0 (its Ctrl+0 focuses the side bar, not built here).
         KeyBinding::new("ctrl-0", ZoomReset, None),
         KeyBinding::new("ctrl-shift-t", ReopenClosedEditor, None),
+        // The terminal keeps Ctrl+R for the shell's history search, as VS Code.
+        KeyBinding::new("ctrl-r", OpenRecentPicker, Some("!terminalFocus")),
+        KeyBinding::new("ctrl-k f", CloseFolder, None),
+        KeyBinding::new("ctrl-k z", ToggleZenMode, None),
         KeyBinding::new("ctrl-d", AddNextOccurrence, Some("Input && mode == editor")),
         KeyBinding::new(
             "shift-alt-right",
@@ -1314,6 +1320,9 @@ pub struct Workbench {
     minimap_drag: Rc<std::cell::Cell<Option<(Pixels, f32)>>>,
     /// Files whose editors closed, latest last, for Reopen Closed Editor.
     closed: Vec<PathBuf>,
+    /// Zen Mode: the side bar's and panel's visibility to restore, and
+    /// whether it made the window full screen.
+    zen: Option<(bool, bool, bool)>,
     /// Notifications added since the center was last open: the bell's dot.
     unseen: usize,
     /// Whether the bell's notification center is open.
@@ -1414,6 +1423,7 @@ impl Workbench {
             sticky_scroll: terminal::settings()["editor.stickyScroll.enabled"] != false,
             minimap_drag: Default::default(),
             closed: Vec::new(),
+            zen: None,
             unseen: 0,
             center: false,
             act_hover: None,
@@ -2688,6 +2698,32 @@ impl Workbench {
         cx.notify();
     }
 
+    /// File: Open Recent... (Ctrl+R): recent folders, then files, in the
+    /// palette; the open folder and gone paths are left out.
+    fn recent_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let root = self.root.clone();
+        let paths: Vec<(PathBuf, bool)> = (self.palette.folders.iter().map(|f| (f, true)))
+            .chain(self.palette.opened.iter().map(|f| (f, false)))
+            .map(|(p, folder)| (PathBuf::from(p), folder))
+            .filter(|(p, _)| p.exists() && Some(p) != root.as_ref())
+            .collect();
+        let rows = (paths.iter())
+            .map(|(p, _)| {
+                let name = p.file_name().unwrap_or(p.as_os_str()).to_string_lossy().into_owned();
+                let dir = p.parent().map_or(String::new(), |d| d.to_string_lossy().into_owned());
+                (name, dir)
+            })
+            .collect();
+        let items = palette::Items {
+            picker: palette::Picker::Recent(paths),
+            rows,
+            groups: vec![(0, "recently opened".into())],
+            placeholder: "Select to open (hold Ctrl-key to force new window or Alt-key for same window)".into(),
+            current: 0,
+        };
+        self.open_items(items, window, cx);
+    }
+
     /// View: Reopen Closed Editor (Ctrl+Shift+T): the last closed file that
     /// is still there and not open again.
     fn reopen_closed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3040,6 +3076,31 @@ impl Workbench {
         // Clicking the active activity bar item collapses the side bar, like VS Code.
         self.sidebar = !(self.sidebar && self.view == view);
         self.view = view;
+        cx.notify();
+    }
+
+    /// View: Toggle Zen Mode (Ctrl+K Z): full screen with only the editor,
+    /// as VS Code's zenMode defaults have it.
+    // ponytail: no Escape Escape to leave, no centered layout.
+    fn toggle_zen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.zen.take() {
+            Some((sidebar, panel, full)) => {
+                (self.sidebar, self.panel) = (sidebar, panel);
+                if full && window.is_fullscreen() {
+                    window.toggle_fullscreen();
+                }
+            }
+            None => {
+                let full = !window.is_fullscreen();
+                self.zen = Some((self.sidebar, self.panel, full));
+                (self.sidebar, self.panel) = (false, false);
+                if full {
+                    window.toggle_fullscreen();
+                }
+                // Focus left in a hidden part would take the keys with it.
+                self.focus_editor(window, cx);
+            }
+        }
         cx.notify();
     }
 
@@ -6688,6 +6749,10 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &MoveLinesDown, window, cx| {
                 this.line_op(false, false, window, cx)
             }))
+            .on_action(cx.listener(|this, _: &ToggleZenMode, window, cx| this.toggle_zen(window, cx)))
+            .on_action(cx.listener(|this, _: &OpenRecentPicker, window, cx| {
+                this.recent_picker(window, cx)
+            }))
             .on_action(cx.listener(|this, _: &ReopenClosedEditor, window, cx| {
                 this.reopen_closed(window, cx)
             }))
@@ -6915,12 +6980,14 @@ impl Render for Workbench {
                 h_flex()
                     .flex_1()
                     .min_h_0()
-                    .child(self.part_sized(
-                        "activitybar",
-                        StyleRefinement::default().h_full().w(px(48.)).flex_none(),
-                        |wb, _, cx| wb.render_activitybar(cx),
-                        cx,
-                    ))
+                    .when(self.zen.is_none(), |d| {
+                        d.child(self.part_sized(
+                            "activitybar",
+                            StyleRefinement::default().h_full().w(px(48.)).flex_none(),
+                            |wb, _, cx| wb.render_activitybar(cx),
+                            cx,
+                        ))
+                    })
                     .child(
                         resizable(h_resizable("workbench"))
                             .child(
@@ -6949,7 +7016,7 @@ impl Render for Workbench {
                             ),
                     ),
             )
-            .child(
+            .when(self.zen.is_none(), |d| d.child(
                 self.part_sized(
                     "statusbar",
                     StyleRefinement::default()
@@ -6959,7 +7026,7 @@ impl Render for Workbench {
                     |wb, _, cx| wb.render_statusbar(cx).into_any_element(),
                     cx,
                 ),
-            )
+            ))
             .children(toolbar)
             .child(self.render_toasts(cx))
             .children(self.render_center(cx))
@@ -7323,7 +7390,7 @@ fn app_menu(
                     }
                     m = m.separator();
                 }
-                (m.menu("More...", Box::new(Noop)).separator())
+                (m.menu("More...", Box::new(OpenRecentPicker)).separator())
                     .menu("Clear Recently Opened...", Box::new(ClearRecent))
             })
             .separator()
@@ -7332,10 +7399,13 @@ fn app_menu(
             .map(|m| chord(m, "Save All", SaveAll))
             .separator()
             .menu_with_check("Auto Save", auto_save(), Box::new(ToggleAutoSave))
-            .submenu("Preferences", window, cx, |m, _, _| {
+            .submenu("Preferences", window, cx, |m, window, cx| {
                 m.menu("Settings", Box::new(OpenSettings))
                     .menu("Keyboard Shortcuts", Box::new(Noop))
-                    .menu("Themes", Box::new(Noop))
+                    .submenu("Themes", window, cx, |m, _, _| {
+                        m.menu("Color Theme", Box::new(SelectColorTheme))
+                            .menu("File Icon Theme", Box::new(SelectIconTheme))
+                    })
             })
             .separator()
             .menu("Revert File", Box::new(RevertFile))
@@ -7442,7 +7512,8 @@ fn app_menu(
             .menu("Restart Debugging", Box::new(RestartDebugging))
             .separator()
             .menu("Open Configurations", Box::new(OpenLaunchJson))
-            .menu("Add Configuration...", noop())
+            // ponytail: opens launch.json without VS Code's suggest list.
+            .menu("Add Configuration...", Box::new(OpenLaunchJson))
             .separator()
             .menu("Toggle Breakpoint", Box::new(ToggleBreakpoint)),
         "Terminal" => menu
@@ -7453,12 +7524,13 @@ fn app_menu(
             .menu("Run Build Task...", noop()),
         _ => menu
             .menu("Show All Commands", Box::new(CommandPalette))
-            .menu("Documentation", noop())
-            .menu("Release Notes", noop())
+            .external_link_icon(false)
+            .link("Documentation", "https://code.visualstudio.com/docs")
+            .link("Release Notes", "https://github.com/HTRMC/Visual-Studio-Native/releases")
             .separator()
-            .menu("Keyboard Shortcuts Reference", noop())
+            .link("Keyboard Shortcuts Reference", "https://go.microsoft.com/fwlink/?linkid=832145")
             .separator()
-            .menu("Report Issue", noop())
+            .link("Report Issue", "https://github.com/HTRMC/Visual-Studio-Native/issues/new")
             .separator()
             .menu("View License", noop())
             .menu("Toggle Developer Tools", noop())
