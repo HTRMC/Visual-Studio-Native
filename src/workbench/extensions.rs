@@ -234,6 +234,40 @@ pub(super) struct Listing {
     description: String,
     /// The .vsix's URL.
     download: String,
+    /// Its icon's URL and where it's cached once downloaded.
+    icon: Option<(String, PathBuf)>,
+}
+
+impl Listing {
+    /// The downloaded icon, if it's there yet.
+    // ponytail: a stat per row per render; fine for 30 rows.
+    fn icon_file(&self) -> Option<&PathBuf> {
+        self.icon.as_ref().map(|(_, path)| path).filter(|p| p.exists())
+    }
+}
+
+/// Downloads the listings' icons not cached yet, in parallel, each written
+/// whole (by a rename) so a half-written one is never shown.
+// ponytail: cached in the temp folder, which Windows cleans; never evicted otherwise.
+fn download_icons(listings: &[Listing]) {
+    std::thread::scope(|s| {
+        for (url, path) in listings.iter().filter_map(|l| l.icon.as_ref()) {
+            if path.exists() {
+                continue;
+            }
+            s.spawn(move || {
+                let mut bytes = Vec::new();
+                let Ok(mut r) = ureq::get(url).call() else { return };
+                if std::io::copy(&mut r.body_mut().as_reader(), &mut bytes).is_err() {
+                    return;
+                }
+                let part = path.with_extension("part");
+                if fs::create_dir_all(path.parent().unwrap()).is_ok() && fs::write(&part, bytes).is_ok() {
+                    fs::rename(&part, path).ok();
+                }
+            });
+        }
+    });
 }
 
 /// The Extensions view's Open VSX search.
@@ -266,6 +300,11 @@ fn search_open_vsx(query: &str) -> Result<Vec<Listing>, String> {
             .as_str()
             .unwrap_or_default()
             .to_string(),
+        icon: e["files"]["icon"].as_str().map(|url| {
+            let ext = url.rsplit('.').next().filter(|x| x.len() <= 4).unwrap_or("png");
+            let file = format!("{}.{}-{}.{ext}", s(e, "namespace"), s(e, "name"), s(e, "version"));
+            (url.to_string(), std::env::temp_dir().join("vsn-icons").join(file))
+        }),
     });
     Ok(listings.collect())
 }
@@ -1551,6 +1590,7 @@ impl Workbench {
             let found = cx
                 .background_spawn(async move { search_open_vsx(&q) })
                 .await;
+            let listings = found.as_ref().map(|l| l.clone()).unwrap_or_default();
             this.update(cx, |this, cx| {
                 if current(this) {
                     this.market.results = Some((query, found));
@@ -1558,6 +1598,9 @@ impl Workbench {
                 }
             })
             .ok();
+            // Icons come after the results, as VS Code's fill in.
+            cx.background_spawn(async move { download_icons(&listings) }).await;
+            this.update(cx, |_, cx| cx.notify()).ok();
         })
         .detach();
     }
@@ -1584,7 +1627,7 @@ impl Workbench {
 
     /// Open VSX's results for the Extensions view's search, each with Install
     /// or, once installed, its state.
-    // ponytail: no icons (they're URLs), ratings or download counts.
+    // ponytail: no ratings or download counts.
     pub(super) fn render_market(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let muted = |text: &str| {
             div()
@@ -1640,12 +1683,16 @@ impl Workbench {
                     })
                     .into_any_element()
             };
-            let icon = codicon(icon::EXTENSIONS)
-                .size(px(42.))
-                .text_size(px(32.))
-                .justify_center()
-                .text_color(col::fg_muted())
-                .into_any_element();
+            let icon = match l.icon_file() {
+                Some(path) => img(path.clone()).size(px(42.)).flex_none().into_any_element(),
+                None => codicon(icon::EXTENSIONS)
+                    .size(px(42.))
+                    .flex_none()
+                    .text_size(px(32.))
+                    .justify_center()
+                    .text_color(col::fg_muted())
+                    .into_any_element(),
+            };
             let text = [&l.name, &l.version, &l.description, &l.publisher].map(|s| s.to_string());
             let listing = l.clone();
             extension_row(("ext-market", ix), icon, text, action).on_click(cx.listener(
@@ -1940,7 +1987,7 @@ impl Workbench {
 
     /// A not-installed Open VSX result's page: its listing with Install, and
     /// the downloaded README / CHANGELOG.
-    // ponytail: no icon, ratings or Features tab until it's installed.
+    // ponytail: no ratings or Features tab until it's installed.
     fn render_listing_page(&self, ix: usize, page: &Page, l: &Listing, cx: &mut Context<Self>) -> AnyElement {
         let action = match self.market.installing.contains(&l.id) {
             true => div().text_color(col::fg_muted()).child("Installing").into_any_element(),
@@ -1962,14 +2009,17 @@ impl Workbench {
                     .into_any_element()
             }
         };
-        let header = h_flex().p(px(20.)).gap(px(20.)).child(
-            codicon(icon::EXTENSIONS)
+        let icon = match l.icon_file() {
+            Some(path) => img(path.clone()).size(px(128.)).flex_none().into_any_element(),
+            None => codicon(icon::EXTENSIONS)
                 .size(px(128.))
                 .flex_none()
                 .text_size(px(96.))
                 .justify_center()
-                .text_color(col::fg_muted()),
-        )
+                .text_color(col::fg_muted())
+                .into_any_element(),
+        };
+        let header = h_flex().p(px(20.)).gap(px(20.)).child(icon)
         .child(
             v_flex()
                 .gap(px(6.))

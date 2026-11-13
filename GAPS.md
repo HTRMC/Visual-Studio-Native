@@ -620,7 +620,7 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [ ] Snippets: a repeated tab stop isn't mirrored; edits away from the current stop put the later ones off.
 - [x] Extension details page (README, changelog) when clicking a row.
 - [x] Open VSX search and install: typing in the Extensions view searches open-vsx.org; `@installed` filters the Installed list.
-- [ ] Open VSX results have no icons, ratings or download counts, no paging past 30, no update checks, and no `@` filters besides `@installed`.
+- [ ] Open VSX results have no ratings or download counts, no paging past 30, no update checks, and no `@` filters besides `@installed`.
 - [x] Ctrl+Shift+X opens the Extensions view without focusing its search box.
 - [x] WASM plugins (`"vsn": { "wasm": ... }`) run in wasmtime with fuel and memory limits; examples/hello-wasm is a sample.
 - [x] WASM plugins got no command arguments, settings, document or questions; WIT 0.2 has them.
@@ -633,7 +633,7 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [x] Icon themes from extensions.
 - [x] An installed extension's details page: header, Disable/Uninstall, Details (README), Features, Changelog.
 - [x] Clicking an Open VSX result opens its details page (README and CHANGELOG from Open VSX, Install).
-- [ ] A not-installed extension's page has no icon, ratings or Features tab, and a README's relative images don't load.
+- [ ] A not-installed extension's page has no ratings or Features tab, and a README's relative images don't load.
 - [ ] The details page's Features tab lists raw contribution points, not VS Code's named tables per kind.
 - [ ] Icon themes' light and high contrast variants, and font (glyph) icons, are skipped; only image icons show.
 - [ ] Picking "None" as the icon theme saves `""`, not `null` (settings can't hold a null yet).
