@@ -14,6 +14,9 @@ pub(super) struct Output {
     open: Vec<String>,
     active: usize,
     list: ListState,
+    /// The filter box's text, and the active channel's lines it keeps.
+    filter: String,
+    shown: Vec<usize>,
 }
 
 impl Output {
@@ -25,14 +28,37 @@ impl Output {
             open: Vec::new(),
             active: 0,
             list,
+            filter: String::new(),
+            shown: Vec::new(),
         }
     }
 
     fn show(&mut self, ix: usize) {
         self.active = ix;
-        self.list.reset(self.channels[ix].1.len());
+        let lines = &self.channels[ix].1;
+        self.shown = (0..lines.len()).filter(|&i| line_shown(&self.filter, &lines[i])).collect();
+        self.list.reset(self.shown.len());
         self.list.set_follow_mode(FollowMode::Tail);
     }
+
+    pub(super) fn set_filter(&mut self, filter: String) {
+        self.filter = filter;
+        if self.active < self.channels.len() {
+            self.show(self.active);
+        }
+    }
+}
+
+/// Whether the Output filter keeps `line`: the text found in it (in any
+/// case), or with a leading `!` not found.
+// ponytail: one term, as the Problems filter; no log level filter.
+fn line_shown(filter: &str, line: &str) -> bool {
+    let filter = filter.trim();
+    let (not, text) = match filter.strip_prefix('!') {
+        Some(rest) => (true, rest.to_lowercase()),
+        None => (false, filter.to_lowercase()),
+    };
+    text.is_empty() || line.to_lowercase().contains(&text) != not
 }
 
 impl Workbench {
@@ -63,7 +89,13 @@ impl Workbench {
         if ix == out.active {
             // The joined line changed too.
             let from = n.saturating_sub(was_open as usize).min(lines.len());
-            out.list.splice(from..n, lines.len() - from);
+            // Rows from that line on are filtered again and replaced.
+            let keep = out.shown.partition_point(|&i| i < from);
+            let removed = out.shown.len() - keep;
+            out.shown.truncate(keep);
+            let filter = &out.filter;
+            out.shown.extend((from..lines.len()).filter(|&i| line_shown(filter, &lines[i])));
+            out.list.splice(keep..keep + removed, out.shown.len() - keep);
             cx.notify();
         }
     }
@@ -143,7 +175,7 @@ impl Workbench {
         let lines = list(self.output.list.clone(), move |ix, _, cx| {
             let line = wb.upgrade().and_then(|wb| {
                 let out = &wb.read(cx).output;
-                let text = out.channels.get(out.active)?.1.get(ix)?.clone();
+                let text = out.channels.get(out.active)?.1.get(*out.shown.get(ix)?)?.clone();
                 Some(div().min_h(px(19.)).child(text))
             });
             line.unwrap_or_else(div).into_any_element()
@@ -186,6 +218,9 @@ mod tests {
         assert!(!open);
         assert_eq!(lines, ["ab", "c"]);
         assert!(push_text(&mut lines, open, "d"));
+        assert!(super::line_shown("", "x") && super::line_shown("AB", "xaby"));
+        assert!(!super::line_shown("q", "xab") && super::line_shown("!q", "xab"));
+        assert!(!super::line_shown("!ab", "xAb"));
         assert_eq!(lines, ["ab", "c", "d"]);
     }
 }
