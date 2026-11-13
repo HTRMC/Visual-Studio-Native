@@ -2021,6 +2021,20 @@ impl Workbench {
                 // VS Code's limit, without its 3-minute window.
                 if *crashes >= 5 {
                     self.lsp.servers.insert(cmd[0], None);
+                    // Its squiggles go with it: no server is left to clear them.
+                    let langs = SERVERS.iter().filter(|(_, c)| *c == cmd).flat_map(|(l, _)| l.iter());
+                    let langs: Vec<&str> = langs.copied().collect();
+                    let gone: Vec<PathBuf> = (self.lsp.problems.keys())
+                        .filter(|p| {
+                            let open = self.docs.iter().find(|d| d.path == **p).map(|d| d.lang);
+                            langs.contains(&open.unwrap_or_else(|| crate::theme::language_id(p)))
+                        })
+                        .cloned()
+                        .collect();
+                    for path in gone {
+                        self.lsp.problems.remove(&path);
+                        self.show_diagnostics(&path, cx);
+                    }
                     let text = format!(
                         "The {} server crashed 5 times. The server will not be restarted.",
                         cmd[0]
