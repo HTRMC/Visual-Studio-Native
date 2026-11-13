@@ -285,9 +285,12 @@ Differences from VS Code still to close, smallest first within each area.
       re-reads it (no settings watcher), so open editors keep their language.
 - [x] Undoing back to the saved text leaves the tab dirty (VS Code clears
       the dot).
-- [ ] A file changed on disk while open isn't noticed (VS Code reloads a
-      clean editor, and asks before overwriting a dirty one on save). Seen
-      with an open settings.json after Configure File Association writes it.
+- [x] A file changed on disk while open wasn't noticed. A clean editor now
+      takes the new text (an undoable edit, keeping its place), and saving a
+      dirty one asks Overwrite / Revert. Files outside the folder are watched
+      too, and coming back to the window rechecks every editor.
+- [ ] The save conflict offers Revert where VS Code offers Compare (no diff
+      editor), and a large file (over 20MB) isn't reloaded.
 - [ ] No hot exit: quitting with unsaved changes asks Save / Don't Save
       (VS Code's files.hotExit "onExit" keeps them for the next start).
 - [x] No "File: Revert File" command (the File menu's entry was inert).

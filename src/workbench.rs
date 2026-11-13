@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
     slice,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use futures::StreamExt as _;
@@ -565,6 +565,15 @@ struct Doc {
     webview: Option<custom_editors::DocWebview>,
     /// An extension's read-only document instead of a file, by its uri.
     uri: Option<String>,
+    /// The file's [`file_stamp`] as last read or written: a different one
+    /// on disk means something else changed it.
+    stamp: Option<(SystemTime, u64)>,
+}
+
+/// A file's modified time and size, which a write elsewhere changes.
+fn file_stamp(path: &Path) -> Option<(SystemTime, u64)> {
+    let meta = fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
 }
 
 fn session_path() -> Option<PathBuf> {
@@ -1261,6 +1270,13 @@ impl Workbench {
         })
         .detach();
         this.watch_root(cx);
+        // Coming back to the window catches what the watcher can't see.
+        cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() {
+                this.disk_changed(&[], true, window, cx);
+            }
+        })
+        .detach();
         this.activate_extensions("*", cx);
         // The title bar's close button (and Alt+F4) land here.
         let wb = cx.weak_entity();
@@ -1364,6 +1380,7 @@ impl Workbench {
         let large = is_large(&text);
         let lang = self.file_language(&path);
         let editor = self.new_editor(&path, lang, text, indent, self.word_wrap, window, cx);
+        let stamp = (!untitled).then(|| file_stamp(&path)).flatten();
         self.docs.push(Doc {
             indent,
             lang,
@@ -1384,6 +1401,7 @@ impl Workbench {
             large,
             webview: None,
             uri: None,
+            stamp,
         });
         self.activate(self.docs.len() - 1, window, cx);
         self.open_editors_changed(cx);
@@ -1391,6 +1409,18 @@ impl Workbench {
         let ix = self.docs.len() - 1;
         self.lsp_open(ix, cx);
         self.show_diagnostics(&self.docs[ix].path.clone(), cx);
+        self.watch_file(ix);
+    }
+
+    /// Watches editor `ix`'s folder too when it's outside the workspace's.
+    fn watch_file(&mut self, ix: usize) {
+        let path = &self.docs[ix].path;
+        let inside = self.root.as_ref().is_some_and(|r| path.starts_with(r));
+        if let (false, Some((watcher, _)), Some(dir), Some(_)) =
+            (inside, &mut self.watcher, path.parent(), self.docs[ix].stamp)
+        {
+            watcher.watch(dir, RecursiveMode::NonRecursive).ok();
+        }
     }
 
     /// Ctrl+N: an `Untitled-N` editor, saved through Save As.
@@ -1458,6 +1488,7 @@ impl Workbench {
             e.set_scroll_offset(scroll, cx);
         });
         let doc = &mut self.docs[ix];
+        doc.stamp = file_stamp(&path);
         doc.indent = indent;
         doc.saved = text_hash(&editor, cx);
         doc.editor = editor;
@@ -1987,11 +2018,16 @@ impl Workbench {
             self.save_as(ix, window, cx);
             return;
         }
+        if self.disk_newer(ix) {
+            return self.save_conflict(ix, window, cx);
+        }
+        let doc = &mut self.docs[ix];
         let text = with_eol(&doc.editor.read(cx).value(), doc.crlf);
         let settings = terminal::settings_path().is_some_and(|p| p == doc.path);
         let old = settings.then(terminal::settings);
         match fs::write(&doc.path, doc.encoding.encode(&text)) {
             Ok(()) => {
+                doc.stamp = file_stamp(&doc.path);
                 doc.dirty = false;
                 doc.saved = text_hash(&doc.editor, cx);
                 let path = doc.path.clone();
@@ -2062,6 +2098,7 @@ impl Workbench {
                 let lang = this.file_language(&path);
                 let editor = this.new_editor(&path, lang, text, indent, wrap, window, cx);
                 let doc = &mut this.docs[ix];
+                doc.stamp = file_stamp(&path);
                 doc.saved = text_hash(&editor, cx);
                 doc.lang = lang;
                 doc.editor = editor.clone();
@@ -2085,6 +2122,90 @@ impl Workbench {
         .detach();
     }
 
+    /// Whether editor `ix`'s file changed on disk since it was read or saved.
+    fn disk_newer(&self, ix: usize) -> bool {
+        let Some(doc) = self.docs.get(ix).filter(|d| d.stamp.is_some()) else {
+            return false;
+        };
+        file_stamp(&doc.path).is_some_and(|now| Some(now) != doc.stamp)
+    }
+
+    /// VS Code's save conflict: the file changed on disk under unsaved edits.
+    // ponytail: Revert, not VS Code's Compare (no diff editor yet).
+    fn save_conflict(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let doc = &self.docs[ix];
+        let name = doc.path.file_name().unwrap_or_default().to_string_lossy();
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &format!("Failed to save '{name}': The content of the file is newer."),
+            Some("Overwrite the file with your changes, or revert to the file's contents."),
+            &["Overwrite", "Revert", "Cancel"],
+            cx,
+        );
+        let editor = doc.editor.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(choice) = answer.await else { return };
+            this.update_in(cx, |this, window, cx| {
+                let Some(ix) = this.docs.iter().position(|d| d.editor == editor) else {
+                    return;
+                };
+                match choice {
+                    0 => {
+                        this.docs[ix].stamp = file_stamp(&this.docs[ix].path);
+                        this.write(ix, window, cx);
+                    }
+                    1 => this.reload(ix, window, cx),
+                    _ => {}
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The watcher saw `paths` change (`all`: it lost track): editors on
+    /// them without unsaved changes take the file's new text, as VS Code's do.
+    fn disk_changed(&mut self, paths: &[PathBuf], all: bool, window: &mut Window, cx: &mut Context<Self>) {
+        for ix in 0..self.docs.len() {
+            let d = &self.docs[ix];
+            // Large files aren't reread: that's a second or more each.
+            if d.dirty || d.binary || d.large || d.stamp.is_none() || !(all || paths.contains(&d.path)) {
+                continue;
+            }
+            if self.disk_newer(ix) {
+                self.reload(ix, window, cx);
+            }
+        }
+    }
+
+    /// Editor `ix` takes its file's text from disk as an edit that Undo
+    /// takes back, keeping its place, as VS Code's reload does.
+    fn reload(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let doc = &mut self.docs[ix];
+        let Ok(bytes) = fs::read(&doc.path) else {
+            return;
+        };
+        doc.stamp = file_stamp(&doc.path);
+        let text = doc.encoding.decode_as(&bytes);
+        if text.contains('\n') {
+            doc.crlf = text.contains("\r\n");
+        }
+        let editor = doc.editor.clone();
+        if editor.read(cx).value() != text.as_str() {
+            editor.update(cx, |e, cx| {
+                let (pos, scroll) = (e.cursor_position(), e.scroll_offset());
+                e.replace_all(text, window, cx);
+                e.set_cursor_position(pos, window, cx);
+                e.set_scroll_offset(scroll, cx);
+            });
+        }
+        let doc = &mut self.docs[ix];
+        // The edit's Change event then finds the text saved.
+        doc.saved = text_hash(&editor, cx);
+        doc.dirty = false;
+        cx.notify();
+    }
+
     fn save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
         self.write(self.active, window, cx);
     }
@@ -2104,7 +2225,8 @@ impl Workbench {
             _ = this.update_in(cx, |this, window, cx| {
                 for ix in 0..this.docs.len() {
                     let d = &this.docs[ix];
-                    if d.dirty && !d.untitled && auto_save() {
+                    // A file changed on disk waits for an explicit save to ask.
+                    if d.dirty && !d.untitled && auto_save() && !this.disk_newer(ix) {
                         this.write(ix, window, cx);
                     }
                 }
@@ -3741,27 +3863,26 @@ impl Workbench {
             return;
         };
         self.palette.remember_opened(true, &root, cx);
-        let (tx, mut rx) = futures::channel::mpsc::unbounded::<Vec<PathBuf>>();
+        let (tx, mut rx) = futures::channel::mpsc::unbounded::<(Vec<PathBuf>, bool)>();
         let watcher = notify::recommended_watcher(move |ev: notify::Result<notify::Event>| {
             // Only changes to a folder's entries matter, and launch.json's
             // contents. A lost burst (Windows' change buffer overflowing in a
             // build) sends no paths: every listing is suspect then.
-            let paths = match ev {
-                Ok(ev) if ev.need_rescan() => Vec::new(),
-                Ok(ev)
-                    if matches!(
+            // Every write goes on too, for the open editors, flagged apart.
+            let sent = match ev {
+                Ok(ev) if ev.need_rescan() => (Vec::new(), true),
+                Ok(ev) => {
+                    let entries = matches!(
                         ev.kind,
                         EventKind::Create(_)
                             | EventKind::Remove(_)
                             | EventKind::Modify(ModifyKind::Name(_))
-                    ) || ev.paths.iter().any(|p| p.ends_with(".vscode/launch.json")) =>
-                {
-                    ev.paths
+                    ) || ev.paths.iter().any(|p| p.ends_with(".vscode/launch.json"));
+                    (ev.paths, entries)
                 }
-                Ok(_) => return,
-                Err(_) => Vec::new(),
+                Err(_) => (Vec::new(), true),
             };
-            tx.unbounded_send(paths).ok();
+            tx.unbounded_send(sent).ok();
         });
         let Ok(mut watcher) = watcher else { return };
         if let Err(err) = watcher.watch(&root, RecursiveMode::Recursive) {
@@ -3769,14 +3890,23 @@ impl Workbench {
             return;
         }
         let task = cx.spawn(async move |this, cx| {
-            while let Some(mut paths) = rx.next().await {
-                let mut rescan = paths.is_empty();
+            while let Some(first) = rx.next().await {
                 // A build touches many files at once; take the whole burst in one go.
+                let mut burst = vec![first];
                 while let Ok(more) = rx.try_recv() {
-                    rescan |= more.is_empty();
-                    paths.extend(more);
+                    burst.push(more);
                 }
+                let rescan = burst.iter().any(|(p, _)| p.is_empty());
+                let written: Vec<PathBuf> = burst.iter().flat_map(|(p, _)| p.clone()).collect();
+                let paths: Vec<PathBuf> =
+                    (burst.into_iter()).filter(|(_, e)| *e).flat_map(|(p, _)| p).collect();
                 let alive = this.update(cx, |this, cx| {
+                    this.in_window(cx, move |this, window, cx| {
+                        this.disk_changed(&written, rescan, window, cx)
+                    });
+                    if paths.is_empty() && !rescan {
+                        return;
+                    }
                     // Quick Open's walk skips .git, which changes all the time.
                     if paths
                         .iter()
@@ -3809,6 +3939,9 @@ impl Workbench {
             }
         });
         self.watcher = Some((watcher, task));
+        for ix in 0..self.docs.len() {
+            self.watch_file(ix);
+        }
     }
 
     /// Opens `path`'s folders in the explorer and scrolls its row into view;
