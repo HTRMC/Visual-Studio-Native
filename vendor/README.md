@@ -16,6 +16,9 @@ comment; on a gpui-kit update, copy the new version over and re-apply them.
 - **gpui-pre-windows 0.3.9** (`src/events.rs`): `set_cursor_override` shows a
   webview's own cursor (such as the grab hand) instead of gpui's; a click
   takes keyboard focus back from a child window (WebView2's focus window).
+- **gpui-pre-windows 0.3.9** (`src/events.rs`, `src/window.rs`): `set_zoom`
+  multiplies every DPI-derived scale factor (window.zoomLevel) and re-lays
+  the window out at the new scale.
 - **gpui-base 0.8.0** (`src/scrollbar.rs`): a scrollbar thumb drag redraws on
   every mouse move on Windows instead of throttling through a coarse timer.
 - **gpui-base 0.8.0** (`src/input/editor/display_map/`, `src/input/base/`):

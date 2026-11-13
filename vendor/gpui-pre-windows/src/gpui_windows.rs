@@ -39,7 +39,7 @@ pub(crate) use window::*;
 pub(crate) use wrapper::*;
 
 pub use directx_renderer::{WEBVIEW_HOLE, webview_layer};
-pub use events::set_cursor_override;
+pub use events::{set_cursor_override, set_zoom};
 pub use platform::WindowsPlatform;
 
 pub(crate) use windows::Win32::Foundation::HWND;

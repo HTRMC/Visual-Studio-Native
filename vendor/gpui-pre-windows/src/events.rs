@@ -35,6 +35,22 @@ pub fn set_cursor_override(cursor: Option<isize>) {
     }
 }
 
+// vsn: window.zoomLevel. gpui lays out in logical pixels, so zooming is the
+// DPI scale times this factor (an f32's bits); each DPI-derived scale reads it.
+static ZOOM: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3F80_0000);
+
+pub(crate) fn zoom() -> f32 {
+    f32::from_bits(ZOOM.load(Ordering::Relaxed))
+}
+
+/// vsn: zooms the window `hwnd` by `zoom` (1.0 is none), as VS Code's
+/// window.zoomLevel does. Posted, so it applies after the caller's update.
+pub fn set_zoom(hwnd: isize, zoom: f32) {
+    ZOOM.store(zoom.to_bits(), Ordering::Relaxed);
+    unsafe { PostMessageW(Some(HWND(hwnd as _)), WM_GPUI_ZOOM, WPARAM(0), LPARAM(0)) }.ok();
+}
+
+pub(crate) const WM_GPUI_ZOOM: u32 = WM_USER + 11;
 pub(crate) const WM_GPUI_CURSOR_STYLE_CHANGED: u32 = WM_USER + 1;
 pub(crate) const WM_GPUI_CLOSE_ONE_WINDOW: u32 = WM_USER + 2;
 pub(crate) const WM_GPUI_TASK_DISPATCHED_ON_MAIN_THREAD: u32 = WM_USER + 3;
@@ -173,6 +189,7 @@ impl WindowsWindowInner {
             WM_INPUTLANGCHANGE => self.handle_input_language_changed(),
             WM_SHOWWINDOW => self.handle_window_visibility_changed(handle, wparam),
             WM_GPUI_CURSOR_STYLE_CHANGED => self.handle_cursor_changed(lparam),
+            WM_GPUI_ZOOM => self.handle_zoom(handle),
             WM_GPUI_FORCE_UPDATE_WINDOW => self.draw_window(handle, true),
             WM_GPUI_GPU_DEVICE_LOST => self.handle_device_lost(lparam),
             DM_POINTERHITTEST => self.handle_dm_pointer_hit_test(wparam),
@@ -289,6 +306,18 @@ impl WindowsWindowInner {
             callback(new_logical_size, scale_factor);
             self.state.callbacks.resize.set(Some(callback));
         }
+    }
+
+    /// vsn: a new [`set_zoom`]: the same client area at the new scale.
+    fn handle_zoom(&self, handle: HWND) -> Option<isize> {
+        let scale = unsafe { GetDpiForWindow(handle) } as f32 / USER_DEFAULT_SCREEN_DPI as f32 * zoom();
+        self.state.scale_factor.set(scale);
+        self.state.direct_manipulation.set_scale_factor(scale);
+        let mut rect = RECT::default();
+        unsafe { GetClientRect(handle, &mut rect) }.ok()?;
+        let device = size(DevicePixels(rect.right - rect.left), DevicePixels(rect.bottom - rect.top));
+        self.handle_size_change(device, scale, false);
+        Some(0)
     }
 
     fn handle_size_move_loop(&self, handle: HWND) -> Option<isize> {
@@ -888,7 +917,7 @@ impl WindowsWindowInner {
         let new_dpi = wparam.loword() as f32;
 
         let is_maximized = self.state.is_maximized();
-        let new_scale_factor = new_dpi / USER_DEFAULT_SCREEN_DPI as f32;
+        let new_scale_factor = new_dpi / USER_DEFAULT_SCREEN_DPI as f32 * zoom();
         self.state.scale_factor.set(new_scale_factor);
         self.state.border_offset.update(handle).log_err();
 

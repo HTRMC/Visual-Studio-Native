@@ -153,6 +153,9 @@ actions!(
         MoveLinesUp,
         MoveLinesDown,
         DeleteLines,
+        ZoomIn,
+        ZoomOut,
+        ZoomReset,
         InsertLineAfter,
         InsertLineBefore,
         ExpandLineSelection,
@@ -351,6 +354,9 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         // Change All Occurrences selects them all, as Ctrl+Shift+L does.
         KeyBinding::new("ctrl-f2", SelectAllOccurrences, Some("Input && mode == editor")),
         KeyBinding::new("ctrl-k m", ChangeLanguageMode, None),
+        KeyBinding::new("ctrl-=", ZoomIn, None),
+        shifted("ctrl-shift-=", Box::new(ZoomIn), None),
+        KeyBinding::new("ctrl--", ZoomOut, None),
         KeyBinding::new("ctrl-d", AddNextOccurrence, Some("Input && mode == editor")),
         KeyBinding::new(
             "shift-alt-right",
@@ -753,6 +759,22 @@ fn lines_moved(
 
 /// The byte range of the whole lines `sel` touches in `text`, without the
 /// last one's line break.
+/// window.zoomLevel: each level is 20% bigger, as in VS Code.
+fn zoom_level() -> f64 {
+    terminal::settings()["window.zoomLevel"].as_f64().unwrap_or(0.).clamp(-8., 9.)
+}
+
+/// Scales the whole window to window.zoomLevel.
+fn apply_zoom(window: &Window) {
+    #[cfg(windows)]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        if let Ok(RawWindowHandle::Win32(h)) = HasWindowHandle::window_handle(window).map(|h| h.as_raw()) {
+            gpui_windows::set_zoom(h.hwnd.get(), 1.2f64.powf(zoom_level()) as f32);
+        }
+    }
+}
+
 /// Delete Line (Ctrl+Shift+K): the selected lines and their line break go;
 /// the last line takes the break before it. The cursor lands where they were.
 fn lines_deleted(text: &str, sel: Range<usize>) -> Option<(Range<usize>, String, Range<usize>)> {
@@ -1401,6 +1423,9 @@ impl Workbench {
         })
         .detach();
         this.watch_root(cx);
+        if zoom_level() != 0. {
+            apply_zoom(window);
+        }
         // Coming back to the window catches what the watcher can't see.
         cx.observe_window_activation(window, |this, window, cx| {
             if window.is_window_active() {
@@ -2194,6 +2219,19 @@ impl Workbench {
             extensions::apply_themes(cx);
         }
         self.modern = modern_ui(&new);
+        if changed("window.zoomLevel") {
+            apply_zoom(window);
+        }
+    }
+
+    /// View: Zoom In / Zoom Out (`by` a level) / Reset Zoom (None), kept in
+    /// window.zoomLevel as VS Code keeps it.
+    fn zoom(&mut self, by: Option<f64>, window: &mut Window, cx: &mut Context<Self>) {
+        let level = by.map_or(0., |by| (zoom_level() + by).clamp(-8., 9.));
+        if let Err(err) = terminal::set_setting("window.zoomLevel", level.into()) {
+            return self.settings_error(err, cx);
+        }
+        apply_zoom(window);
     }
 
     /// File: Save As: asks where to save editor `ix` (an untitled one in the
@@ -3297,6 +3335,9 @@ impl Workbench {
                     .flex_basis(px(0.))
                     .h_full()
                     .min_w_0()
+                    // ponytail: menus that don't fit are cut off; VS Code
+                    // moves them into a "..." menu.
+                    .overflow_hidden()
                     .child(
                         div()
                             .flex()
@@ -6516,6 +6557,9 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &MoveLinesDown, window, cx| {
                 this.line_op(false, false, window, cx)
             }))
+            .on_action(cx.listener(|this, _: &ZoomIn, window, cx| this.zoom(Some(1.), window, cx)))
+            .on_action(cx.listener(|this, _: &ZoomOut, window, cx| this.zoom(Some(-1.), window, cx)))
+            .on_action(cx.listener(|this, _: &ZoomReset, window, cx| this.zoom(None, window, cx)))
             .on_action(cx.listener(|this, _: &DeleteLines, window, cx| {
                 this.edit_lines(lines_deleted, window, cx)
             }))

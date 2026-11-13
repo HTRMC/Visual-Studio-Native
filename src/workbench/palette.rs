@@ -271,6 +271,9 @@ fn builtin_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("View: Toggle Output", Box::new(ToggleOutput)),
         ("View: Toggle Debug Console", Box::new(ToggleDebugConsole)),
         ("View: Toggle Word Wrap", Box::new(ToggleWordWrap)),
+        ("View: Zoom In", Box::new(ZoomIn)),
+        ("View: Zoom Out", Box::new(ZoomOut)),
+        ("View: Reset Zoom", Box::new(ZoomReset)),
         ("File: Refresh Explorer", Box::new(RefreshExplorer)),
         (
             "View: Collapse Folders in Explorer",

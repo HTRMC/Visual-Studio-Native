@@ -528,7 +528,11 @@ Differences from VS Code still to close, smallest first within each area.
 - [ ] No Fold Recursively, Fold Level N, or folding by indentation without a
       language's ranges.
 - [ ] No minimap and no sticky scroll.
-- [ ] No zoom (Ctrl+= / Ctrl+- / Ctrl+0, `window.zoomLevel`).
+- [x] Zoom: Zoom In / Out (Ctrl+= / Ctrl+-) and Reset Zoom (palette) keep
+      `window.zoomLevel` (1.2× a level) and scale the whole window.
+- [ ] Reset Zoom lacks Ctrl+NumPad0 (gpui doesn't tell the keypad's 0
+      apart); View > Appearance has no zoom items; title-bar menus that
+      don't fit are cut off instead of moving into a "..." menu.
 - [ ] No Zen Mode (Ctrl+K Z), Open Recent picker (Ctrl+R) or Close Folder
       (Ctrl+K F).
 - [x] Menus and the command palette showed only a chord's first key

@@ -126,7 +126,7 @@ impl WindowsWindowState {
     ) -> Result<Self> {
         let scale_factor = {
             let monitor_dpi = unsafe { GetDpiForWindow(hwnd) } as f32;
-            monitor_dpi / USER_DEFAULT_SCREEN_DPI as f32
+            monitor_dpi / USER_DEFAULT_SCREEN_DPI as f32 * crate::events::zoom()
         };
         let origin = logical_point(window_params.x as f32, window_params.y as f32, scale_factor);
         let logical_size = {
