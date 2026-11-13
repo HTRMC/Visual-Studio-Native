@@ -104,12 +104,11 @@ impl Workbench {
     /// The channel dropdown in the panel's title bar.
     pub(super) fn output_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (name, _) = self.output.channels.get(self.output.active)?;
-        let names: Vec<_> = self
-            .output
-            .channels
-            .iter()
-            .map(|(n, _)| n.clone())
+        // Listed by name, as VS Code sorts them.
+        let mut names: Vec<_> = (self.output.channels.iter().enumerate())
+            .map(|(ix, (n, _))| (ix, n.clone()))
             .collect();
+        names.sort_by_key(|(_, n)| n.to_lowercase());
         let wb = cx.weak_entity();
         let button = Button::new("output-channels")
             .ghost()
@@ -123,7 +122,7 @@ impl Workbench {
                     .child(codicon(icon::CHEVRON_DOWN)),
             )
             .dropdown_menu(move |mut menu, _, _| {
-                for (ix, name) in names.iter().enumerate() {
+                for &(ix, ref name) in &names {
                     let wb = wb.clone();
                     menu = menu.item(PopupMenuItem::new(name.clone()).on_click(move |_, _, cx| {
                         wb.update(cx, |this, cx| {

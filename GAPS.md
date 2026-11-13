@@ -670,7 +670,8 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [x] Output channels' `append` started a new line and `show()`/`clear()`/
       `replace()` did nothing; append continues the line, show opens the
       panel on the channel, clear and replace work.
-- [ ] Output: no filter, no word-wrap toggle, channels aren't sorted.
+- [x] The Output channel dropdown lists channels by name.
+- [ ] Output: no filter, no word-wrap toggle.
 - [x] VS Code's own commands (`vscode.open`, `workbench.action.*`) called by extensions do nothing.
 - [x] `globalState`/`workspaceState` are in memory only; `activeTextEditor` doesn't reach the host.
 - [x] Documents reach the host (open, change, save, close).
