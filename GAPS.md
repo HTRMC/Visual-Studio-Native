@@ -515,12 +515,18 @@ Differences from VS Code still to close, smallest first within each area.
 - [ ] Go menu's other navigation entries (Next/Previous Used Editor's
       Ctrl+Tab picker, Switch Group, Next/Previous Problem, Next/Previous
       Change) are missing.
-- [ ] Missing editor commands and keys: Delete Line (Ctrl+Shift+K), Insert
-      Line Below/Above (Ctrl+Enter, Ctrl+Shift+Enter), Expand Line
-      Selection (Ctrl+L), Cursor Undo (Ctrl+U), Go to Bracket
-      (Ctrl+Shift+\), Change All Occurrences (Ctrl+F2), Change Language
-      Mode (Ctrl+K M).
-- [ ] No folding (gutter chevrons, Ctrl+Shift+[ / ], Ctrl+K Ctrl+0/J).
+- [x] Delete Line (Ctrl+Shift+K), Insert Line Below/Above (Ctrl+Enter,
+      Ctrl+Shift+Enter), Expand Line Selection (Ctrl+L), Go to Bracket
+      (Ctrl+Shift+\), Change All Occurrences (Ctrl+F2) and Change Language
+      Mode (Ctrl+K M), in the palette too.
+- [ ] Cursor Undo (Ctrl+U) is missing; Insert Line Below/Above copy the
+      line's indent rather than following the language's indent rules; Go to
+      Bracket counts brackets in strings and comments.
+- [x] Folding: the gutter chevrons were there; Fold / Unfold (Ctrl+Shift+[
+      / ]), Toggle Fold (Ctrl+K Ctrl+L), Fold All / Unfold All (Ctrl+K
+      Ctrl+0 / J) now work from the keys and the palette.
+- [ ] No Fold Recursively, Fold Level N, or folding by indentation without a
+      language's ranges.
 - [ ] No minimap and no sticky scroll.
 - [ ] No zoom (Ctrl+= / Ctrl+- / Ctrl+0, `window.zoomLevel`).
 - [ ] No Zen Mode (Ctrl+K Z), Open Recent picker (Ctrl+R) or Close Folder

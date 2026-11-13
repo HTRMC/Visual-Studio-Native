@@ -12165,6 +12165,50 @@ impl InputBaseState<crate::input::EditorMode> {
         true
     }
 
+    /// vsn: VS Code's Fold / Unfold (Ctrl+Shift+[ / ]): the innermost
+    /// region around the cursor's line that is open / folded. A cursor the
+    /// fold hides moves to the end of its first line. Returns whether one
+    /// changed.
+    pub fn fold_at_cursor(&mut self, fold: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let line = self.text.offset_to_point(self.cursor()).row;
+        let target = (self.display_map.fold_candidates().iter())
+            .filter(|r| r.start_line <= line && line < r.end_line)
+            .filter(|r| self.display_map.is_folded_at(r.start_line) != fold)
+            .max_by_key(|r| r.start_line)
+            .map(|r| r.start_line);
+        let Some(start) = target else {
+            return false;
+        };
+        self.display_map.set_folded(start, fold);
+        if fold && line > start {
+            let end = self.text.line_end_offset(start);
+            self.set_cursor_position(self.text.offset_to_position(end), window, cx);
+        }
+        cx.notify();
+        true
+    }
+
+    /// vsn: VS Code's Fold All / Unfold All (Ctrl+K Ctrl+0 / Ctrl+K Ctrl+J).
+    pub fn fold_all(&mut self, fold: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let starts: Vec<usize> = (self.display_map.fold_candidates().iter())
+            .map(|r| r.start_line)
+            .collect();
+        for start in starts {
+            self.display_map.set_folded(start, fold);
+        }
+        // The cursor goes to the line of the outermost fold hiding it.
+        let line = self.text.offset_to_point(self.cursor()).row;
+        let hiding = (self.display_map.folded_ranges().iter())
+            .filter(|r| r.start_line < line && line < r.end_line)
+            .map(|r| r.start_line)
+            .min();
+        if let Some(start) = hiding {
+            let end = self.text.line_end_offset(start);
+            self.set_cursor_position(self.text.offset_to_position(end), window, cx);
+        }
+        cx.notify();
+    }
+
     /// Set enable/disable line number.
     #[doc(hidden)]
     pub fn line_number(mut self, line_number: bool) -> Self {

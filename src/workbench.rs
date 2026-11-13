@@ -152,6 +152,16 @@ actions!(
         CopyLinesDown,
         MoveLinesUp,
         MoveLinesDown,
+        DeleteLines,
+        InsertLineAfter,
+        InsertLineBefore,
+        ExpandLineSelection,
+        JumpToBracket,
+        Fold,
+        Unfold,
+        ToggleFold,
+        FoldAll,
+        UnfoldAll,
         ToggleLineComment,
         AddNextOccurrence,
         AddPreviousOccurrence,
@@ -328,6 +338,19 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("alt-up", MoveLinesUp, Some("Input && mode == editor")),
         KeyBinding::new("alt-down", MoveLinesDown, Some("Input && mode == editor")),
         KeyBinding::new("ctrl-/", ToggleLineComment, Some("Input && mode == editor")),
+        KeyBinding::new("ctrl-shift-k", DeleteLines, Some("Input && mode == editor")),
+        KeyBinding::new("ctrl-enter", InsertLineAfter, Some("Input && mode == editor")),
+        KeyBinding::new("ctrl-shift-enter", InsertLineBefore, Some("Input && mode == editor")),
+        KeyBinding::new("ctrl-l", ExpandLineSelection, Some("Input && mode == editor")),
+        shifted("ctrl-shift-\\", Box::new(JumpToBracket), Some("Input && mode == editor")),
+        shifted("ctrl-shift-[", Box::new(Fold), Some("Input && mode == editor")),
+        shifted("ctrl-shift-]", Box::new(Unfold), Some("Input && mode == editor")),
+        KeyBinding::new("ctrl-k ctrl-l", ToggleFold, Some("Input && mode == editor")),
+        KeyBinding::new("ctrl-k ctrl-0", FoldAll, Some("Input && mode == editor")),
+        KeyBinding::new("ctrl-k ctrl-j", UnfoldAll, Some("Input && mode == editor")),
+        // Change All Occurrences selects them all, as Ctrl+Shift+L does.
+        KeyBinding::new("ctrl-f2", SelectAllOccurrences, Some("Input && mode == editor")),
+        KeyBinding::new("ctrl-k m", ChangeLanguageMode, None),
         KeyBinding::new("ctrl-d", AddNextOccurrence, Some("Input && mode == editor")),
         KeyBinding::new(
             "shift-alt-right",
@@ -730,6 +753,104 @@ fn lines_moved(
 
 /// The byte range of the whole lines `sel` touches in `text`, without the
 /// last one's line break.
+/// Delete Line (Ctrl+Shift+K): the selected lines and their line break go;
+/// the last line takes the break before it. The cursor lands where they were.
+fn lines_deleted(text: &str, sel: Range<usize>) -> Option<(Range<usize>, String, Range<usize>)> {
+    let lines = selected_lines(text, &sel);
+    let (range, at) = match lines.end < text.len() {
+        true => (lines.start..lines.end + 1, lines.start),
+        false => {
+            let before = lines.start.saturating_sub(1);
+            let before = before - usize::from(text[..before].ends_with('\r'));
+            let at = text[..before].rfind('\n').map_or(0, |n| n + 1);
+            (before..lines.end, at)
+        }
+    };
+    Some((range, String::new(), at..at))
+}
+
+/// Insert Line Below / Above (Ctrl+Enter / Ctrl+Shift+Enter): an empty line
+/// with the cursor's line's indent, the cursor on it.
+fn line_inserted(
+    text: &str,
+    sel: Range<usize>,
+    above: bool,
+) -> Option<(Range<usize>, String, Range<usize>)> {
+    let lines = selected_lines(text, &sel);
+    let line = &text[lines.start..lines.end];
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    let indent = &line[..line.len() - line.trim_start().len()];
+    Some(match (above, lines.end < text.len()) {
+        (true, _) => {
+            let at = lines.start + indent.len();
+            (lines.start..lines.start, format!("{indent}\n"), at..at)
+        }
+        // Before the next line, so a CRLF break stays whole.
+        (false, true) => {
+            let at = lines.end + 1 + indent.len();
+            (lines.end + 1..lines.end + 1, format!("{indent}\n"), at..at)
+        }
+        (false, false) => {
+            let at = text.len() + 1 + indent.len();
+            (text.len()..text.len(), format!("\n{indent}"), at..at)
+        }
+    })
+}
+
+/// Expand Line Selection (Ctrl+L): the cursor's line with its break, then
+/// one more line each time.
+fn line_selection(text: &str, sel: Range<usize>) -> Range<usize> {
+    let start = text[..sel.start].rfind('\n').map_or(0, |n| n + 1);
+    let end = text[sel.end..].find('\n').map_or(text.len(), |n| sel.end + n + 1);
+    start..end
+}
+
+/// Go to Bracket (Ctrl+Shift+\): from a bracket at or just before `at` to
+/// its pair, else to the closer of the block around `at`.
+// ponytail: counts brackets inside strings and comments too.
+fn bracket_jump(text: &str, at: usize) -> Option<usize> {
+    let b = text.as_bytes();
+    let pairs = [(b'(', b')'), (b'[', b']'), (b'{', b'}')];
+    let scan = |from: usize, open: u8, close: u8, forward: bool| {
+        let mut depth = 0usize;
+        let mut i = from;
+        loop {
+            let c = *b.get(i)?;
+            if c == open {
+                depth += 1;
+            } else if c == close {
+                depth = depth.checked_sub(1)?;
+            }
+            if depth == 0 {
+                return Some(i);
+            }
+            i = if forward { i + 1 } else { i.checked_sub(1)? };
+        }
+    };
+    for i in [Some(at), at.checked_sub(1)].into_iter().flatten() {
+        let Some(&c) = b.get(i) else { continue };
+        if let Some(&(o, cl)) = pairs.iter().find(|p| p.0 == c) {
+            return scan(i, o, cl, true);
+        }
+        if let Some(&(o, cl)) = pairs.iter().find(|p| p.1 == c) {
+            return scan(i, cl, o, false);
+        }
+    }
+    // Inside a block: its nearest unclosed opener's pair.
+    let mut depth = 0usize;
+    for i in (0..at).rev() {
+        if pairs.iter().any(|p| p.1 == b[i]) {
+            depth += 1;
+        } else if let Some(&(o, cl)) = pairs.iter().find(|p| p.0 == b[i]) {
+            match depth.checked_sub(1) {
+                Some(d) => depth = d,
+                None => return scan(i, o, cl, true),
+            }
+        }
+    }
+    None
+}
+
 fn selected_lines(text: &str, sel: &Range<usize>) -> Range<usize> {
     let line_start = |i: usize| text[..i].rfind('\n').map_or(0, |n| n + 1);
     // A selection ending at a line's start doesn't take that line, as in VS Code.
@@ -3032,6 +3153,30 @@ impl Workbench {
             if let Some((range, new, sel)) = edit(&text, e.selected_range()) {
                 e.set_selected_range(range, cx);
                 e.replace(new, window, cx);
+                e.set_selected_range(sel, cx);
+            }
+        });
+    }
+
+    /// Runs `f` on the active text editor.
+    fn with_editor(
+        &mut self,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&mut EditorState, &mut Context<EditorState>),
+    ) {
+        if let Some(doc) = self.docs.get(self.active).filter(|d| !d.binary) {
+            doc.editor.update(cx, f);
+        }
+    }
+
+    /// Selects what `pick` makes of the active editor's text and selection.
+    fn select_with(
+        &mut self,
+        pick: impl FnOnce(&str, Range<usize>) -> Option<Range<usize>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.with_editor(cx, |e, cx| {
+            if let Some(sel) = pick(&e.value(), e.selected_range()) {
                 e.set_selected_range(sel, cx);
             }
         });
@@ -6371,6 +6516,40 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &MoveLinesDown, window, cx| {
                 this.line_op(false, false, window, cx)
             }))
+            .on_action(cx.listener(|this, _: &DeleteLines, window, cx| {
+                this.edit_lines(lines_deleted, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &InsertLineAfter, window, cx| {
+                this.edit_lines(|t, sel| line_inserted(t, sel, false), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &InsertLineBefore, window, cx| {
+                this.edit_lines(|t, sel| line_inserted(t, sel, true), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ExpandLineSelection, _, cx| {
+                this.select_with(|t, sel| Some(line_selection(t, sel)), cx)
+            }))
+            .on_action(cx.listener(|this, _: &JumpToBracket, _, cx| {
+                this.select_with(|t, sel| bracket_jump(t, sel.end).map(|at| at..at), cx)
+            }))
+            .on_action(cx.listener(|this, _: &Fold, window, cx| {
+                this.with_editor(cx, |e, cx| _ = e.fold_at_cursor(true, window, cx))
+            }))
+            .on_action(cx.listener(|this, _: &Unfold, window, cx| {
+                this.with_editor(cx, |e, cx| _ = e.fold_at_cursor(false, window, cx))
+            }))
+            .on_action(cx.listener(|this, _: &ToggleFold, window, cx| {
+                this.with_editor(cx, |e, cx| {
+                    if !e.fold_at_cursor(false, window, cx) {
+                        e.fold_at_cursor(true, window, cx);
+                    }
+                })
+            }))
+            .on_action(cx.listener(|this, _: &FoldAll, window, cx| {
+                this.with_editor(cx, |e, cx| e.fold_all(true, window, cx))
+            }))
+            .on_action(cx.listener(|this, _: &UnfoldAll, window, cx| {
+                this.with_editor(cx, |e, cx| e.fold_all(false, window, cx))
+            }))
             .on_action(cx.listener(|this, _: &AddNextOccurrence, _, cx| {
                 this.add_occurrences(Occurrence::Next, cx)
             }))
@@ -7108,8 +7287,10 @@ fn app_menu(
 mod tests {
     use super::{
         Encoding, block_toggled, capitalize, comment_toggled, copy_all, copy_target, detect_indent,
-        expanded, lines_moved, occurrences, with_eol, word_around,
+        bracket_jump, expanded, line_inserted, line_selection, lines_deleted, lines_moved,
+        occurrences, with_eol, word_around,
     };
+    use std::ops::Range;
 
     #[test]
     fn capitalized() {
@@ -7233,6 +7414,33 @@ mod tests {
         assert_eq!(toggle("a /*bc*/ d", 2..8), ("a bc d".into(), 2..4));
         // Empty selection: the cursor goes between the tokens.
         assert_eq!(toggle("x", 1..1), ("x/*  */".into(), 4..4));
+    }
+
+    #[test]
+    fn line_commands() {
+        let apply = |text: &str, edit: Option<(Range<usize>, String, Range<usize>)>| {
+            let (range, new, sel) = edit.unwrap();
+            let mut out = text.to_string();
+            out.replace_range(range, &new);
+            (out, sel)
+        };
+        // Delete Line: the line and its break; the last takes the one before.
+        assert_eq!(apply("a\r\nbb\r\nc", lines_deleted("a\r\nbb\r\nc", 4..4)), ("a\r\nc".into(), 3..3));
+        assert_eq!(apply("a\r\nbb", lines_deleted("a\r\nbb", 4..4)), ("a".into(), 0..0));
+        assert_eq!(apply("x", lines_deleted("x", 0..0)), ("".into(), 0..0));
+        // Insert Line Below / Above keep the indent and CRLF breaks whole.
+        let t = "  a\r\nb";
+        assert_eq!(apply(t, line_inserted(t, 1..1, false)), ("  a\r\n  \nb".into(), 7..7));
+        assert_eq!(apply(t, line_inserted(t, 1..1, true)), ("  \n  a\r\nb".into(), 2..2));
+        assert_eq!(apply("b", line_inserted("b", 0..0, false)), ("b\n".into(), 2..2));
+        // Expand Line Selection grows a line at a time.
+        assert_eq!(line_selection("ab\ncd\n", 1..1), 0..3);
+        assert_eq!(line_selection("ab\ncd\n", 0..3), 0..6);
+        // Go to Bracket: to the pair, and back; inside, to the block's closer.
+        let t = "f(a[1]) { x }";
+        assert_eq!(bracket_jump(t, 1), Some(6));
+        assert_eq!(bracket_jump(t, 6), Some(1));
+        assert_eq!(bracket_jump(t, 10), Some(12));
     }
 
     #[test]

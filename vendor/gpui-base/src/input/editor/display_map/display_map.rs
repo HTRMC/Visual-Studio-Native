@@ -156,6 +156,12 @@ impl DisplayMap {
         self.fold_map.is_folded_at(start_line)
     }
 
+    /// vsn: the ranges that can fold, for fold commands.
+    #[inline]
+    pub fn fold_candidates(&self) -> &[FoldRange] {
+        self.fold_map.fold_candidates()
+    }
+
     /// Check if a line is a fold candidate
     #[inline]
     pub fn is_fold_candidate(&self, start_line: usize) -> bool {
