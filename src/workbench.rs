@@ -1371,6 +1371,8 @@ pub struct Workbench {
     /// Zen Mode: the side bar's and panel's visibility to restore, and
     /// whether it made the window full screen.
     zen: Option<(bool, bool, bool)>,
+    /// Hot exit's pending write of unsaved text after an edit.
+    backup: Option<Task<()>>,
     /// Notifications added since the center was last open: the bell's dot.
     unseen: usize,
     /// Whether the bell's notification center is open.
@@ -1472,6 +1474,7 @@ impl Workbench {
             minimap_drag: Default::default(),
             closed: Vec::new(),
             zen: None,
+            backup: None,
             unseen: 0,
             center: false,
             act_hover: None,
@@ -1818,6 +1821,9 @@ impl Workbench {
                     let (path, dirty) = (doc.path.clone(), doc.dirty);
                     if dirty && auto_save() {
                         this.schedule_autosave(window, cx);
+                    }
+                    if hot_exit() {
+                        this.schedule_backup(cx);
                     }
                     if let Some(preview) = this.previews.get(&path) {
                         let text = editor.read(cx).value();
@@ -3038,6 +3044,15 @@ impl Workbench {
         if let Some(ix) = active {
             self.activate(ix, window, cx);
         }
+    }
+
+    /// Hot exit: keeps unsaved text a second after the last edit, so a crash
+    /// loses no more than that.
+    fn schedule_backup(&mut self, cx: &mut Context<Self>) {
+        self.backup = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_secs(1)).await;
+            this.update(cx, |this, cx| this.save_session(cx)).ok();
+        }));
     }
 
     /// Hot exit: an editor back with the unsaved text it had at quit. An

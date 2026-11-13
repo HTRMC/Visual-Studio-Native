@@ -299,9 +299,10 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Hot exit (`files.hotExit`, "onExit" by default): quitting with
       unsaved changes no longer asks; dirty editors, Untitled ones too, come
       back with their text on the next start ("off" asks as before).
-- [ ] Hot exit backups live in session.json (no Backups folder), are
-      written only when tabs change and at quit (a crash loses edits since),
-      and keep no undo history.
+- [x] Hot exit backups are written a second after each edit too, so a crash
+      keeps them.
+- [ ] Hot exit backups live in session.json (no Backups folder) and keep no
+      undo history.
 - [x] No "File: Revert File" command (the File menu's entry was inert).
 - [x] Revert File leaves an Untitled editor as is (VS Code empties it).
 - [x] File > Save As... was inert; it, Ctrl+Shift+S and the palette's
