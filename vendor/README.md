@@ -43,7 +43,8 @@ comment; on a gpui-kit update, copy the new version over and re-apply them.
 - **gpui-base 0.8.0** (`src/input/base/state.rs`,
   `src/input/editor/display_map/display_map.rs`): `fold_at_cursor` and
   `fold_all` for VS Code's Fold / Unfold / Fold All commands, and
-  `fold_candidates` on the display map.
+  `fold_candidates` on the display map; `gutter_width`, `editor_style` and
+  `syntax_styles` for sticky scroll and the minimap, drawn beside the editor.
 - **gpui-base 0.8.0** (`src/input/editor/lsp/semantic_tokens.rs`):
   `refresh_semantic_tokens` asks the provider again, for a server's
   `workspace/semanticTokens/refresh`.

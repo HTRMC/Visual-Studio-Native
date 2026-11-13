@@ -1133,17 +1133,34 @@ impl Workbench {
                                 }),
                             ),
                     )
-                    .child(div().flex_1().min_w_0().h_full().child(
-                        Editor::new(&editor).h_full().bordered(false).when(
-                            exthost::has_menu("editor/context"),
-                            |e| {
-                                let path = doc.path.clone();
-                                e.context_menu(move |menu, window, _| {
-                                    exthost::editor_context_menu(menu, &path, window)
-                                })
-                            },
-                        ),
-                    )),
+                    .child(
+                        div()
+                            .relative()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .child(Editor::new(&editor).h_full().bordered(false).when(
+                                exthost::has_menu("editor/context"),
+                                |e| {
+                                    let path = doc.path.clone();
+                                    e.context_menu(move |menu, window, _| {
+                                        exthost::editor_context_menu(menu, &path, window)
+                                    })
+                                },
+                            ))
+                            .when(self.sticky_scroll, |d| {
+                                d.child(minimap::sticky_scroll(editor.clone(), cx))
+                            }),
+                    )
+                    .when(self.show_minimap, |d| {
+                        d.child(
+                            div()
+                                .flex_none()
+                                .w(px(minimap::MINIMAP_WIDTH))
+                                .h_full()
+                                .child(minimap::minimap(editor.clone(), self.minimap_drag.clone())),
+                        )
+                    }),
             )
             // Painted after the editor, so it reads this frame's layout.
             .child(

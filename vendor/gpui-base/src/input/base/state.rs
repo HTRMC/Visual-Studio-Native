@@ -12189,6 +12189,27 @@ impl InputBaseState<crate::input::EditorMode> {
     }
 
     /// vsn: VS Code's Fold All / Unfold All (Ctrl+K Ctrl+0 / Ctrl+K Ctrl+J).
+    /// vsn: the gutter's width (line numbers and fold icons) in the last layout.
+    pub fn gutter_width(&self) -> Option<Pixels> {
+        self.last_layout.as_ref().map(|l| l.line_number_width)
+    }
+
+    /// vsn: the colors the editor paints with.
+    pub fn editor_style(&self) -> &crate::input::InputEditorStyle {
+        &self.editor_style
+    }
+
+    /// vsn: the syntax colors over `range`, for views drawn beside the editor
+    /// (sticky scroll, the minimap). Empty without a highlighter.
+    pub fn syntax_styles(&self, range: &Range<usize>) -> Vec<(Range<usize>, gpui::HighlightStyle)> {
+        let LayoutMode::CodeEditor { highlighter, .. } = &self.mode else {
+            return Vec::new();
+        };
+        let highlighter = highlighter.borrow();
+        let resolver = self.editor_style.highlight_styles.as_ref();
+        highlighter.as_ref().map_or_else(Vec::new, |h| h.styles(range, resolver))
+    }
+
     pub fn fold_all(&mut self, fold: bool, window: &mut Window, cx: &mut Context<Self>) {
         let starts: Vec<usize> = (self.display_map.fold_candidates().iter())
             .map(|r| r.start_line)

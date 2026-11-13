@@ -272,6 +272,8 @@ fn builtin_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("View: Toggle Debug Console", Box::new(ToggleDebugConsole)),
         ("View: Toggle Word Wrap", Box::new(ToggleWordWrap)),
         ("View: Zoom In", Box::new(ZoomIn)),
+        ("View: Toggle Minimap", Box::new(ToggleMinimap)),
+        ("View: Toggle Sticky Scroll", Box::new(ToggleStickyScroll)),
         ("View: Zoom Out", Box::new(ZoomOut)),
         ("View: Reset Zoom", Box::new(ZoomReset)),
         ("File: Refresh Explorer", Box::new(RefreshExplorer)),

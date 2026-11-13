@@ -527,7 +527,14 @@ Differences from VS Code still to close, smallest first within each area.
       Ctrl+0 / J) now work from the keys and the palette.
 - [ ] No Fold Recursively, Fold Level N, or folding by indentation without a
       language's ranges.
-- [ ] No minimap and no sticky scroll.
+- [x] Minimap (syntax-colored blocks, slider, click / drag / wheel) and
+      sticky scroll (scope headers with line numbers, click to go there),
+      `editor.minimap.enabled` / `editor.stickyScroll.enabled`, View: Toggle
+      Minimap / Toggle Sticky Scroll.
+- [ ] Minimap draws blocks, not characters, shows its slider always, and
+      sits left of the scrollbar; sticky headers come from fold ranges
+      (comments skipped by their first characters), don't slide up as a
+      scope ends and have no hover highlight.
 - [x] Zoom: Zoom In / Out (Ctrl+= / Ctrl+-) and Reset Zoom (palette) keep
       `window.zoomLevel` (1.2× a level) and scale the whole window.
 - [ ] Reset Zoom lacks Ctrl+NumPad0 (gpui doesn't tell the keypad's 0

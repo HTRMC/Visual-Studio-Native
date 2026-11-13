@@ -40,6 +40,7 @@ mod debug;
 pub(crate) mod extensions;
 mod exthost;
 mod lsp;
+mod minimap;
 mod output;
 mod palette;
 mod search;
@@ -154,6 +155,8 @@ actions!(
         MoveLinesDown,
         DeleteLines,
         ZoomIn,
+        ToggleMinimap,
+        ToggleStickyScroll,
         ZoomOut,
         ZoomReset,
         InsertLineAfter,
@@ -1285,6 +1288,10 @@ pub struct Workbench {
     scroll_hover: Option<&'static str>,
     /// workbench.experimental.modernUI: the parts float as rounded cards.
     modern: bool,
+    /// editor.minimap.enabled / editor.stickyScroll.enabled
+    show_minimap: bool,
+    sticky_scroll: bool,
+    minimap_drag: Rc<std::cell::Cell<Option<(Pixels, f32)>>>,
     /// Notifications added since the center was last open: the bell's dot.
     unseen: usize,
     /// Whether the bell's notification center is open.
@@ -1379,6 +1386,9 @@ impl Workbench {
             tabs_scroll: ScrollHandle::new(),
             scroll_hover: None,
             modern: modern_ui(&terminal::settings()),
+            show_minimap: terminal::settings()["editor.minimap.enabled"] != false,
+            sticky_scroll: terminal::settings()["editor.stickyScroll.enabled"] != false,
+            minimap_drag: Default::default(),
             unseen: 0,
             center: false,
             act_hover: None,
@@ -2219,9 +2229,23 @@ impl Workbench {
             extensions::apply_themes(cx);
         }
         self.modern = modern_ui(&new);
+        self.show_minimap = new["editor.minimap.enabled"] != false;
+        self.sticky_scroll = new["editor.stickyScroll.enabled"] != false;
         if changed("window.zoomLevel") {
             apply_zoom(window);
         }
+    }
+
+    /// Flips an on-by-default boolean setting (View: Toggle Minimap, ...).
+    fn toggle_setting(&mut self, key: &str, cx: &mut Context<Self>) {
+        let on = terminal::settings()[key] != false;
+        if let Err(err) = terminal::set_setting(key, (!on).into()) {
+            return self.settings_error(err, cx);
+        }
+        let new = terminal::settings();
+        self.show_minimap = new["editor.minimap.enabled"] != false;
+        self.sticky_scroll = new["editor.stickyScroll.enabled"] != false;
+        cx.notify();
     }
 
     /// View: Zoom In / Zoom Out (`by` a level) / Reset Zoom (None), kept in
@@ -6556,6 +6580,12 @@ impl Render for Workbench {
             }))
             .on_action(cx.listener(|this, _: &MoveLinesDown, window, cx| {
                 this.line_op(false, false, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleMinimap, _, cx| {
+                this.toggle_setting("editor.minimap.enabled", cx)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleStickyScroll, _, cx| {
+                this.toggle_setting("editor.stickyScroll.enabled", cx)
             }))
             .on_action(cx.listener(|this, _: &ZoomIn, window, cx| this.zoom(Some(1.), window, cx)))
             .on_action(cx.listener(|this, _: &ZoomOut, window, cx| this.zoom(Some(-1.), window, cx)))
