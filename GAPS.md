@@ -218,8 +218,9 @@ Differences from VS Code still to close, smallest first within each area.
       extension selected; open editors follow) and Delete sends it to the
       Recycle Bin after asking (Shift+Delete deletes it for good); both are
       in its menu too. F2 in an editor is still Rename Symbol.
-- [ ] The explorer lacks type-to-find and Ctrl/Shift multi-select; a deleted
-      file's open editor isn't marked deleted.
+- [x] A deleted file's open editor is marked: its tab struck through, its
+      tooltip "• Deleted"; saving writes the file back.
+- [ ] The explorer lacks type-to-find and Ctrl/Shift multi-select.
 - [x] Ctrl+Shift+E (View: Show Explorer, View > Explorer) opens the
       explorer and puts focus in it, instead of toggling the side bar.
 - [x] The explorer's files and folders have a right-click menu: Open,

@@ -635,6 +635,8 @@ struct Doc {
     /// The file's [`file_stamp`] as last read or written: a different one
     /// on disk means something else changed it.
     stamp: Option<(SystemTime, u64)>,
+    /// The file is gone from disk: the tab is struck through, as VS Code's.
+    deleted: bool,
 }
 
 /// A file's modified time and size, which a write elsewhere changes.
@@ -1655,6 +1657,7 @@ impl Workbench {
             webview: None,
             uri: None,
             stamp,
+            deleted: false,
         });
         self.activate(self.docs.len() - 1, window, cx);
         self.open_editors_changed(cx);
@@ -2289,6 +2292,7 @@ impl Workbench {
         match fs::write(&doc.path, doc.encoding.encode(&text)) {
             Ok(()) => {
                 doc.stamp = file_stamp(&doc.path);
+                doc.deleted = false;
                 doc.dirty = false;
                 doc.saved = text_hash(&doc.editor, cx);
                 let path = doc.path.clone();
@@ -2492,6 +2496,13 @@ impl Workbench {
     /// The watcher saw `paths` change (`all`: it lost track): editors on
     /// them without unsaved changes take the file's new text, as VS Code's do.
     fn disk_changed(&mut self, paths: &[PathBuf], all: bool, window: &mut Window, cx: &mut Context<Self>) {
+        for d in self.docs.iter_mut().filter(|d| d.stamp.is_some() && (all || paths.contains(&d.path))) {
+            let gone = !d.path.exists();
+            if d.deleted != gone {
+                d.deleted = gone;
+                cx.notify();
+            }
+        }
         for ix in 0..self.docs.len() {
             let d = &self.docs[ix];
             // Large files aren't reread: that's a second or more each.
@@ -5106,7 +5117,10 @@ impl Workbench {
             let active = ix == self.active;
             let name = Self::doc_name(doc);
             let group = SharedString::from(format!("tab-{ix}"));
-            let full = SharedString::from(doc.path.display().to_string());
+            let full = match doc.deleted {
+                true => SharedString::from(format!("{} • Deleted", doc.path.display())),
+                false => SharedString::from(doc.path.display().to_string()),
+            };
             h_flex()
                 .id(("tab", ix))
                 .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
@@ -5142,7 +5156,13 @@ impl Workbench {
                     (_, true) => codicon(icon::OPEN_PREVIEW).into_any_element(),
                     _ => file_icon(&doc.path).into_any_element(),
                 })
-                .child(div().flex_1().whitespace_nowrap().child(name.clone()))
+                .child(
+                    div()
+                        .flex_1()
+                        .whitespace_nowrap()
+                        .when(doc.deleted, |d| d.line_through())
+                        .child(name.clone()),
+                )
                 .child(
                     div()
                         .id(("tab-close", ix))
