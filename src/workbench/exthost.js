@@ -368,14 +368,19 @@ function createStatusBarItem(a, b, c) {
 }
 
 function createOutputChannel(name) {
+  const append = (text) => send({ m: 'log', channel: name, text: String(text), append: true });
   const write = (text) => send({ m: 'log', channel: name, text: String(text) });
+  const clear = () => send({ m: 'outputClear', channel: name });
   const level = (l) => (s, ...a) => write(`[${l}] ${util.format(s, ...a)}`);
-  // ponytail: append starts a new line, and show() doesn't reveal the panel.
   return {
     name,
-    append: write,
+    append,
     appendLine: write,
-    replace: () => {}, clear: () => {}, show: () => {}, hide: () => {}, dispose: () => {},
+    replace: (text) => { clear(); append(text); },
+    clear,
+    // show(preserveFocus) or the old show(column, preserveFocus).
+    show: () => send({ m: 'outputShow', channel: name }),
+    hide: () => {}, dispose: () => {},
     trace: level('trace'), debug: level('debug'), info: level('info'),
     warn: level('warning'), error: level('error'),
     logLevel: 3, onDidChangeLogLevel: never,

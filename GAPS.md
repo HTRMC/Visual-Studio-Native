@@ -667,8 +667,10 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [x] Debug lenses (rust-analyzer's "Debug") start vsn's debugger through `debug.startDebugging` with lldb-dap (found on PATH or in LLVM's install dir); vsn sets `PYTHONHOME` for it to the Python on PATH, as LLVM's Windows lldb otherwise dies looking for its standard library next to itself.
 - [ ] `debug.register*` providers are stubs and there are no debug session events (`onDidStartDebugSession` and the like); `activeDebugSession` stays undefined.
 - [ ] rust-analyzer: no test explorer, walkthroughs, `.rast` syntax, `jsonValidation` schemas, crate graph webview, or `command:` links in hovers; status item tooltips and `withProgress` don't show.
-- [ ] Output: `append` always starts a new line, `show()`/`clear()`/`replace()`
-      do nothing, no filter, no word-wrap toggle, channels aren't sorted.
+- [x] Output channels' `append` started a new line and `show()`/`clear()`/
+      `replace()` did nothing; append continues the line, show opens the
+      panel on the channel, clear and replace work.
+- [ ] Output: no filter, no word-wrap toggle, channels aren't sorted.
 - [x] VS Code's own commands (`vscode.open`, `workbench.action.*`) called by extensions do nothing.
 - [x] `globalState`/`workspaceState` are in memory only; `activeTextEditor` doesn't reach the host.
 - [x] Documents reach the host (open, change, save, close).

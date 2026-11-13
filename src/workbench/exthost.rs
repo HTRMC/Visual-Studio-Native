@@ -1321,7 +1321,10 @@ impl Workbench {
                 self.log("Extension Host", &text, cx);
                 self.error(text.lines().next().unwrap_or_default().to_string(), cx);
             }
+            "log" if msg["append"] == true => self.append_output(&text("channel"), &text("text"), cx),
             "log" => self.log(&text("channel"), &text("text"), cx),
+            "outputClear" => self.clear_channel(&text("channel"), cx),
+            "outputShow" => self.show_channel(&text("channel"), cx),
             "task" => {
                 let (name, line) = (text("name"), text("commandLine"));
                 let cwd = msg["cwd"].as_str().map(PathBuf::from);
