@@ -170,8 +170,9 @@ Differences from VS Code still to close, smallest first within each area.
       general settings.json yet; only the terminal reads one).
 - [x] settings.json with comments or trailing commas (JSONC) was ignored, and
       picking a default terminal profile then overwrote it.
-- [ ] Settings are read from settings.json as each feature needs them; there's
-      no file watcher and no workspace `.vscode/settings.json`.
+- [x] settings.json is watched: a change from outside vsn applies at once
+      (theme, word wrap, file associations, zoom, minimap...).
+- [ ] No workspace `.vscode/settings.json`.
 - [x] Setting the default terminal profile rewrites settings.json as plain
       JSON, dropping its comments (VS Code edits the one property in place).
 - [x] Writing the default terminal profile into a settings.json that doesn't
@@ -285,8 +286,8 @@ Differences from VS Code still to close, smallest first within each area.
       (VS Code: absolute path), and file icons still follow the file name.
 - [x] Changing `files.associations` (saving settings.json, or Configure File
       Association) re-languages open editors, except hand-picked ones.
-- [ ] settings.json changed outside vsn isn't noticed until a feature
-      re-reads it (no settings watcher), so open editors keep their language.
+- [x] settings.json changed outside vsn wasn't noticed until a feature
+      re-read it, so open editors kept their language.
 - [x] Undoing back to the saved text leaves the tab dirty (VS Code clears
       the dot).
 - [x] A file changed on disk while open wasn't noticed. A clean editor now

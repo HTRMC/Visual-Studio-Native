@@ -1260,6 +1260,10 @@ pub struct Workbench {
     /// Explorer listings (folders first, then name), dropped when the watcher sees them change.
     dirs: HashMap<PathBuf, Vec<(PathBuf, bool)>>,
     watcher: Option<(notify::RecommendedWatcher, Task<()>)>,
+    /// settings.json as last applied, and the watcher that applies its
+    /// changes from outside vsn.
+    settings_seen: serde_json::Value,
+    settings_watcher: Option<(notify::RecommendedWatcher, Task<()>)>,
     /// The explorer's New File/Folder row: the folder it goes in, whether it
     /// makes a folder, and its name box.
     new_item: Option<(PathBuf, bool, Entity<InputState>)>,
@@ -1370,6 +1374,8 @@ impl Workbench {
             tree_focus: cx.focus_handle(),
             dirs: HashMap::new(),
             watcher: None,
+            settings_seen: terminal::settings(),
+            settings_watcher: None,
             new_item: None,
             renaming: None,
             quitting: false,
@@ -1442,6 +1448,7 @@ impl Workbench {
         })
         .detach();
         this.watch_root(cx);
+        this.watch_settings(cx);
         if zoom_level() != 0. {
             apply_zoom(window);
         }
@@ -2221,6 +2228,43 @@ impl Workbench {
         cx.notify();
     }
 
+    /// Applies settings.json when it changes on disk (an editor elsewhere, a
+    /// sync), as VS Code's settings watcher does.
+    fn watch_settings(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = terminal::settings_path() else { return };
+        let Some(dir) = path.parent() else { return };
+        fs::create_dir_all(dir).ok();
+        let (tx, mut rx) = futures::channel::mpsc::unbounded::<()>();
+        let file = path.clone();
+        let watcher = notify::recommended_watcher(move |ev: notify::Result<notify::Event>| {
+            if ev.is_ok_and(|ev| ev.paths.iter().any(|p| p == &file)) {
+                tx.unbounded_send(()).ok();
+            }
+        });
+        let Ok(mut watcher) = watcher else { return };
+        if watcher.watch(dir, RecursiveMode::NonRecursive).is_err() {
+            return;
+        }
+        let task = cx.spawn(async move |this, cx| {
+            while rx.next().await.is_some() {
+                while rx.try_recv().is_ok() {}
+                let alive = this.update(cx, |this, cx| {
+                    this.in_window(cx, |this, window, cx| {
+                        if terminal::settings() != this.settings_seen {
+                            let old = this.settings_seen.clone();
+                            this.settings_changed(&old, window, cx);
+                            cx.notify();
+                        }
+                    })
+                });
+                if alive.is_err() {
+                    return;
+                }
+            }
+        });
+        self.settings_watcher = Some((watcher, task));
+    }
+
     /// Applies settings.json's changes from `old`.
     fn settings_changed(
         &mut self,
@@ -2230,6 +2274,7 @@ impl Workbench {
     ) {
         self.relanguage(old, window, cx);
         let new = terminal::settings();
+        self.settings_seen = new.clone();
         let changed = |key: &str| old[key] != new[key];
         if changed("workbench.colorTheme")
             || changed("workbench.iconTheme")
