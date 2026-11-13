@@ -1312,9 +1312,10 @@ impl Workbench {
     }
 
     /// editor.formatOnSave: Save formats editor `ix` with its server first,
-    /// waiting up to editor.formatOnSaveTimeout (750ms), then writes it.
-    // ponytail: Save only; VS Code formats on Save All and a delayed auto
-    // save's neighbours too, and `[lang]` overrides aren't read.
+    /// then writes it.
+    // ponytail: Save only, not Save All; `[lang]` overrides aren't read; and
+    // a server slower than 5s is given up on, where VS Code shows progress
+    // with a Cancel button.
     pub(super) fn save_formatted(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let settings = super::terminal::settings();
         let server = (settings["editor.formatOnSave"] == true)
@@ -1333,9 +1334,8 @@ impl Workbench {
             "options": { "tabSize": doc.indent.tab_size, "insertSpaces": !doc.indent.hard_tabs },
         });
         let reply = server.request("textDocument/formatting", params);
-        let timeout = settings["editor.formatOnSaveTimeout"].as_u64().unwrap_or(750);
         cx.spawn_in(window, async move |this, cx| {
-            let timer = cx.background_executor().timer(std::time::Duration::from_millis(timeout));
+            let timer = cx.background_executor().timer(std::time::Duration::from_secs(5));
             let format = format_reply(reply, editor.clone(), before, cx);
             futures::future::select(Box::pin(format), Box::pin(timer)).await;
             this.update_in(cx, |this, window, cx| {

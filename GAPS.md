@@ -698,10 +698,11 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [x] Find All References (Shift+F12) from language servers and extensions, as a pick list grouped by file.
 - [ ] References show in a pick list, not a peek view or the References panel; no Go to References or Shift+Alt+F12.
 - [x] Format Selection (Ctrl+K Ctrl+F; the cursor's line when nothing is selected) from language servers and extensions.
-- [x] `editor.formatOnSave`: Save formats with the language server first,
-      waiting up to `editor.formatOnSaveTimeout`.
+- [x] `editor.formatOnSave`: Save formats with the language server first
+      (giving up after 5s). It, the minimap, sticky scroll and
+      `files.hotExit` are in the Settings UI.
 - [ ] Format on type and document symbols from language servers; format on
-      save runs on Save only (not Save All or auto save) and ignores `[lang]`.
+      save runs on Save only (not Save All) and ignores `[lang]`.
 - [x] Parameter hints after `(` and `,` or on Ctrl+Shift+Space, from language servers and extensions.
 - [ ] Parameter hints ignore the server's trigger characters, don't follow cursor moves, can't cycle overloads, and show markdown as plain text.
 - [x] Completion asks on the server's trigger characters and says so in the request's context.

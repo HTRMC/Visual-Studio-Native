@@ -68,6 +68,27 @@ fn builtin() -> Map<String, Value> {
     }
     let glob = "[glob patterns](https://aka.ms/vscode-glob-patterns)";
     let json = json!({
+        "editor.formatOnSave": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "Format a file on save. A formatter must be available and the editor must not be shutting down. When `#files.autoSave#` is set to `afterDelay`, the file will only be formatted when saved explicitly.",
+        },
+        "editor.minimap.enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Controls whether the minimap is shown.",
+        },
+        "editor.stickyScroll.enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Shows the nested current scopes during the scroll at the top of the editor.",
+        },
+        "files.hotExit": {
+            "type": "string",
+            "enum": ["off", "onExit", "onExitAndWindowClose"],
+            "default": "onExit",
+            "markdownDescription": "[Hot Exit](https://aka.ms/vscode-hot-exit) controls whether unsaved files are remembered between sessions, allowing the save prompt when exiting the editor to be skipped.",
+        },
         "editor.wordWrap": {
             "type": "string",
             "enum": ["off", "on", "wordWrapColumn", "bounded"],
