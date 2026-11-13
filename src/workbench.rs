@@ -5354,6 +5354,9 @@ impl Workbench {
         let wb_more = wb.clone();
         let tabs_hover = self.hover_slider("tabs", cx);
         let open: Rc<[PathBuf]> = self.docs.iter().map(|d| d.path.clone()).collect();
+        let tab_colors: Vec<_> = (self.docs.iter())
+            .map(|d| self.problem_deco(&d.path, false).map(|(color, _)| color))
+            .collect();
         let tabs = self.docs.iter().enumerate().map(|(ix, doc)| {
             // A tab dragged from the left lands after this one, anything
             // else before it; the border shows which side.
@@ -5408,6 +5411,8 @@ impl Workbench {
                         .flex_1()
                         .whitespace_nowrap()
                         .when(doc.deleted, |d| d.line_through())
+                        // VS Code's workbench.editor.decorations.colors.
+                        .when_some(tab_colors[ix], |d, color| d.text_color(color))
                         .child(name.clone()),
                 )
                 .child(
