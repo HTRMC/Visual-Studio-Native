@@ -1786,6 +1786,7 @@ impl Workbench {
                 let (wb, id, url) = (wb.clone(), l.id.clone(), l.download.clone());
                 blue_button((SharedString::from(format!("{key}-install")), ix), "Install", cx)
                     .on_click(move |_, _, cx| {
+                        cx.stop_propagation();
                         wb.update(cx, |this, cx| {
                             this.install_listing(id.clone(), url.clone(), cx)
                         })
@@ -2345,6 +2346,8 @@ impl Workbench {
                         blue_button(("ext-update", ix), "Update", cx)
                             .tooltip(format!("Update to v{}", l.version))
                             .on_click(cx.listener(move |this, _, _, cx| {
+                                // Not the row's click too, which opens the page.
+                                cx.stop_propagation();
                                 this.install_listing(id.clone(), url.clone(), cx)
                             }))
                             .into_any_element()
