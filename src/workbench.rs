@@ -615,7 +615,7 @@ struct Doc {
     dirty: bool,
     /// [`text_hash`] of the text as last opened or saved: an edit back to it
     /// clears `dirty`, as undoing to the saved text does in VS Code.
-    saved: u64,
+    saved: (usize, u64),
     crlf: bool,
     /// VS Code's language id: the file's, or Change Language Mode's pick.
     lang: &'static str,
@@ -757,13 +757,14 @@ fn is_large(text: &str) -> bool {
     text.len() > 20 << 20 || text.bytes().filter(|&b| b == b'\n').nth(300_000).is_some()
 }
 
-fn text_hash(editor: &Entity<EditorState>, cx: &App) -> u64 {
+fn text_hash(editor: &Entity<EditorState>, cx: &App) -> (usize, u64) {
     use std::hash::Hasher;
     let mut h = std::hash::DefaultHasher::new();
-    for chunk in editor.read(cx).text().chunks() {
+    let text = editor.read(cx).text();
+    for chunk in text.chunks() {
         h.write(chunk.as_bytes());
     }
-    h.finish()
+    (text.len(), h.finish())
 }
 
 /// The edit for Copy/Move Line Up/Down on the lines `sel` touches in
@@ -1752,8 +1753,7 @@ impl Workbench {
             indent,
             lang,
             path,
-            // A large file isn't hashed: any edit marks it dirty.
-            saved: if large { 0 } else { text_hash(&editor, cx) },
+            saved: text_hash(&editor, cx),
             editor,
             dirty: false,
             crlf,
@@ -1926,10 +1926,11 @@ impl Workbench {
                 if matches!(ev, InputEvent::Change)
                     && let Some(doc) = this.docs.iter_mut().find(|d| &d.editor == editor)
                 {
-                    // ponytail: hashes the whole text per edit; keep a saved
-                    // undo version instead if huge files lag. A large file
-                    // skips it (and the endings count) and stays dirty.
-                    doc.dirty = doc.large || text_hash(editor, cx) != doc.saved;
+                    // ponytail: hashes the whole text when its length is back
+                    // to the saved one (~0.5s/GB); keep a saved undo version
+                    // instead if that lags. A large file skips the endings count.
+                    let len = editor.read(cx).text().len();
+                    doc.dirty = len != doc.saved.0 || text_hash(editor, cx) != doc.saved;
                     // Most endings decide, as Enter inserts a bare LF and undoing
                     // Change End of Line Sequence brings the old endings back.
                     let text = editor.read(cx).text();

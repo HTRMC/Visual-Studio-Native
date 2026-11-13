@@ -131,8 +131,9 @@ Differences from VS Code still to close, smallest first within each area.
       1GB file opens in ~1.5s and types without lag.
 - [x] Opening a large file (over 20MB or 300,000 lines) shows VS Code's
       notice that tokenization is off for it.
-- [ ] Large files: the dirty dot stays after undo to the saved text, and
-      search results don't follow their edits.
+- [x] Large files: undo back to the saved text clears the dirty dot (the
+      text is hashed only when its length is back to the saved one).
+- [ ] Large files: search results don't follow their edits.
 - [x] The folder and editors are saved as they change, not only on a clean quit.
 - [ ] Markdown preview: Ctrl+K V and the title button split the editor rather
       than opening a second group; no scroll sync, relative images or links.
