@@ -3439,9 +3439,10 @@ impl Workbench {
                 return None;
             }
             let moved = (op == Occurrence::MoveLast).then(|| m.added.pop());
-            // Matches not selected already.
+            // Matches not selected already, by any cursor.
+            let taken = e.selected_ranges();
             let free: Vec<Range<usize>> = (found.into_iter())
-                .filter(|r| r.start != sel.start && m.added.iter().all(|a| a.start != r.start))
+                .filter(|r| taken.iter().all(|a| a.start != r.start))
                 .collect();
             let next = |from| {
                 free.iter()
@@ -3454,23 +3455,26 @@ impl Workbench {
                 None => (free.iter().rfind(|r| r.end <= m.before))
                     .or(free.last())
                     .cloned()?,
-                Some(moved) => match moved {
-                    // The only selection moves.
-                    None => {
-                        let r = next(sel.end)?;
+                // The last one this added moves, else the active one; the
+                // other cursors stay.
+                // ponytail: an Alt+Click cursor isn't "last" (gpui-base keeps
+                // selections sorted, not in the order they came).
+                Some(moved) => {
+                    let gone = moved.unwrap_or(sel.clone());
+                    let r = next(gone.end)?;
+                    let keep: Vec<Range<usize>> = taken.into_iter().filter(|a| *a != gone).collect();
+                    let Some(first) = keep.first() else {
                         e.set_selected_range(r.clone(), cx);
                         (m.sel, m.after, m.before) = (r.clone(), r.end, r.start);
                         return Some(m);
+                    };
+                    e.set_selected_range(first.clone(), cx);
+                    m.sel = first.clone();
+                    for a in &keep[1..] {
+                        e.add_selection(a.clone(), cx);
                     }
-                    Some(last) => {
-                        let r = next(last.end)?;
-                        e.set_selected_range(sel.clone(), cx);
-                        for a in &m.added {
-                            e.add_selection(a.clone(), cx);
-                        }
-                        r
-                    }
-                },
+                    r
+                }
             };
             e.add_selection(r.clone(), cx);
             m.added.push(r.clone());

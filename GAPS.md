@@ -393,9 +393,12 @@ Differences from VS Code still to close, smallest first within each area.
       panel has Match Case only), so Ctrl+D can't follow them either.
 - [x] Ctrl+K Ctrl+D (Move Last Selection to Next Find Match) was missing;
       it's in the palette too, and Ctrl+D skips matches already selected.
-- [ ] The occurrence commands only know the selections they added; ones
-      from Alt+Click or Add Cursor aren't skipped or moved (gpui-base has no
-      way to read an editor's other selections).
+- [x] The occurrence commands only knew the selections they added; now
+      Ctrl+D skips matches any cursor has, and Ctrl+K Ctrl+D keeps
+      Alt+Click and Add Cursor cursors.
+- [ ] Ctrl+K Ctrl+D moves the active selection, not an Alt+Click cursor
+      added last (gpui-base keeps selections sorted, not in order), and
+      Ctrl+D with several empty cursors selects the active one's word only.
 - [x] Selection > Add Previous Occurrence was missing; it's in the menu
       and the palette (Add Selection To Previous Find Match).
 - [x] Selection > Expand/Shrink Selection were inert; they and
