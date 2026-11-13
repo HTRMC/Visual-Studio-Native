@@ -2481,6 +2481,10 @@ impl Workbench {
         if changed("window.zoomLevel") {
             apply_zoom(window);
         }
+        // The explorer reads its folders again under the new excludes.
+        if changed("files.exclude") {
+            self.dirs.clear();
+        }
     }
 
     /// Flips an on-by-default boolean setting (View: Toggle Minimap, ...).
@@ -4827,8 +4831,7 @@ impl Workbench {
             .dirs
             .entry(dir.to_path_buf())
             .or_insert_with(|| {
-                // ponytail: settings.json is read per folder read, and an edit to
-                // `files.exclude` shows on the next refresh, not live.
+                // ponytail: settings.json is read per folder read.
                 let root = self.root.as_deref().unwrap_or(dir);
                 let excluded = search::overrides(root, "", "", &search::exclude_globs(false))
                     .unwrap_or_else(|_| Override::empty());

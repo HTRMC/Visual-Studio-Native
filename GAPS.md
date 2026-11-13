@@ -513,8 +513,8 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Search and the explorer ignore the `files.exclude` and `search.exclude`
       settings (VS Code hides `.git` etc. and skips `node_modules` by default).
 - [x] `files.exclude` ignores `{"when": ...}` sibling conditions.
-- [ ] An edit to settings.json shows in the explorer only after a refresh (no
-      watcher).
+- [x] A `files.exclude` edit in settings.json showed in the explorer only
+      after a refresh; it now applies as the file is saved.
 - [ ] A `when` sibling is checked with a stat per matching entry on every
       explorer render and walk; no cache of the folder's names.
 - [x] A right-click in the explorer's empty area doesn't move the focus
