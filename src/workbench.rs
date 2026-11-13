@@ -1436,6 +1436,8 @@ pub struct Workbench {
     /// Zen Mode: the side bar's and panel's visibility to restore, and
     /// whether it made the window full screen.
     zen: Option<(bool, bool, bool)>,
+    /// When Escape was last pressed in Zen Mode: a second one soon after leaves.
+    zen_escape: Option<Instant>,
     /// Hot exit's pending write of unsaved text after an edit.
     backup: Option<Task<()>>,
     /// Notifications added since the center was last open: the bell's dot.
@@ -1540,6 +1542,7 @@ impl Workbench {
             minimap_drag: Default::default(),
             closed: Vec::new(),
             zen: None,
+            zen_escape: None,
             backup: None,
             unseen: 0,
             center: false,
@@ -3223,7 +3226,7 @@ impl Workbench {
 
     /// View: Toggle Zen Mode (Ctrl+K Z): full screen with only the editor,
     /// as VS Code's zenMode defaults have it.
-    // ponytail: no Escape Escape to leave, no centered layout.
+    // ponytail: no centered layout.
     fn toggle_zen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.zen.take() {
             Some((sidebar, panel, full)) => {
@@ -6707,7 +6710,15 @@ impl Render for Workbench {
             })
             .track_focus(&self.focus)
             .children(signature)
-            .capture_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {
+            .capture_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
+                if e.keystroke.key == "escape" && e.keystroke.modifiers == Modifiers::none() {
+                    // Escape Escape leaves Zen Mode, as in VS Code.
+                    let last = this.zen_escape.replace(Instant::now());
+                    if this.zen.is_some() && last.is_some_and(|t| t.elapsed() < Duration::from_millis(500)) {
+                        this.zen_escape = None;
+                        this.toggle_zen(window, cx);
+                    }
+                }
                 if e.keystroke.key == "escape" {
                     this.hide_signature(cx);
                 }

@@ -571,7 +571,9 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Zen Mode (Ctrl+K Z: full screen, only the editor), Open Recent's
       picker (Ctrl+R outside the terminal, Open Recent > More...) and Close
       Folder's Ctrl+K F.
-- [ ] Zen Mode has no Escape Escape to leave and no centered layout.
+- [x] Zen Mode had no Escape Escape to leave; two Escapes within half a
+      second now leave it.
+- [ ] Zen Mode has no centered layout.
 - [x] Menus and the command palette showed only a chord's first key
       ("Ctrl+K" for Last Edit Location's Ctrl+K Ctrl+Q, Save All's Ctrl+K S).
 - [x] Do Not Disturb (the center's bell-slash button, Notifications: Toggle Do Not Disturb Mode): the bell turns bell-slash and warnings skip the toast.
