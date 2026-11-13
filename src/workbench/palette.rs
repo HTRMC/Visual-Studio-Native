@@ -651,6 +651,14 @@ impl Palette {
         }
     }
 
+    /// Drops `path` from Open Recent.
+    pub(super) fn forget_opened(&mut self, path: &Path, cx: &App) {
+        let path = path.to_string_lossy();
+        self.folders.retain(|p| *p != path);
+        self.opened.retain(|p| *p != path);
+        self.save(cx);
+    }
+
     /// Clear Recently Opened: Open Recent's lists and, as in VS Code, Quick
     /// Open's editor history.
     pub(super) fn clear_opened(&mut self, cx: &App) {

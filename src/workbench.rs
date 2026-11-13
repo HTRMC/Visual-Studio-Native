@@ -2835,13 +2835,13 @@ impl Workbench {
     }
 
     /// File: Open Recent... (Ctrl+R): recent folders, then files, in the
-    /// palette; the open folder and gone paths are left out.
+    /// palette; the open folder is left out.
     fn recent_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let root = self.root.clone();
         let paths: Vec<(PathBuf, bool)> = (self.palette.folders.iter().map(|f| (f, true)))
             .chain(self.palette.opened.iter().map(|f| (f, false)))
             .map(|(p, folder)| (PathBuf::from(p), folder))
-            .filter(|(p, _)| p.exists() && Some(p) != root.as_ref())
+            .filter(|(p, _)| Some(p) != root.as_ref())
             .collect();
         let rows = (paths.iter())
             .map(|(p, _)| {
@@ -2883,6 +2883,31 @@ impl Workbench {
     pub fn open_recent(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         self.palette.remember_opened(false, &path, cx);
         self.open_path(path, window, cx);
+    }
+
+    /// Opens an Open Recent entry; a gone one offers to leave the list, as
+    /// in VS Code.
+    pub fn open_recent_entry(&mut self, path: PathBuf, folder: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if path.exists() {
+            return match folder {
+                true => self.set_root(path, cx),
+                false => self.open_recent(path, window, cx),
+            };
+        }
+        let message = format!("The path '{}' does not exist on this computer.", path.display());
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &message,
+            None,
+            &["Remove from Recently Opened", "Cancel"],
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            if answer.await == Ok(0) {
+                this.update(cx, |this, cx| this.palette.forget_opened(&path, cx)).ok();
+            }
+        })
+        .detach();
     }
 
     fn set_root(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -7615,11 +7640,10 @@ fn app_menu(
             .menu("Open File...", Box::new(OpenFile))
             .map(|m| chord(m, "Open Folder...", OpenFolder))
             .submenu("Open Recent", window, cx, move |mut m, _, _| {
-                // VS Code's menu shows 10 of each; gone ones are left out.
+                // VS Code's menu shows 10 of each.
                 m = m.menu("Reopen Closed Editor", Box::new(ReopenClosedEditor)).separator();
                 for (folder, list) in [(true, &recent.folders), (false, &recent.files)] {
-                    let paths = list.iter().map(PathBuf::from).filter(|p| p.exists());
-                    for path in paths.take(10) {
+                    for path in list.iter().map(PathBuf::from).take(10) {
                         let wb = recent.workbench.clone();
                         // A long path ends in "…" inside the menu's 500px.
                         let label = SharedString::from(path.to_string_lossy().into_owned());
@@ -7631,11 +7655,7 @@ fn app_menu(
                         });
                         m = m.item(item.on_click(move |_, window, cx| {
                             let path = path.clone();
-                            wb.update(cx, |wb, cx| match folder {
-                                true => wb.set_root(path, cx),
-                                false => wb.open_recent(path, window, cx),
-                            })
-                            .ok();
+                            wb.update(cx, |wb, cx| wb.open_recent_entry(path, folder, window, cx)).ok();
                         }));
                     }
                     m = m.separator();
