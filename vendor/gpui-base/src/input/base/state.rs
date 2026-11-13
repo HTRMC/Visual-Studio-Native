@@ -2196,7 +2196,7 @@ impl<M: InputModeKind> InputBaseState<M> {
                     } else {
                         String::new()
                     };
-                    edits.push((sel.start..sel.end, format!("\n{}", indent)));
+                    edits.push((sel.start..sel.end, format!("{}{}", self.line_break(), indent)));
                 }
                 edits.sort_by_key(|(range, _)| range.start);
                 self.replace_text_in_ranges(&edits, window, cx);
@@ -2245,9 +2245,10 @@ impl<M: InputModeKind> InputBaseState<M> {
                                         }
                                     }
                                 }
-                                let new_line_text = format!("\n{inner}\n{indent}");
+                                let nl = self.line_break();
+                                let new_line_text = format!("{nl}{inner}{nl}{indent}");
                                 self.replace_text_in_range_silent(None, &new_line_text, window, cx);
-                                self.set_cursor_to(off + 1 + inner.len());
+                                self.set_cursor_to(off + nl.len() + inner.len());
                                 self.update_preferred_column();
                                 let cursors = self.selections.iter().copied().collect::<Vec<_>>();
                                 self.undo_manager
@@ -2271,7 +2272,7 @@ impl<M: InputModeKind> InputBaseState<M> {
                     };
 
                     // Add newline and indent
-                    let new_line_text = format!("\n{}", indent);
+                    let new_line_text = format!("{}{}", self.line_break(), indent);
                     self.replace_text_in_range_silent(None, &new_line_text, window, cx);
                     self.pause_blink_cursor(cx);
                 }
@@ -2287,6 +2288,17 @@ impl<M: InputModeKind> InputBaseState<M> {
             secondary: action.secondary,
             shift: action.shift,
         });
+    }
+
+    /// vsn: the line break Enter inserts: CRLF in a text that has CRs,
+    /// so a CRLF file stays CRLF.
+    // ponytail: scans the text per Enter, and any CR counts; track the
+    // file's line ending if huge files lag.
+    fn line_break(&self) -> &'static str {
+        match self.text.chunks().any(|c| c.contains('\r')) {
+            true => "\r\n",
+            false => "\n",
+        }
     }
 
     /// vsn: Enter under the first matching onEnterRule, if any matches.
@@ -2323,10 +2335,11 @@ impl<M: InputModeKind> InputBaseState<M> {
         };
         new.truncate(new.len().saturating_sub(rule.remove_text));
         new.push_str(&rule.append_text);
-        let caret = off + 1 + new.len();
+        let nl = self.line_break();
+        let caret = off + nl.len() + new.len();
         let text = match rule.action {
-            IndentAction::IndentOutdent => format!("\n{new}\n{indent}"),
-            _ => format!("\n{new}"),
+            IndentAction::IndentOutdent => format!("{nl}{new}{nl}{indent}"),
+            _ => format!("{nl}{new}"),
         };
         self.replace_text_in_range_silent(None, &text, window, cx);
         self.set_cursor_to(caret);

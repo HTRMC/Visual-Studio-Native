@@ -431,8 +431,8 @@ Differences from VS Code still to close, smallest first within each area.
       one ending throughout, and the label goes by most endings.
 - [x] New untitled files start LF; VS Code's files.eol "auto" makes them
       CRLF on Windows (so do files opened without line breaks).
-- [ ] Enter inserts a bare LF even in a CRLF file (gpui-base hardcodes it);
-      saving fixes the bytes, but copying lines out carries mixed endings.
+- [x] Enter inserted a bare LF even in a CRLF file; a patched gpui-base
+      inserts CRLF when the text has CRs.
 - [x] The breadcrumb of a file outside the folder showed a stray `\` after
       `C:`.
 - [x] A breadcrumb wider than the editor runs off the right edge, hiding

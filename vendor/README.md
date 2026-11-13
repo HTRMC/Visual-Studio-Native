@@ -46,7 +46,8 @@ comment; on a gpui-kit update, copy the new version over and re-apply them.
   Recursively / Fold Level commands, and
   `fold_candidates` on the display map; `gutter_width`, `editor_style` and
   `syntax_styles` for sticky scroll and the minimap, drawn beside the editor;
-  `selected_ranges` so line commands act on every cursor.
+  `selected_ranges` so line commands act on every cursor; Enter inserts
+  CRLF in a text with CRs (`line_break`), so CRLF files stay CRLF.
 - **gpui-base 0.8.0** (`src/input/editor/lsp/semantic_tokens.rs`):
   `refresh_semantic_tokens` asks the provider again, for a server's
   `workspace/semanticTokens/refresh`.
