@@ -360,6 +360,8 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-=", ZoomIn, None),
         shifted("ctrl-shift-=", Box::new(ZoomIn), None),
         KeyBinding::new("ctrl--", ZoomOut, None),
+        // VS Code: Ctrl+NumPad0 (its Ctrl+0 focuses the side bar, not built here).
+        KeyBinding::new("ctrl-0", ZoomReset, None),
         KeyBinding::new("ctrl-d", AddNextOccurrence, Some("Input && mode == editor")),
         KeyBinding::new(
             "shift-alt-right",

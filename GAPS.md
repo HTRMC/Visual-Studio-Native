@@ -539,11 +539,13 @@ Differences from VS Code still to close, smallest first within each area.
       sits left of the scrollbar; sticky headers come from fold ranges
       (comments skipped by their first characters), don't slide up as a
       scope ends and have no hover highlight.
-- [x] Zoom: Zoom In / Out (Ctrl+= / Ctrl+-) and Reset Zoom (palette) keep
-      `window.zoomLevel` (1.2× a level) and scale the whole window.
-- [ ] Reset Zoom lacks Ctrl+NumPad0 (gpui doesn't tell the keypad's 0
-      apart); View > Appearance has no zoom items; title-bar menus that
-      don't fit are cut off instead of moving into a "..." menu.
+- [x] Zoom: Zoom In / Out (Ctrl+= / Ctrl+-) and Reset Zoom (Ctrl+NumPad0,
+      the palette) keep `window.zoomLevel` (1.2× a level) and scale the
+      whole window.
+- [ ] Ctrl+0 resets zoom too (gpui doesn't tell the keypad's 0 apart; VS
+      Code's Ctrl+0 focuses the side bar); View > Appearance has no zoom
+      items; title-bar menus that don't fit are cut off instead of moving
+      into a "..." menu.
 - [ ] No Zen Mode (Ctrl+K Z), Open Recent picker (Ctrl+R) or Close Folder
       (Ctrl+K F).
 - [x] Menus and the command palette showed only a chord's first key
