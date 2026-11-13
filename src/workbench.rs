@@ -19,7 +19,7 @@ use gpui_kit::component::{
     Sizable as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
     h_resizable,
-    input::{self, Editor, EditorState, Input, InputEvent, InputState, RopeExt as _, TabSize},
+    input::{self, Editor, EditorState, FoldRange, Input, InputEvent, InputState, RopeExt as _, TabSize},
     menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem},
     resizable_panel,
     text::TextView,
@@ -171,6 +171,15 @@ actions!(
         ToggleFold,
         FoldAll,
         UnfoldAll,
+        FoldRecursively,
+        UnfoldRecursively,
+        FoldLevel1,
+        FoldLevel2,
+        FoldLevel3,
+        FoldLevel4,
+        FoldLevel5,
+        FoldLevel6,
+        FoldLevel7,
         ToggleLineComment,
         AddNextOccurrence,
         AddPreviousOccurrence,
@@ -357,6 +366,15 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-k ctrl-l", ToggleFold, Some("Input && mode == editor")),
         KeyBinding::new("ctrl-k ctrl-0", FoldAll, Some("Input && mode == editor")),
         KeyBinding::new("ctrl-k ctrl-j", UnfoldAll, Some("Input && mode == editor")),
+        shifted("ctrl-k ctrl-[", Box::new(FoldRecursively), Some("Input && mode == editor")),
+        shifted("ctrl-k ctrl-]", Box::new(UnfoldRecursively), Some("Input && mode == editor")),
+        KeyBinding::new("ctrl-k ctrl-1", FoldLevel1, Some("Input && mode == editor")),
+        KeyBinding::new("ctrl-k ctrl-2", FoldLevel2, Some("Input && mode == editor")),
+        KeyBinding::new("ctrl-k ctrl-3", FoldLevel3, Some("Input && mode == editor")),
+        KeyBinding::new("ctrl-k ctrl-4", FoldLevel4, Some("Input && mode == editor")),
+        KeyBinding::new("ctrl-k ctrl-5", FoldLevel5, Some("Input && mode == editor")),
+        KeyBinding::new("ctrl-k ctrl-6", FoldLevel6, Some("Input && mode == editor")),
+        KeyBinding::new("ctrl-k ctrl-7", FoldLevel7, Some("Input && mode == editor")),
         // Change All Occurrences selects them all, as Ctrl+Shift+L does.
         KeyBinding::new("ctrl-f2", SelectAllOccurrences, Some("Input && mode == editor")),
         KeyBinding::new("ctrl-k m", ChangeLanguageMode, None),
@@ -798,6 +816,36 @@ fn apply_zoom(window: &Window) {
             gpui_windows::set_zoom(h.hwnd.get(), 1.2f64.powf(zoom_level()) as f32);
         }
     }
+}
+
+/// Fold / Unfold Recursively (Ctrl+K Ctrl+[ / ]): the innermost region
+/// around `line` and every region inside it.
+fn recursive_folds(folds: &[FoldRange], line: usize) -> Vec<usize> {
+    let Some(outer) = (folds.iter())
+        .filter(|r| r.start_line <= line && line < r.end_line)
+        .max_by_key(|r| r.start_line)
+    else {
+        return Vec::new();
+    };
+    (folds.iter())
+        .filter(|r| outer.start_line <= r.start_line && r.end_line <= outer.end_line)
+        .map(|r| r.start_line)
+        .collect()
+}
+
+/// Fold Level N (Ctrl+K Ctrl+N): the regions nested N deep, except one
+/// around `line`.
+// ponytail: O(n²) over the regions; fine for a file's few thousand.
+fn level_folds(folds: &[FoldRange], level: usize, line: usize) -> Vec<usize> {
+    let depth = |r: &FoldRange| {
+        1 + (folds.iter())
+            .filter(|o| o.start_line < r.start_line && r.end_line <= o.end_line)
+            .count()
+    };
+    (folds.iter())
+        .filter(|r| depth(r) == level && !(r.start_line <= line && line < r.end_line))
+        .map(|r| r.start_line)
+        .collect()
 }
 
 /// Delete Line (Ctrl+Shift+K): the selected lines and their line break go;
@@ -3397,6 +3445,22 @@ impl Workbench {
         if let Some(doc) = self.docs.get(self.active).filter(|d| !d.binary) {
             doc.editor.update(cx, f);
         }
+    }
+
+    /// Folds (or unfolds) the regions `pick` chooses from the active editor's
+    /// and its cursor's line.
+    fn fold_with(
+        &mut self,
+        fold: bool,
+        pick: impl FnOnce(&[FoldRange], usize) -> Vec<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.with_editor(cx, |e, cx| {
+            let line = e.cursor_position().line as usize;
+            let starts = pick(e.display_map().fold_candidates(), line);
+            e.set_folds(&starts, fold, window, cx);
+        });
     }
 
     /// Selects what `pick` makes of the active editor's text and selection.
@@ -6799,6 +6863,33 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &UnfoldAll, window, cx| {
                 this.with_editor(cx, |e, cx| e.fold_all(false, window, cx))
             }))
+            .on_action(cx.listener(|this, _: &FoldRecursively, window, cx| {
+                this.fold_with(true, recursive_folds, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &UnfoldRecursively, window, cx| {
+                this.fold_with(false, recursive_folds, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FoldLevel1, window, cx| {
+                this.fold_with(true, |f, line| level_folds(f, 1, line), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FoldLevel2, window, cx| {
+                this.fold_with(true, |f, line| level_folds(f, 2, line), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FoldLevel3, window, cx| {
+                this.fold_with(true, |f, line| level_folds(f, 3, line), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FoldLevel4, window, cx| {
+                this.fold_with(true, |f, line| level_folds(f, 4, line), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FoldLevel5, window, cx| {
+                this.fold_with(true, |f, line| level_folds(f, 5, line), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FoldLevel6, window, cx| {
+                this.fold_with(true, |f, line| level_folds(f, 6, line), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FoldLevel7, window, cx| {
+                this.fold_with(true, |f, line| level_folds(f, 7, line), window, cx)
+            }))
             .on_action(cx.listener(|this, _: &AddNextOccurrence, _, cx| {
                 this.add_occurrences(Occurrence::Next, cx)
             }))
@@ -7543,10 +7634,22 @@ fn app_menu(
 mod tests {
     use super::{
         Encoding, block_toggled, capitalize, comment_toggled, copy_all, copy_target, detect_indent,
-        bracket_jump, expanded, line_inserted, line_selection, lines_deleted, lines_moved,
+        bracket_jump, expanded, level_folds, line_inserted, recursive_folds, line_selection, lines_deleted, lines_moved,
         occurrences, with_eol, word_around,
     };
     use std::ops::Range;
+    use super::FoldRange;
+
+    #[test]
+    fn fold_picks() {
+        // 0 impl { 1 fn a { 2 if { 3 } 4 } 5 fn b { 6 } 7 }
+        let f = [FoldRange::new(0, 7), FoldRange::new(1, 4), FoldRange::new(2, 3), FoldRange::new(5, 6)];
+        assert_eq!(recursive_folds(&f, 1), vec![1, 2]);
+        assert_eq!(recursive_folds(&f, 7), Vec::<usize>::new());
+        assert_eq!(level_folds(&f, 2, 0), vec![1, 5]);
+        assert_eq!(level_folds(&f, 2, 2), vec![5]);
+        assert_eq!(level_folds(&f, 3, 0), vec![2]);
+    }
 
     #[test]
     fn capitalized() {

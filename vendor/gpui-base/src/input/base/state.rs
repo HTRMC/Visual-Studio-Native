@@ -12214,7 +12214,13 @@ impl InputBaseState<crate::input::EditorMode> {
         let starts: Vec<usize> = (self.display_map.fold_candidates().iter())
             .map(|r| r.start_line)
             .collect();
-        for start in starts {
+        self.set_folds(&starts, fold, window, cx);
+    }
+
+    /// vsn: folds (or unfolds) the regions starting on `starts`, for Fold
+    /// Recursively and Fold Level N.
+    pub fn set_folds(&mut self, starts: &[usize], fold: bool, window: &mut Window, cx: &mut Context<Self>) {
+        for &start in starts {
             self.display_map.set_folded(start, fold);
         }
         // The cursor goes to the line of the outermost fold hiding it.

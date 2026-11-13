@@ -531,8 +531,10 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Folding: the gutter chevrons were there; Fold / Unfold (Ctrl+Shift+[
       / ]), Toggle Fold (Ctrl+K Ctrl+L), Fold All / Unfold All (Ctrl+K
       Ctrl+0 / J) now work from the keys and the palette.
-- [ ] No Fold Recursively, Fold Level N, or folding by indentation without a
-      language's ranges.
+- [x] Fold / Unfold Recursively (Ctrl+K Ctrl+[ / ]) and Fold Level 1-7
+      (Ctrl+K Ctrl+1..7), in the palette too.
+- [ ] No folding by indentation without a language's ranges, and no Fold
+      All Block Comments / Regions.
 - [x] Minimap (syntax-colored blocks, slider, click / drag / wheel) and
       sticky scroll (scope headers with line numbers, click to go there),
       `editor.minimap.enabled` / `editor.stickyScroll.enabled`, View: Toggle
