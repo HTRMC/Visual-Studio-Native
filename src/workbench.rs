@@ -4344,7 +4344,7 @@ impl Workbench {
                     match !extensions::searches_market(&self.ext_search.read(cx).value()) {
                         true => d
                             .child(section_header("ext-installed", "Installed", true))
-                            .child(list.child(self.render_installed(cx))),
+                            .child(list.child(self.render_installed(cx)).children(self.render_recommended(cx))),
                         false => d.child(list.child(self.render_market(cx))),
                     }
                 })

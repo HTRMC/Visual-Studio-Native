@@ -236,6 +236,94 @@ pub(super) struct Listing {
     download: String,
     /// Its icon's URL and where it's cached once downloaded.
     icon: Option<(String, PathBuf)>,
+    downloads: u64,
+    /// The average rating out of 5 and its review count, if it has any.
+    rating: Option<(f64, u64)>,
+    /// Open VSX's verified publisher badge.
+    verified: bool,
+}
+
+/// An Open VSX extension's JSON (a search result's or its own page's) as a listing.
+fn listing(e: &Value) -> Listing {
+    let s = |key: &str| e[key].as_str().unwrap_or_default().to_string();
+    Listing {
+        id: format!("{}.{}", s("namespace"), s("name")).to_lowercase(),
+        name: (e["displayName"].as_str()).map_or_else(|| s("name"), str::to_string),
+        publisher: s("namespace"),
+        version: s("version"),
+        description: s("description"),
+        download: e["files"]["download"].as_str().unwrap_or_default().to_string(),
+        icon: e["files"]["icon"].as_str().map(|url| {
+            let ext = url.rsplit('.').next().filter(|x| x.len() <= 4).unwrap_or("png");
+            let file = format!("{}.{}-{}.{ext}", s("namespace"), s("name"), s("version"));
+            (url.to_string(), std::env::temp_dir().join("vsn-icons").join(file))
+        }),
+        downloads: e["downloadCount"].as_u64().unwrap_or(0),
+        rating: (e["averageRating"].as_f64()).map(|r| (r, e["reviewCount"].as_u64().unwrap_or(0))),
+        verified: e["verified"] == true,
+    }
+}
+
+/// VS Code's short install count: 7.7M, 324K, 999.
+fn short_count(n: u64) -> String {
+    match n {
+        1_000_000.. => format!("{}M", (n / 100_000) as f64 / 10.),
+        1_000.. => format!("{}K", n / 1_000),
+        _ => n.to_string(),
+    }
+}
+
+/// A listing's download count and rating, as VS Code's row shows them.
+fn listing_stats(l: &Listing) -> AnyElement {
+    h_flex()
+        .flex_none()
+        .gap(px(4.))
+        .text_size(px(12.))
+        .text_color(col::fg_muted())
+        .when(l.downloads > 0, |d| {
+            d.child(codicon(icon::CLOUD_DOWNLOAD)).child(short_count(l.downloads))
+        })
+        .when_some(l.rating, |d, (r, _)| {
+            // extensionIcon.starForeground
+            d.child(codicon(icon::STAR_FULL).ml(px(4.)).text_color(c(0xFF8E00)))
+                .child(format!("{r:.1}"))
+        })
+        .into_any_element()
+}
+
+/// Open VSX's verified publisher badge (extensionIcon.verifiedForeground).
+fn verified_badge() -> impl IntoElement {
+    codicon(icon::VERIFIED_FILLED).flex_none().text_color(c(0x3794FF))
+}
+
+/// Extension `id`'s Open VSX listing.
+fn fetch_listing(id: &str) -> Option<Listing> {
+    let (namespace, name) = id.split_once('.')?;
+    let text = (ureq::get(format!("{OPEN_VSX}/{namespace}/{name}")).call().ok()?)
+        .body_mut()
+        .read_to_string()
+        .ok()?;
+    Some(listing(&serde_json::from_str(&text).ok()?))
+}
+
+/// VS Code's Recommended list: the workspace's `.vscode/extensions.json`
+/// recommendations, then for each open file's language Open VSX's best
+/// match, when it's popular (a million downloads).
+// ponytail: a search per language stands in for VS Code's curated
+// file-type recommendations; one request at a time.
+fn fetch_recommended(root: Option<PathBuf>, langs: Vec<&'static str>) -> Vec<Listing> {
+    let file = root.and_then(|r| fs::read_to_string(r.join(".vscode/extensions.json")).ok());
+    let json: Value = file.and_then(|t| serde_json::from_str(&strip_jsonc(&t)).ok()).unwrap_or_default();
+    let ids = (json["recommendations"].as_array().into_iter().flatten()).filter_map(|v| v.as_str());
+    let mut found: Vec<Listing> = ids.filter_map(fetch_listing).collect();
+    for lang in langs.into_iter().filter(|l| *l != "plaintext") {
+        let best = (search_open_vsx(lang, 1).ok().into_iter().flatten()).find(|l| l.downloads >= 1_000_000);
+        if let Some(l) = best.filter(|l| !found.iter().any(|f| f.id == l.id)) {
+            found.push(l);
+        }
+    }
+    download_icons(&found);
+    found
 }
 
 impl Listing {
@@ -279,34 +367,19 @@ pub(super) struct Market {
     generation: usize,
     /// The ids being downloaded and installed.
     installing: HashSet<String>,
+    /// The Recommended list, and what it was fetched for (folder and languages).
+    recommended: (String, Vec<Listing>),
 }
 
-fn search_open_vsx(query: &str) -> Result<Vec<Listing>, String> {
+fn search_open_vsx(query: &str, size: usize) -> Result<Vec<Listing>, String> {
     let text = ureq::get(format!("{OPEN_VSX}/-/search"))
         .query("query", query)
-        .query("size", "30")
+        .query("size", size.to_string())
         .call()
         .and_then(|mut r| r.body_mut().read_to_string())
         .map_err(|e| e.to_string())?;
     let found: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    let s = |e: &Value, key: &str| e[key].as_str().unwrap_or_default().to_string();
-    let listings = (found["extensions"].as_array().into_iter().flatten()).map(|e| Listing {
-        id: format!("{}.{}", s(e, "namespace"), s(e, "name")).to_lowercase(),
-        name: (e["displayName"].as_str()).map_or_else(|| s(e, "name"), str::to_string),
-        publisher: s(e, "namespace"),
-        version: s(e, "version"),
-        description: s(e, "description"),
-        download: e["files"]["download"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string(),
-        icon: e["files"]["icon"].as_str().map(|url| {
-            let ext = url.rsplit('.').next().filter(|x| x.len() <= 4).unwrap_or("png");
-            let file = format!("{}.{}-{}.{ext}", s(e, "namespace"), s(e, "name"), s(e, "version"));
-            (url.to_string(), std::env::temp_dir().join("vsn-icons").join(file))
-        }),
-    });
-    Ok(listings.collect())
+    Ok((found["extensions"].as_array().into_iter().flatten()).map(listing).collect())
 }
 
 /// The .vsix built for this platform, as VS Code installs, when the
@@ -1468,6 +1541,8 @@ fn extension_row(
     id: impl Into<ElementId>,
     icon: AnyElement,
     [name, version, description, publisher]: [String; 4],
+    verified: bool,
+    stats: Option<AnyElement>,
     action: AnyElement,
 ) -> Stateful<Div> {
     // min width 0 lets a long description or publisher shorten instead of widening the view.
@@ -1503,13 +1578,16 @@ fn extension_row(
                                 .text_size(px(12.))
                                 .text_color(col::fg_muted())
                                 .child(version),
-                        ),
+                        )
+                        .child(div().flex_1())
+                        .children(stats),
                 )
                 .child(line().child(description))
                 .child(
                     h_flex()
-                        .justify_between()
-                        .child(line().text_color(col::fg_muted()).child(publisher))
+                        .gap(px(4.))
+                        .when(verified, |d| d.child(verified_badge()))
+                        .child(line().flex_1().text_color(col::fg_muted()).child(publisher))
                         .child(div().flex_none().child(action)),
                 ),
         )
@@ -1588,7 +1666,7 @@ impl Workbench {
             }
             let q = query.clone();
             let found = cx
-                .background_spawn(async move { search_open_vsx(&q) })
+                .background_spawn(async move { search_open_vsx(&q, 30) })
                 .await;
             let listings = found.as_ref().map(|l| l.clone()).unwrap_or_default();
             this.update(cx, |this, cx| {
@@ -1627,7 +1705,7 @@ impl Workbench {
 
     /// Open VSX's results for the Extensions view's search, each with Install
     /// or, once installed, its state.
-    // ponytail: no ratings or download counts.
+    // ponytail: no paging past 30.
     pub(super) fn render_market(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let muted = |text: &str| {
             div()
@@ -1648,8 +1726,16 @@ impl Workbench {
             Ok(l) if l.is_empty() => return muted("No extensions found.").into_any_element(),
             Ok(l) => l,
         };
+        let rows: Vec<_> = listings.clone().into_iter().enumerate().collect();
+        v_flex()
+            .children(rows.into_iter().map(|(ix, l)| self.market_row("ext-market", ix, l, cx)))
+            .into_any_element()
+    }
+
+    /// An Open VSX listing's row in the Extensions view, opening its page.
+    fn market_row(&mut self, key: &'static str, ix: usize, l: Listing, cx: &mut Context<Self>) -> AnyElement {
         let wb = cx.weak_entity();
-        let rows = listings.iter().enumerate().map(|(ix, l)| {
+        {
             let action = if installed().iter().any(|e| e.id == l.id) {
                 div()
                     .text_size(px(12.))
@@ -1670,7 +1756,7 @@ impl Workbench {
                     .active(c(0x026EC1))
                     .foreground(c(0xFFFFFF));
                 let (wb, id, url) = (wb.clone(), l.id.clone(), l.download.clone());
-                Button::new(("ext-install", ix))
+                Button::new((SharedString::from(format!("{key}-install")), ix))
                     .custom(blue)
                     .bg(c(0x0078D4))
                     .xsmall()
@@ -1694,14 +1780,53 @@ impl Workbench {
                     .into_any_element(),
             };
             let text = [&l.name, &l.version, &l.description, &l.publisher].map(|s| s.to_string());
-            let listing = l.clone();
-            extension_row(("ext-market", ix), icon, text, action).on_click(cx.listener(
-                move |this, _, window, cx| this.open_listing(listing.clone(), window, cx),
-            ))
-        });
-        v_flex()
-            .children(rows.collect::<Vec<_>>())
-            .into_any_element()
+            let stats = Some(listing_stats(&l));
+            extension_row((key, ix), icon, text, l.verified, stats, action)
+                .on_click(cx.listener(move |this, _, window, cx| this.open_listing(l.clone(), window, cx)))
+                .into_any_element()
+        }
+    }
+
+    /// The Extensions view's Recommended section, fetched again when the
+    /// folder or the open files' languages change; installed ones drop out.
+    pub(super) fn render_recommended(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let mut langs: Vec<&'static str> = self.docs.iter().filter(|d| d.page.is_none()).map(|d| d.lang).collect();
+        langs.sort();
+        langs.dedup();
+        let key = format!("{:?} {langs:?}", self.root);
+        if self.market.recommended.0 != key {
+            self.market.recommended = (key.clone(), Vec::new());
+            let root = self.root.clone();
+            cx.spawn(async move |this, cx| {
+                let found = cx.background_spawn(async move { fetch_recommended(root, langs) }).await;
+                this.update(cx, |this, cx| {
+                    if this.market.recommended.0 == key {
+                        this.market.recommended.1 = found;
+                        cx.notify();
+                    }
+                })
+                .ok();
+            })
+            .detach();
+        }
+        let list = installed();
+        let recs: Vec<Listing> = (self.market.recommended.1.iter())
+            .filter(|l| !list.iter().any(|e| e.id == l.id))
+            .cloned()
+            .collect();
+        drop(list);
+        if recs.is_empty() {
+            return None;
+        }
+        let rows: Vec<_> = (recs.into_iter().enumerate())
+            .map(|(ix, l)| self.market_row("ext-rec", ix, l, cx))
+            .collect();
+        Some(
+            v_flex()
+                .child(section_header("ext-recommended", "Recommended", true))
+                .children(rows)
+                .into_any_element(),
+        )
     }
 
     pub(super) fn uninstall_extension(&mut self, id: String, cx: &mut Context<Self>) {
@@ -1987,7 +2112,7 @@ impl Workbench {
 
     /// A not-installed Open VSX result's page: its listing with Install, and
     /// the downloaded README / CHANGELOG.
-    // ponytail: no ratings or Features tab until it's installed.
+    // ponytail: no Features tab until it's installed.
     fn render_listing_page(&self, ix: usize, page: &Page, l: &Listing, cx: &mut Context<Self>) -> AnyElement {
         let action = match self.market.installing.contains(&l.id) {
             true => div().text_color(col::fg_muted()).child("Installing").into_any_element(),
@@ -2029,7 +2154,33 @@ impl Workbench {
                     h_flex()
                         .gap(px(12.))
                         .text_color(col::fg_muted())
-                        .child(l.publisher.clone())
+                        .child(
+                            h_flex()
+                                .gap(px(4.))
+                                .when(l.verified, |d| d.child(verified_badge()))
+                                .child(l.publisher.clone()),
+                        )
+                        .when(l.downloads > 0, |d| {
+                            d.child(
+                                h_flex()
+                                    .gap(px(4.))
+                                    .child(codicon(icon::CLOUD_DOWNLOAD))
+                                    .child(short_count(l.downloads)),
+                            )
+                        })
+                        .when_some(l.rating, |d, (r, reviews)| {
+                            let star = |i: f64| match r {
+                                r if r >= i + 1. => icon::STAR_FULL,
+                                r if r >= i + 0.5 => icon::STAR_HALF,
+                                _ => icon::STAR_EMPTY,
+                            };
+                            d.child(
+                                h_flex()
+                                    .gap(px(1.))
+                                    .children((0..5).map(|i| codicon(star(i as f64)).text_color(c(0xFF8E00))))
+                                    .child(div().ml(px(4.)).child(format!("({reviews})"))),
+                            )
+                        })
                         .child(format!("v{}", l.version)),
                 )
                 .child(l.description.clone())
@@ -2135,7 +2286,7 @@ impl Workbench {
                     false => format!("{} (Disabled)", e.version()),
                 };
                 let text = [e.name(), version, e.description(), e.publisher()];
-                extension_row(("ext", ix), icon, text, manage.into_any_element())
+                extension_row(("ext", ix), icon, text, false, None, manage.into_any_element())
                     .when(!enabled, |d| d.opacity(0.6))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_extension(page.clone(), window, cx)
@@ -2420,7 +2571,15 @@ impl Workbench {
 mod tests {
     use serde_json::Value;
 
-    use super::{IndentAction, editing_of, expand, hex, token_style};
+    use super::{IndentAction, editing_of, expand, hex, short_count, token_style};
+
+    #[test]
+    fn install_counts() {
+        assert_eq!(short_count(7_720_017), "7.7M");
+        assert_eq!(short_count(2_000_000), "2M");
+        assert_eq!(short_count(324_157), "324K");
+        assert_eq!(short_count(999), "999");
+    }
 
     #[test]
     fn language_configuration() {
