@@ -1763,6 +1763,14 @@ impl Workbench {
         self.lsp_open(ix, cx);
         self.show_diagnostics(&self.docs[ix].path.clone(), cx);
         self.watch_file(ix);
+        if large {
+            // VS Code's notice, naming what vsn turns off.
+            let name = self.docs[ix].path.file_name().unwrap_or_default().to_string_lossy();
+            let text = format!(
+                "{name}: tokenization has been turned off for this large file in order to reduce memory usage and avoid freezing or crashing."
+            );
+            self.note(text.into(), Severity::Info, cx);
+        }
     }
 
     /// Watches editor `ix`'s folder too when it's outside the workspace's.

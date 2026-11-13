@@ -129,8 +129,10 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Large files (over 20MB or 300K lines, as VS Code): no highlighting,
       language server, extension host sync or whole-text work per edit; a
       1GB file opens in ~1.5s and types without lag.
-- [ ] Large files: no "large file" notice, the dirty dot stays after undo
-      to the saved text, and search results don't follow their edits.
+- [x] Opening a large file (over 20MB or 300,000 lines) shows VS Code's
+      notice that tokenization is off for it.
+- [ ] Large files: the dirty dot stays after undo to the saved text, and
+      search results don't follow their edits.
 - [x] The folder and editors are saved as they change, not only on a clean quit.
 - [ ] Markdown preview: Ctrl+K V and the title button split the editor rather
       than opening a second group; no scroll sync, relative images or links.
@@ -187,8 +189,7 @@ Differences from VS Code still to close, smallest first within each area.
       toasts through Do Not Disturb).
 - [x] Explorer failures (Unable to copy/move/create, paste into itself) were
       warnings; they're now errors, as in VS Code.
-- [ ] Notifications have no info severity (nothing reports one yet); the
-      "Source:" line is for extensions only.
+- [ ] The notification "Source:" line is for extensions only.
 - [x] Join Terminals with a single terminal said "All terminals are joined
       already"; it now says VS Code's "Insufficient terminals for the join
       action".
