@@ -224,6 +224,7 @@ pub(super) fn searches_market(query: &str) -> bool {
 }
 
 /// An Open VSX search result.
+#[derive(Clone)]
 pub(super) struct Listing {
     /// `namespace.name`, lowercased, as installed extensions' ids are.
     id: String,
@@ -1370,6 +1371,21 @@ pub(crate) struct Page {
     tab: usize,
     readme: SharedString,
     changelog: SharedString,
+    /// The Open VSX result it opened from, shown until it's installed.
+    listing: Option<Listing>,
+}
+
+/// An Open VSX extension's README and CHANGELOG, each "" if it has none.
+fn fetch_markdown(id: &str) -> (String, String) {
+    let get = |url: &str| -> Option<String> { ureq::get(url).call().ok()?.body_mut().read_to_string().ok() };
+    let Some((namespace, name)) = id.split_once('.') else {
+        return Default::default();
+    };
+    let e: Value = (get(&format!("{OPEN_VSX}/{namespace}/{name}")))
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
+    let file = |key: &str| e["files"][key].as_str().and_then(get).unwrap_or_default();
+    (file("readme"), file("changelog"))
 }
 
 /// `dir`'s `NAME.md`, any case, or "".
@@ -1631,7 +1647,10 @@ impl Workbench {
                 .text_color(col::fg_muted())
                 .into_any_element();
             let text = [&l.name, &l.version, &l.description, &l.publisher].map(|s| s.to_string());
-            extension_row(("ext-market", ix), icon, text, action)
+            let listing = l.clone();
+            extension_row(("ext-market", ix), icon, text, action).on_click(cx.listener(
+                move |this, _, window, cx| this.open_listing(listing.clone(), window, cx),
+            ))
         });
         v_flex()
             .children(rows.collect::<Vec<_>>())
@@ -1683,11 +1702,48 @@ impl Workbench {
             tab: 0,
             readme: markdown_file(&dir, "readme"),
             changelog: markdown_file(&dir, "changelog"),
+            listing: None,
         };
+        self.push_page(&name, page, window, cx);
+    }
+
+    fn push_page(&mut self, name: &str, page: Page, window: &mut Window, cx: &mut Context<Self>) {
         // Binary, so saving and the editor's commands leave its empty text alone.
         let path = PathBuf::from(format!("Extension: {}", name.replace(['/', '\\'], " ")));
         self.push_doc(path, String::new(), Encoding::Utf8, true, false, window, cx);
         self.docs.last_mut().unwrap().page = Some(page);
+    }
+
+    /// An Open VSX result's details: installed ones open as usual, others
+    /// show the listing while their README and CHANGELOG download.
+    fn open_listing(&mut self, l: Listing, window: &mut Window, cx: &mut Context<Self>) {
+        if installed().iter().any(|e| e.id == l.id)
+            || self.docs.iter().any(|d| d.page.as_ref().is_some_and(|p| p.id == l.id))
+        {
+            return self.open_extension(l.id, window, cx);
+        }
+        let id = l.id.clone();
+        let page = Page {
+            id: id.clone(),
+            tab: 0,
+            readme: "Loading...".into(),
+            changelog: "Loading...".into(),
+            listing: Some(l.clone()),
+        };
+        self.push_page(&l.name, page, window, cx);
+        cx.spawn(async move |this, cx| {
+            let of = id.clone();
+            let (readme, changelog) = cx.background_spawn(async move { fetch_markdown(&of) }).await;
+            this.update(cx, |this, cx| {
+                let pages = this.docs.iter_mut().filter_map(|d| d.page.as_mut());
+                for page in pages.filter(|p| p.id == id) {
+                    (page.readme, page.changelog) = (readme.clone().into(), changelog.clone().into());
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Doc `ix`'s extension details: VS Code's header, then Details
@@ -1700,9 +1756,12 @@ impl Workbench {
         };
         let list = installed();
         let Some(e) = list.iter().find(|e| e.id == page.id) else {
-            return (div().p(px(20.)).text_color(col::fg_muted()))
-                .child("This extension is not installed.")
-                .into_any_element();
+            return match &page.listing {
+                Some(l) => self.render_listing_page(ix, page, l, cx),
+                None => (div().p(px(20.)).text_color(col::fg_muted()))
+                    .child("This extension is not installed.")
+                    .into_any_element(),
+            };
         };
         let (id, enabled) = (e.id.clone(), e.enabled);
         let icon = match e.icon() {
@@ -1876,6 +1935,96 @@ impl Workbench {
                     .p(px(20.))
                     .child(body),
             )
+            .into_any_element()
+    }
+
+    /// A not-installed Open VSX result's page: its listing with Install, and
+    /// the downloaded README / CHANGELOG.
+    // ponytail: no icon, ratings or Features tab until it's installed.
+    fn render_listing_page(&self, ix: usize, page: &Page, l: &Listing, cx: &mut Context<Self>) -> AnyElement {
+        let action = match self.market.installing.contains(&l.id) {
+            true => div().text_color(col::fg_muted()).child("Installing").into_any_element(),
+            false => {
+                let blue = ButtonCustomVariant::new(cx)
+                    .color(c(0x0078D4))
+                    .hover(c(0x026EC1))
+                    .active(c(0x026EC1))
+                    .foreground(c(0xFFFFFF));
+                let (id, url) = (l.id.clone(), l.download.clone());
+                Button::new("ext-page-install")
+                    .custom(blue)
+                    .bg(c(0x0078D4))
+                    .xsmall()
+                    .label("Install")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.install_listing(id.clone(), url.clone(), cx)
+                    }))
+                    .into_any_element()
+            }
+        };
+        let header = h_flex().p(px(20.)).gap(px(20.)).child(
+            codicon(icon::EXTENSIONS)
+                .size(px(128.))
+                .flex_none()
+                .text_size(px(96.))
+                .justify_center()
+                .text_color(col::fg_muted()),
+        )
+        .child(
+            v_flex()
+                .gap(px(6.))
+                .min_w_0()
+                .child(div().text_size(px(26.)).font_weight(FontWeight::BOLD).child(l.name.clone()))
+                .child(
+                    h_flex()
+                        .gap(px(12.))
+                        .text_color(col::fg_muted())
+                        .child(l.publisher.clone())
+                        .child(format!("v{}", l.version)),
+                )
+                .child(l.description.clone())
+                .child(h_flex().pt(px(4.)).child(action)),
+        );
+        let tabs = [(0, "DETAILS"), (2, "CHANGELOG")].map(|(t, label)| {
+            let active = t == page.tab || (t == 0 && page.tab == 1);
+            div()
+                .id(("ext-page-tab", t))
+                .py(px(4.))
+                .cursor_pointer()
+                .text_color(if active { col::fg() } else { col::fg_muted() })
+                .when(active, |d| d.border_b_1().border_color(col::accent()))
+                .hover(|d| d.text_color(col::fg()))
+                .child(label)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(page) = this.docs.get_mut(ix).and_then(|d| d.page.as_mut()) {
+                        page.tab = t;
+                        cx.notify();
+                    }
+                }))
+        });
+        let (text, none) = match page.tab {
+            2 => (&page.changelog, "No changelog available."),
+            _ => (&page.readme, "No README available."),
+        };
+        let body = match text.is_empty() {
+            true => div().text_color(col::fg_muted()).child(none).into_any_element(),
+            false => TextView::markdown(("ext-page-md", ix), text.clone()).selectable(true).into_any_element(),
+        };
+        v_flex()
+            .size_full()
+            .text_size(px(13.))
+            .text_color(col::fg())
+            .child(header)
+            .child(
+                h_flex()
+                    .px(px(20.))
+                    .gap(px(20.))
+                    .text_size(px(11.))
+                    .border_b_1()
+                    .border_color(col::border())
+                    .children(tabs),
+            )
+            .child(div().id("ext-page-body").flex_1().min_h_0().overflow_y_scroll().p(px(20.)).child(body))
             .into_any_element()
     }
 

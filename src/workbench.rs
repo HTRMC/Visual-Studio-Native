@@ -6353,12 +6353,12 @@ impl Workbench {
                 _ => codicon(icon::ERROR).mt(px(5.)).text_color(c(0xF14C4C)),
             })
             // min width 0 lets a long message wrap instead of pushing out the close button.
+            // Selectable, as VS Code's; escaped so a path's `_` or `*` stays literal.
             .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .py(px(4.))
-                    .child(message.clone()),
+                div().flex_1().min_w(px(0.)).py(px(4.)).child(TextView::markdown(
+                    SharedString::from(format!("{id}-text")),
+                    md_escape(message),
+                )),
             )
             .child(action_button(id.clone(), icon::CLOSE).on_click(cx.listener(
                 move |this, _, _, cx| {
@@ -6446,6 +6446,8 @@ impl Workbench {
                 .right(px(if m { 8. } else { 11. }))
                 .bottom(px(if m { 36. } else { 33. }))
                 .w(px(450.))
+                // Clicks and drags stay here, not the terminal or editor below.
+                .occlude()
                 .rounded(px(if m { 8. } else { 6. }))
                 .overflow_hidden()
                 // notifications.background
@@ -6540,8 +6542,21 @@ impl Workbench {
             .bottom(px(if modern { 36. } else { 33. }))
             .w(px(450.))
             .gap(px(if modern { 4. } else { 8. }))
+            .occlude()
             .children(toasts)
     }
+}
+
+/// `text` with Markdown's ASCII punctuation backslash-escaped, so it shows as written.
+fn md_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        if ch.is_ascii_punctuation() {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 /// A notification's severity; settings.json errors offer Open Settings.
