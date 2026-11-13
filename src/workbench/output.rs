@@ -41,6 +41,13 @@ impl Output {
         self.list.set_follow_mode(FollowMode::Tail);
     }
 
+    /// The channels' names, sorted as the dropdown lists them.
+    pub(super) fn channel_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.channels.iter().map(|(n, _)| n.clone()).collect();
+        names.sort_by_key(|n| n.to_lowercase());
+        names
+    }
+
     pub(super) fn set_filter(&mut self, filter: String) {
         self.filter = filter;
         if self.active < self.channels.len() {

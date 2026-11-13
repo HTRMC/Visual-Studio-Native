@@ -419,8 +419,9 @@ Differences from VS Code still to close, smallest first within each area.
       panel views in the palette (`view ` prefix) and show the picked one.
 - [x] Open View lists each open terminal under "Terminal", numbered
       "group.index: name" as VS Code does, and picking one focuses it.
+- [x] Open View lists the Output channels.
 - [ ] Open View lists whole containers, not their sub-views (Open Editors,
-      Outline, Timeline), and has no Output-channel rows.
+      Outline, Timeline).
 - [x] Open View filtered on labels only; like VS Code it now also keeps rows
       whose group name contains the filter ("view term" lists every terminal).
 - [x] File > Auto Save was inert; it and "File: Toggle Auto Save" flip
