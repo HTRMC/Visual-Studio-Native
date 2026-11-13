@@ -2068,8 +2068,16 @@ impl Workbench {
                 "copyPaste" if self.copy_terminal(id, cx) => {}
                 "copyPaste" | "paste" => self.paste_terminal(id, window, cx),
                 "nothing" => {}
-                // ponytail: "selectWord" opens the menu without selecting.
-                _ => return self.activate_terminal(id, window, cx),
+                // "selectWord" selects the word under the mouse, then the menu opens.
+                behavior => {
+                    if behavior == "selectWord"
+                        && let Some(t) = self.terminal(id)
+                    {
+                        t.unit = None;
+                        t.selection = Some(t.unit_at(ev.position, false));
+                    }
+                    return self.activate_terminal(id, window, cx);
+                }
             }
             cx.stop_propagation();
         }

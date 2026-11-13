@@ -22,8 +22,8 @@ Differences from VS Code still to close, smallest first within each area.
       (`terminal.integrated.rightClickBehavior` is "copyPaste" on Windows);
       Shift+right-click opens the menu. "paste", "nothing" and "default"
       work too.
-- [ ] `rightClickBehavior` "selectWord" opens the menu without selecting
-      the word first.
+- [x] `rightClickBehavior` "selectWord" selects the word under the mouse,
+      then opens the menu.
 - [x] Middle-click pastes when `terminal.integrated.middleClickBehavior` is
       "paste".
 - [x] Pasting several lines asks first, as VS Code's
