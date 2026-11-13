@@ -633,7 +633,8 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [ ] Format on save/type and document symbols from language servers.
 - [x] Parameter hints after `(` and `,` or on Ctrl+Shift+Space, from language servers and extensions.
 - [ ] Parameter hints ignore the server's trigger characters, don't follow cursor moves, can't cycle overloads, and show markdown as plain text.
-- [ ] Completion ignores the server's trigger characters and snippets (`snippetSupport` is off).
+- [x] Completion asks on the server's trigger characters and says so in the request's context.
+- [ ] Completion snippets from servers are flattened (`snippetSupport` is off).
 - [ ] Problems panel: collapsing a file, filter, related information, and the Explorer's red file decorations.
 - [x] A crashed language server restarts and reopens its files, up to 5 times.
 - [ ] A language server given up on leaves its squiggles behind.
@@ -643,4 +644,5 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [ ] `createFileSystemWatcher` never fires; `openTextDocument` reads the disk, not the open editor.
 - [ ] Only hover, completion, definition, (range) formatting, code action, rename, reference and signature help providers; the rest log "not implemented". Only the first matching provider answers.
 - [ ] A language extension claiming a TypeScript-family language stops the shared built-in server for the others until their next file.
-- [ ] Completion list isn't filtered by the typed prefix while it's open.
+- [x] The completion list is filtered by the word typed (filterText, else label: its first character at a word start, the rest in order), prefix matches first, then the server's sortText.
+- [ ] Completion ranks by tier and sortText, not VS Code's fuzzy score.

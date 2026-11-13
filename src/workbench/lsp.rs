@@ -319,14 +319,29 @@ impl Provider {
     /// first, as the editor asks before its Change event reaches
     /// [`Workbench::lsp_change`].
     fn ask(&self, method: &str, text: &Rope, offset: usize, cx: &mut App) -> Task<Value> {
+        self.ask_with(method, text, offset, json!({}), cx)
+    }
+
+    /// [`Self::ask`] with `extra` params beside the position.
+    fn ask_with(
+        &self,
+        method: &str,
+        text: &Rope,
+        offset: usize,
+        extra: Value,
+        cx: &mut App,
+    ) -> Task<Value> {
         let Some(server) = self.server.upgrade() else {
             return Task::ready(Value::Null);
         };
         server.sync(&self.path, self.lang, &text.to_string());
-        let params = json!({
+        let mut params = json!({
             "textDocument": { "uri": path_uri(&self.path) },
             "position": text.offset_to_position(offset),
         });
+        if let (Some(params), Some(extra)) = (params.as_object_mut(), extra.as_object()) {
+            params.extend(extra.clone());
+        }
         let rx = server.request(method, params);
         cx.background_spawn(async move { rx.await.unwrap_or_default() })
     }
@@ -354,12 +369,29 @@ impl CompletionProvider for Provider {
         _: &mut Window,
         cx: &mut App,
     ) -> Task<anyhow::Result<CompletionResponse>> {
-        let reply = self.ask("textDocument/completion", text, offset, cx);
-        extensions::OFFERED.set(None);
-        let snippets = (self.snippets.as_ref()).map_or(Vec::new(), |s| s.items(text, offset));
         let line = text.offset_to_position(offset).line as usize;
         let line = text.slice(text.line_start_offset(line)..offset).to_string();
+        // Typed right after one of the server's trigger characters, the ask
+        // says so, as VS Code's does; otherwise it's a plain one.
+        let context = match line.chars().last().filter(|c| self.triggers().contains(*c)) {
+            Some(c) => json!({ "triggerKind": 2, "triggerCharacter": c.to_string() }),
+            None => json!({ "triggerKind": 1 }),
+        };
+        let reply = self.ask_with(
+            "textDocument/completion",
+            text,
+            offset,
+            json!({ "context": context }),
+            cx,
+        );
+        extensions::OFFERED.set(None);
+        let snippets = (self.snippets.as_ref()).map_or(Vec::new(), |s| s.items(text, offset));
         let indent = line[..line.len() - line.trim_start().len()].to_string();
+        let word = line.len() - (line.chars().rev())
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .map(char::len_utf8)
+            .sum::<usize>();
+        let query = line[word..].to_string();
         let (path, lang, unit) = (self.path.clone(), self.lang, self.unit.clone());
         let text = text.clone();
         // On the main thread: the snippets offered are a thread-local.
@@ -400,7 +432,7 @@ impl CompletionProvider for Provider {
             }
             extensions::offer(&path, offered);
             items.extend(snippets);
-            Ok(CompletionResponse::Array(items))
+            Ok(CompletionResponse::Array(filter_items(items, &query)))
         })
     }
 
@@ -461,12 +493,82 @@ impl CompletionProvider for Provider {
         .detach();
     }
 
-    // ponytail: typing a word character or one of `.:>` asks; the server's
-    // own triggerCharacters are ignored.
+    /// Typing a word character asks, as do the server's triggerCharacters.
     fn is_completion_trigger(&self, _: usize, new_text: &str, _: &mut App) -> bool {
         let mut chars = new_text.chars();
         matches!((chars.next(), chars.next()), (Some(c), None)
-            if c.is_alphanumeric() || "_.:>".contains(c))
+            if c.is_alphanumeric() || c == '_' || self.triggers().contains(c))
+    }
+}
+
+impl Provider {
+    /// The server's completion triggerCharacters (`.` and `:` before it says).
+    fn triggers(&self) -> String {
+        let Some(server) = self.server.upgrade() else {
+            return String::new();
+        };
+        let caps = server.caps.lock().unwrap();
+        match caps["completionProvider"]["triggerCharacters"].as_array() {
+            Some(list) => list.iter().filter_map(Value::as_str).collect(),
+            None => ".:".into(),
+        }
+    }
+}
+
+/// The items whose filterText (else label) matches `query` as VS Code's
+/// filter does: its first character at the start of a word there, the rest
+/// in order after it. Ones starting with it go first, each kept in the
+/// server's sortText order.
+// ponytail: a match tier and sortText, not VS Code's fuzzy score.
+fn filter_items(items: Vec<CompletionItem>, query: &str) -> Vec<CompletionItem> {
+    let q: Vec<char> = query.to_lowercase().chars().collect();
+    let mut kept: Vec<(bool, CompletionItem)> = (items.into_iter())
+        .filter_map(|item| {
+            let text = item.filter_text.as_deref().unwrap_or(&item.label);
+            let prefix = text.to_lowercase().starts_with(&query.to_lowercase());
+            (q.is_empty() || prefix || fuzzy_match(text, &q)).then_some((!prefix, item))
+        })
+        .collect();
+    kept.sort_by(|(a, x), (b, y)| {
+        let key = |i: &CompletionItem| i.sort_text.clone().unwrap_or_else(|| i.label.clone());
+        a.cmp(b).then_with(|| key(x).cmp(&key(y)))
+    });
+    kept.into_iter().map(|(_, item)| item).collect()
+}
+
+/// `q` (lowercase) in `text`: the first at a word start (after `_`, a
+/// non-letter or a lower-to-upper hump), the rest in order.
+fn fuzzy_match(text: &str, q: &[char]) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    let starts = (0..chars.len()).filter(|&i| {
+        i == 0
+            || !chars[i - 1].is_alphanumeric()
+            || chars[i - 1].is_lowercase() && chars[i].is_uppercase()
+    });
+    starts.into_iter().any(|i| {
+        let mut rest = chars[i..].iter().flat_map(|c| c.to_lowercase());
+        rest.next() == q.first().copied() && q[1..].iter().all(|qc| rest.any(|c| c == *qc))
+    })
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::{CompletionItem, filter_items, fuzzy_match};
+
+    #[test]
+    fn filters_and_orders_like_vs_code() {
+        let item = |label: &str, sort: &str| CompletionItem {
+            label: label.into(),
+            sort_text: Some(sort.into()),
+            ..Default::default()
+        };
+        let items = vec![item("into_iter", "1"), item("iter", "2"), item("is_empty", "0"), item("filter", "3")];
+        let labels = |q| filter_items(items.clone(), q).into_iter().map(|i| i.label).collect::<Vec<_>>();
+        assert_eq!(labels("it"), ["iter", "is_empty", "into_iter"]);
+        assert_eq!(labels("ie"), ["is_empty", "into_iter", "iter"]);
+        assert_eq!(labels(""), ["is_empty", "into_iter", "iter", "filter"]);
+        assert!(fuzzy_match("toString", &['s', 't']));
+        assert!(!fuzzy_match("toString", &['r']));
     }
 }
 
