@@ -1513,6 +1513,8 @@ pub struct Workbench {
     output: output::Output,
     commit: Entity<InputState>,
     ext_search: Entity<InputState>,
+    /// The Problems panel's filter box.
+    problems_filter: Entity<InputState>,
     market: extensions::Market,
     pub focus: FocusHandle,
 }
@@ -1551,6 +1553,7 @@ impl Workbench {
             search: input("Search", window, cx),
             commit: input("Message (Ctrl+Enter to commit)", window, cx),
             ext_search: input("Search Extensions in Marketplace", window, cx),
+            problems_filter: input("Filter (e.g. text, !excludeText)", window, cx),
             market: Default::default(),
             focus: cx.focus_handle(),
             find: search::Find::new(window, cx),
@@ -1599,6 +1602,12 @@ impl Workbench {
         this.init_search(window, cx);
         this.init_debug(window, cx);
         this.start_webviews(window, cx);
+        cx.subscribe(&this.problems_filter, |_, _, ev: &InputEvent, cx| {
+            if matches!(ev, InputEvent::Change) {
+                cx.notify();
+            }
+        })
+        .detach();
         cx.subscribe(&this.ext_search, |this, _, ev: &InputEvent, cx| {
             if matches!(ev, InputEvent::Change) {
                 this.search_market(cx);
@@ -5805,7 +5814,7 @@ impl Workbench {
                 icon::ELLIPSIS,
             ]
         } else if self.panel_tab == 0 {
-            &[icon::FILTER, icon::COLLAPSE_ALL, icon::ELLIPSIS]
+            &[icon::COLLAPSE_ALL, icon::ELLIPSIS]
         } else {
             &[icon::FILTER, icon::CLEAR_ALL, icon::ELLIPSIS]
         };
@@ -5858,6 +5867,9 @@ impl Workbench {
                                     .then(|| self.output_menu(cx))
                                     .flatten(),
                             )
+                            .when(self.panel_tab == 0, |d| {
+                                d.child(div().w(px(280.)).child(search_box(&self.problems_filter)))
+                            })
                             .children(actions.iter().enumerate().map(|(i, &ch)| {
                                 let text = match (ch, self.panel_tab) {
                                     (icon::CLEAR_ALL, debug::DEBUG_CONSOLE) => "Clear Console",

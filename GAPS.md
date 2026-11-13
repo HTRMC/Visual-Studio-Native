@@ -703,7 +703,10 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [x] The explorer colors files with errors or warnings and shows their
       count, and a dot on the folders holding them.
 - [x] Editor tabs take their file's problem color too.
-- [ ] Problems panel: filter and related information.
+- [x] Problems panel: a filter box in its title keeps problems whose
+      message, source or path has the text (`!text` drops them).
+- [ ] Problems panel: no related information, and the filter takes one
+      term (no globs, comma lists or severity menu).
 - [x] A crashed language server restarts and reopens its files, up to 5 times.
 - [x] A language server given up on left its squiggles behind; they, their
       Problems, inlay hints and CodeLens go with it.

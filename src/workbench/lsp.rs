@@ -2192,8 +2192,13 @@ impl Workbench {
                 .child("No problems have been detected in the workspace.")
                 .into_any_element();
         }
+        let filter = self.problems_filter.read(cx).value().to_string();
         let mut rows = Vec::new();
         for (fi, (path, list)) in self.lsp.problems.iter().enumerate() {
+            let list: Vec<&Problem> = list.iter().filter(|p| problem_shown(&filter, path, p)).collect();
+            if list.is_empty() {
+                continue;
+            }
             let name = path
                 .file_name()
                 .unwrap_or_default()
@@ -2257,7 +2262,7 @@ impl Workbench {
             if collapsed {
                 continue;
             }
-            let mut sorted: Vec<&Problem> = list.iter().collect();
+            let mut sorted = list;
             sorted.sort_by_key(|p| (p.severity, p.line, p.col));
             for (pi, p) in sorted.into_iter().enumerate() {
                 let (glyph, color) = match p.severity {
@@ -2304,6 +2309,11 @@ impl Workbench {
                 );
             }
         }
+        if rows.is_empty() {
+            return (div().px(px(20.)))
+                .child("No results found with provided filter criteria.")
+                .into_any_element();
+        }
         v_flex()
             .id("problems")
             .size_full()
@@ -2313,10 +2323,48 @@ impl Workbench {
     }
 }
 
+/// Whether the Problems filter keeps `p`: its text found (in any case) in
+/// the message, source or path, or with a leading `!` not found.
+// ponytail: one term, no globs or comma lists as in VS Code's filter.
+fn problem_shown(filter: &str, path: &Path, p: &Problem) -> bool {
+    let filter = filter.trim();
+    let (not, text) = match filter.strip_prefix('!') {
+        Some(rest) => (true, rest.to_lowercase()),
+        None => (false, filter.to_lowercase()),
+    };
+    if text.is_empty() {
+        return true;
+    }
+    let found = [&p.message, &p.source, &path.to_string_lossy().into_owned()]
+        .iter()
+        .any(|s| s.to_lowercase().contains(&text));
+    found != not
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Rope, Snippets, extensions::Snippet, path_uri, uri_path};
+    use super::{Problem, Rope, Snippets, extensions::Snippet, path_uri, problem_shown, uri_path};
     use std::path::Path;
+
+    #[test]
+    fn problems_filter() {
+        let p = Problem {
+            line: 0,
+            col: 0,
+            end: (0, 0),
+            severity: 2,
+            message: "unused variable".into(),
+            source: "rustc".into(),
+            raw: Default::default(),
+        };
+        let path = Path::new("src/main.rs");
+        assert!(problem_shown("", path, &p));
+        assert!(problem_shown("UNUSED", path, &p));
+        assert!(problem_shown("main.rs", path, &p));
+        assert!(!problem_shown("clippy", path, &p));
+        assert!(problem_shown("!clippy", path, &p));
+        assert!(!problem_shown("!rustc", path, &p));
+    }
 
     #[test]
     fn snippet_completions() {
