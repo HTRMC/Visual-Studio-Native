@@ -168,6 +168,7 @@ actions!(
         InsertLineBefore,
         ExpandLineSelection,
         JumpToBracket,
+        CursorUndo,
         Fold,
         Unfold,
         ToggleFold,
@@ -363,6 +364,7 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-shift-enter", InsertLineBefore, Some("Input && mode == editor")),
         KeyBinding::new("ctrl-l", ExpandLineSelection, Some("Input && mode == editor")),
         shifted("ctrl-shift-\\", Box::new(JumpToBracket), Some("Input && mode == editor")),
+        KeyBinding::new("ctrl-u", CursorUndo, Some("Input && mode == editor")),
         shifted("ctrl-shift-[", Box::new(Fold), Some("Input && mode == editor")),
         shifted("ctrl-shift-]", Box::new(Unfold), Some("Input && mode == editor")),
         KeyBinding::new("ctrl-k ctrl-l", ToggleFold, Some("Input && mode == editor")),
@@ -1447,6 +1449,9 @@ pub struct Workbench {
     zen: Option<(bool, bool, bool)>,
     /// When Escape was last pressed in Zen Mode: a second one soon after leaves.
     zen_escape: Option<Instant>,
+    /// Cursor Undo's history: the editor, its earlier selections, and the
+    /// ones it has now.
+    cursor_undo: Option<(EntityId, Vec<Vec<Range<usize>>>, Vec<Range<usize>>)>,
     /// Hot exit's pending write of unsaved text after an edit.
     backup: Option<Task<()>>,
     /// Notifications added since the center was last open: the bell's dot.
@@ -1552,6 +1557,7 @@ impl Workbench {
             closed: Vec::new(),
             zen: None,
             zen_escape: None,
+            cursor_undo: None,
             backup: None,
             unseen: 0,
             center: false,
@@ -1868,6 +1874,7 @@ impl Workbench {
         editor.update(cx, |e, cx| e.set_value(text, window, cx));
         self.attach_breakpoints(path, &editor, cx);
         cx.observe(&editor, |this, editor, cx| {
+            this.track_cursor(&editor, cx);
             this.lsp_cursor_moved(&editor, cx)
         })
         .detach();
@@ -1878,6 +1885,8 @@ impl Workbench {
                 if matches!(ev, InputEvent::Change) {
                     // An edit ends a run of Ctrl+D.
                     this.next_match = None;
+                    // Cursor Undo goes back through moves since the last edit.
+                    this.cursor_undo = None;
                 }
                 if matches!(ev, InputEvent::Change)
                     && let Some(doc) = this.docs.iter_mut().find(|d| &d.editor == editor)
@@ -2881,6 +2890,48 @@ impl Workbench {
             current: 0,
         };
         self.open_items(items, window, cx);
+    }
+
+    /// Notes `editor`'s selections when they change, for Cursor Undo.
+    fn track_cursor(&mut self, editor: &Entity<EditorState>, cx: &mut Context<Self>) {
+        let now = editor.read(cx).selected_ranges();
+        match &mut self.cursor_undo {
+            Some((id, stack, last)) if *id == editor.entity_id() => {
+                if *last != now {
+                    // The status bar's Ln/Col follows.
+                    cx.notify();
+                    stack.push(std::mem::replace(last, now));
+                    // VS Code keeps 50.
+                    if stack.len() > 50 {
+                        stack.remove(0);
+                    }
+                }
+            }
+            _ => self.cursor_undo = Some((editor.entity_id(), Vec::new(), now)),
+        }
+    }
+
+    /// Cursor Undo (Ctrl+U): the active editor's selections before the last
+    /// change of them.
+    fn cursor_undo(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = self.docs.get(self.active).map(|d| d.editor.clone()) else {
+            return;
+        };
+        let Some((id, stack, last)) = &mut self.cursor_undo else {
+            return;
+        };
+        let Some(sels) = stack.pop().filter(|_| *id == editor.entity_id()) else {
+            return;
+        };
+        // Not a move to remember.
+        *last = sels.clone();
+        cx.notify();
+        editor.update(cx, |e, cx| {
+            e.set_selected_range(sels[0].clone(), cx);
+            for sel in &sels[1..] {
+                e.add_selection(sel.clone(), cx);
+            }
+        });
     }
 
     /// View: Reopen Closed Editor (Ctrl+Shift+T): the last closed file that
@@ -7048,6 +7099,7 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &ExpandLineSelection, _, cx| {
                 this.select_with(|t, sel| Some(line_selection(t, sel)), cx)
             }))
+            .on_action(cx.listener(|this, _: &CursorUndo, _, cx| this.cursor_undo(cx)))
             .on_action(cx.listener(|this, _: &JumpToBracket, _, cx| {
                 this.select_with(|t, sel| bracket_jump(t, sel.end).map(|at| at..at), cx)
             }))

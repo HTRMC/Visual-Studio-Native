@@ -233,6 +233,7 @@ fn builtin_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("Insert Line Above", Box::new(InsertLineBefore)),
         ("Expand Line Selection", Box::new(ExpandLineSelection)),
         ("Go to Bracket", Box::new(JumpToBracket)),
+        ("Cursor Undo", Box::new(CursorUndo)),
         ("Fold", Box::new(Fold)),
         ("Unfold", Box::new(Unfold)),
         ("Toggle Fold", Box::new(ToggleFold)),
