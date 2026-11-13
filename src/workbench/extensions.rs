@@ -220,7 +220,39 @@ const OPEN_VSX: &str = "https://open-vsx.org/api";
 /// Whether the Extensions view's query goes to Open VSX rather than the Installed list.
 pub(super) fn searches_market(query: &str) -> bool {
     let query = query.trim();
-    !query.is_empty() && !query.starts_with("@installed")
+    !query.is_empty() && !query.starts_with("@installed") && !query.starts_with("@updates")
+}
+
+/// Whether version `a` is later than `b`, comparing their numbers; a
+/// pre-release or build tag after `-` or `+` is ignored.
+fn newer(a: &str, b: &str) -> bool {
+    let parts = |v: &str| -> Vec<u64> {
+        let core = v.split(['-', '+']).next().unwrap_or_default();
+        core.split('.').map(|p| p.parse().unwrap_or(0)).collect()
+    };
+    parts(a) > parts(b)
+}
+
+/// Open VSX's listings for the installed (id, version)s that have a later
+/// version, asked in parallel.
+// ponytail: a request per extension; Open VSX has no batch lookup.
+fn fetch_updates(installed: Vec<(String, String)>) -> Vec<Listing> {
+    let found: Vec<Listing> = std::thread::scope(|s| {
+        let asks: Vec<_> = (installed.iter()).map(|(id, _)| s.spawn(move || fetch_listing(id))).collect();
+        asks.into_iter().filter_map(|a| a.join().ok().flatten()).collect()
+    });
+    let later = |l: &Listing| installed.iter().any(|(id, v)| *id == l.id && newer(&l.version, v));
+    found.into_iter().filter(later).collect()
+}
+
+/// VS Code's blue primary button (button.background, button.hoverBackground).
+fn blue_button(id: impl Into<ElementId>, label: &'static str, cx: &App) -> Button {
+    let blue = ButtonCustomVariant::new(cx)
+        .color(c(0x0078D4))
+        .hover(c(0x026EC1))
+        .active(c(0x026EC1))
+        .foreground(c(0xFFFFFF));
+    Button::new(id).custom(blue).bg(c(0x0078D4)).xsmall().label(label)
 }
 
 /// An Open VSX search result.
@@ -369,6 +401,8 @@ pub(super) struct Market {
     installing: HashSet<String>,
     /// The Recommended list, and what it was fetched for (folder and languages).
     recommended: (String, Vec<Listing>),
+    /// The latest listings of installed extensions found out of date at startup.
+    updates: Vec<Listing>,
 }
 
 fn search_open_vsx(query: &str, size: usize) -> Result<Vec<Listing>, String> {
@@ -1749,18 +1783,8 @@ impl Workbench {
                     .child("Installing")
                     .into_any_element()
             } else {
-                // button.background and button.hoverBackground
-                let blue = ButtonCustomVariant::new(cx)
-                    .color(c(0x0078D4))
-                    .hover(c(0x026EC1))
-                    .active(c(0x026EC1))
-                    .foreground(c(0xFFFFFF));
                 let (wb, id, url) = (wb.clone(), l.id.clone(), l.download.clone());
-                Button::new((SharedString::from(format!("{key}-install")), ix))
-                    .custom(blue)
-                    .bg(c(0x0078D4))
-                    .xsmall()
-                    .label("Install")
+                blue_button((SharedString::from(format!("{key}-install")), ix), "Install", cx)
                     .on_click(move |_, _, cx| {
                         wb.update(cx, |this, cx| {
                             this.install_listing(id.clone(), url.clone(), cx)
@@ -1827,6 +1851,32 @@ impl Workbench {
                 .children(rows)
                 .into_any_element(),
         )
+    }
+
+    /// Asks Open VSX which installed extensions have a later version, for
+    /// their Update buttons and the Extensions icon's count.
+    // ponytail: once at startup; VS Code checks again every 12 hours.
+    pub(crate) fn check_extension_updates(&mut self, cx: &mut Context<Self>) {
+        let ids = installed().iter().map(|e| (e.id.clone(), e.version())).collect();
+        cx.spawn(async move |this, cx| {
+            let found = cx.background_spawn(async move { fetch_updates(ids) }).await;
+            this.update(cx, |this, cx| {
+                this.market.updates = found;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Extension `e`'s update, while it's still behind it.
+    fn update_for(&self, e: &Extension) -> Option<&Listing> {
+        (self.market.updates.iter()).find(|l| l.id == e.id && newer(&l.version, &e.version()))
+    }
+
+    /// How many installed extensions have an update.
+    pub(super) fn update_count(&self) -> usize {
+        installed().iter().filter(|e| self.update_for(e).is_some()).count()
     }
 
     pub(super) fn uninstall_extension(&mut self, id: String, cx: &mut Context<Self>) {
@@ -2232,10 +2282,13 @@ impl Workbench {
     /// The Extensions view's Installed list, filtered by its search box.
     pub(super) fn render_installed(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let query = self.ext_search.read(cx).value().to_lowercase();
-        let query = query.trim().trim_start_matches("@installed").trim();
+        let query = query.trim();
+        let only_updates = query.starts_with("@updates");
+        let query = query.trim_start_matches("@installed").trim_start_matches("@updates").trim();
         let wb = cx.weak_entity();
         let rows = installed()
             .iter()
+            .filter(|e| !only_updates || self.update_for(e).is_some())
             .filter(|e| {
                 query.is_empty()
                     || [e.name(), e.id.clone(), e.description()]
@@ -2285,8 +2338,21 @@ impl Workbench {
                     true => e.version(),
                     false => format!("{} (Disabled)", e.version()),
                 };
+                let update = self.update_for(e).map(|l| match self.market.installing.contains(&l.id) {
+                    true => div().text_size(px(12.)).text_color(col::fg_muted()).child("Updating").into_any_element(),
+                    false => {
+                        let (id, url) = (l.id.clone(), l.download.clone());
+                        blue_button(("ext-update", ix), "Update", cx)
+                            .tooltip(format!("Update to v{}", l.version))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.install_listing(id.clone(), url.clone(), cx)
+                            }))
+                            .into_any_element()
+                    }
+                });
+                let action = h_flex().gap(px(4.)).children(update).child(manage);
                 let text = [e.name(), version, e.description(), e.publisher()];
-                extension_row(("ext", ix), icon, text, false, None, manage.into_any_element())
+                extension_row(("ext", ix), icon, text, false, None, action.into_any_element())
                     .when(!enabled, |d| d.opacity(0.6))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_extension(page.clone(), window, cx)
@@ -2571,7 +2637,16 @@ impl Workbench {
 mod tests {
     use serde_json::Value;
 
-    use super::{IndentAction, editing_of, expand, hex, short_count, token_style};
+    use super::{IndentAction, editing_of, expand, hex, newer, short_count, token_style};
+
+    #[test]
+    fn later_versions() {
+        assert!(newer("1.10.0", "1.9.3"));
+        assert!(newer("2.0.0", "1.99.99"));
+        assert!(newer("1.2.1", "1.2.0-beta"));
+        assert!(!newer("1.2.0", "1.2.0"));
+        assert!(!newer("0.9.0", "1.0.0"));
+    }
 
     #[test]
     fn install_counts() {

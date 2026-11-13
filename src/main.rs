@@ -67,6 +67,7 @@ fn main() {
                 window.focus(&wb.read(cx).focus.clone(), cx);
                 wb.update(cx, |wb, cx| {
                     wb.restore_session(window, cx);
+                    wb.check_extension_updates(cx);
                     files
                         .into_iter()
                         .for_each(|f| wb.open_recent(f, window, cx))

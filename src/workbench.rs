@@ -4164,8 +4164,36 @@ impl Workbench {
                 View::Extensions,
             ),
         ];
+        // activityBarBadge: the Extensions icon counts the updates waiting.
+        let updates = self.update_count();
         let mut top: Vec<_> = (builtin.into_iter())
-            .map(|(id, ch, text, view)| item(id.into(), glyph(ch), text.into(), Some(view), cx))
+            .map(|(id, ch, text, view)| {
+                let glyph = match view == View::Extensions && updates > 0 {
+                    true => div()
+                        .relative()
+                        .child(glyph(ch))
+                        .child(
+                            div()
+                                .absolute()
+                                .right(px(-6.))
+                                .bottom(px(-5.))
+                                .min_w(px(16.))
+                                .h(px(16.))
+                                .px(px(4.))
+                                .rounded_full()
+                                .bg(c(0x0078D4))
+                                .text_color(c(0xFFFFFF))
+                                .text_size(px(9.))
+                                .line_height(px(16.))
+                                .flex()
+                                .justify_center()
+                                .child(updates.to_string()),
+                        )
+                        .into_any_element(),
+                    false => glyph(ch),
+                };
+                item(id.into(), glyph, text.into(), Some(view), cx)
+            })
             .collect();
         // Extensions' view containers, after the built-in ones as in VS Code.
         // An image icon is drawn as a mask in the item's color, like a codicon.

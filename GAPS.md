@@ -621,7 +621,8 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [x] Extension details page (README, changelog) when clicking a row.
 - [x] Open VSX search and install: typing in the Extensions view searches open-vsx.org; `@installed` filters the Installed list.
 - [x] Open VSX results show download counts, ratings and the verified badge; the Extensions view lists Recommended ones (the workspace's `.vscode/extensions.json`, then a popular match per open file's language).
-- [ ] Open VSX results: no paging past 30, no update checks, and no `@` filters besides `@installed` (no `@recommended`); recommendations aren't VS Code's curated file-type list.
+- [ ] Open VSX results: no paging past 30, and no `@` filters besides `@installed` and `@updates` (no `@recommended`); recommendations aren't VS Code's curated file-type list.
+- [ ] Updates are checked once at startup (VS Code: every 12 hours), with no auto-update, Update All or Update button on the details page.
 - [x] Ctrl+Shift+X opens the Extensions view without focusing its search box.
 - [x] WASM plugins (`"vsn": { "wasm": ... }`) run in wasmtime with fuel and memory limits; examples/hello-wasm is a sample.
 - [x] WASM plugins got no command arguments, settings, document or questions; WIT 0.2 has them.
