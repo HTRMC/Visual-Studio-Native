@@ -737,6 +737,11 @@ fn auto_save_is(mode: &str) -> bool {
     terminal::settings()["files.autoSave"] == mode
 }
 
+/// Whether any files.autoSave mode is on (File > Auto Save's check).
+fn auto_save_on() -> bool {
+    terminal::settings()["files.autoSave"].as_str().is_some_and(|m| m != "off")
+}
+
 /// VS Code's large file limits (20MB or 300K lines): no highlighting,
 /// language server or extension sync, and no whole-text work per edit.
 fn is_large(text: &str) -> bool {
@@ -2660,9 +2665,9 @@ impl Workbench {
         }));
     }
 
-    /// File > Auto Save: flips files.autoSave between "off" and "afterDelay".
+    /// File > Auto Save: turns any files.autoSave mode off, or "afterDelay" on.
     fn toggle_auto_save(&mut self, _: &ToggleAutoSave, _: &mut Window, cx: &mut Context<Self>) {
-        let value = if auto_save() { "off" } else { "afterDelay" };
+        let value = if auto_save_on() { "off" } else { "afterDelay" };
         if let Err(err) = terminal::set_setting("files.autoSave", value.into()) {
             self.settings_error(err, cx);
         }
@@ -7686,7 +7691,7 @@ fn app_menu(
             .menu("Save As...", Box::new(SaveAs))
             .map(|m| chord(m, "Save All", SaveAll))
             .separator()
-            .menu_with_check("Auto Save", auto_save(), Box::new(ToggleAutoSave))
+            .menu_with_check("Auto Save", auto_save_on(), Box::new(ToggleAutoSave))
             .submenu("Preferences", window, cx, |m, window, cx| {
                 m.menu("Settings", Box::new(OpenSettings))
                     .menu("Keyboard Shortcuts", Box::new(Noop))
