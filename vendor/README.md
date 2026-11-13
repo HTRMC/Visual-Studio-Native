@@ -56,3 +56,5 @@ comment; on a gpui-kit update, copy the new version over and re-apply them.
   VS Code's `onEnterRules` (`OnEnterRule`, `IndentAction`); Enter with no
   selection in a code editor applies the first matching rule before the
   plain indent (so `///` continues as `/// `).
+- **gpui-base 0.8.0** (`src/text/node.rs`): a markdown image whose URL is an
+  absolute file path loads from disk, for extension READMEs' images.

@@ -635,7 +635,8 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [x] Icon themes from extensions.
 - [x] An installed extension's details page: header, Disable/Uninstall, Details (README), Features, Changelog.
 - [x] Clicking an Open VSX result opens its details page (README and CHANGELOG from Open VSX, Install).
-- [ ] A not-installed extension's page has no ratings or Features tab, and a README's relative images don't load.
+- [ ] A not-installed extension's page has no ratings or Features tab; its README's relative images (rare: vsce makes a GitHub repo's absolute) 404, as Open VSX keeps only a package's named files.
+- [ ] README images are downloaded to a temp cache that's never evicted, and an image that fails once stays blank until vsn restarts.
 - [ ] The details page's Features tab lists raw contribution points, not VS Code's named tables per kind.
 - [ ] Icon themes' light and high contrast variants, and font (glyph) icons, are skipped; only image icons show.
 - [ ] Picking "None" as the icon theme saves `""`, not `null` (settings can't hold a null yet).

@@ -802,6 +802,11 @@ impl ImageNode {
     pub(super) fn source(&self) -> ImageSource {
         match self.embedded.get_or_init(|| data_url_image(&self.url)) {
             Some(image) => ImageSource::Image(image.clone()),
+            // vsn: an absolute file path loads from disk (vsn points
+            // extension READMEs' images at local copies; gpui has no HTTP client).
+            None if std::path::Path::new(self.url.as_ref()).is_absolute() => {
+                std::path::PathBuf::from(self.url.as_ref()).into()
+            }
             None => self.url.clone().into(),
         }
     }

@@ -366,12 +366,17 @@ impl Listing {
     }
 }
 
-/// Downloads the listings' icons not cached yet, in parallel, each written
-/// whole (by a rename) so a half-written one is never shown.
-// ponytail: cached in the temp folder, which Windows cleans; never evicted otherwise.
+/// Downloads the listings' icons not cached yet.
 fn download_icons(listings: &[Listing]) {
+    download_all(listings.iter().filter_map(|l| l.icon.as_ref()));
+}
+
+/// Downloads each (url, file) not there yet, in parallel, each written whole
+/// (by a rename) so a half-written one is never shown.
+// ponytail: cached in the temp folder, which Windows cleans; never evicted otherwise.
+fn download_all<'a>(files: impl Iterator<Item = &'a (String, PathBuf)>) {
     std::thread::scope(|s| {
-        for (url, path) in listings.iter().filter_map(|l| l.icon.as_ref()) {
+        for (url, path) in files {
             if path.exists() {
                 continue;
             }
@@ -1521,6 +1526,110 @@ pub(crate) struct Page {
     listing: Option<Listing>,
 }
 
+/// Where each image's URL is in `markdown`: `![alt](url)` and HTML
+/// `<img src="url">`, in order.
+// ponytail: no reference-style images (`![alt][ref]`).
+fn image_urls(markdown: &str) -> Vec<Range<usize>> {
+    let mut urls = Vec::new();
+    for (i, _) in markdown.match_indices("![") {
+        let rest = &markdown[i..];
+        if let Some(j) = rest.find("](").filter(|j| !rest[..*j].contains('\n')) {
+            let start = i + j + 2;
+            let len = markdown[start..].find([')', ' ', '\n']).unwrap_or(markdown.len() - start);
+            urls.push(start..start + len);
+        }
+    }
+    for (i, _) in markdown.match_indices("<img") {
+        let tag = &markdown[i..i + markdown[i..].find('>').unwrap_or(markdown.len() - i)];
+        let Some(src) = tag.find("src=").map(|s| i + s + 4) else { continue };
+        if let Some(q @ ('"' | '\'')) = markdown[src..].chars().next() {
+            let len = markdown[src + 1..].find(q).unwrap_or(0);
+            urls.push(src + 1..src + 1 + len);
+        }
+    }
+    urls.sort_by_key(|r| r.start);
+    urls
+}
+
+/// Image `url` from a README, a relative one joined onto `base`.
+fn resolve_image(base: &str, url: &str) -> String {
+    let url = url.trim_matches(['<', '>']);
+    match url.contains("://") || url.starts_with("data:") {
+        true => url.to_string(),
+        false => format!(
+            "{}/{}",
+            base.trim_end_matches(['/', '\\']),
+            url.trim_start_matches("./").trim_start_matches('/')
+        ),
+    }
+}
+
+/// Where web image `url` is cached once downloaded; gpui reads the format
+/// from the bytes, so no extension.
+fn cached_image(url: &str) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::hash::DefaultHasher::new();
+    url.hash(&mut h);
+    std::env::temp_dir().join("vsn-images").join(format!("{:016x}", h.finish()))
+}
+
+/// `markdown` with its images pointed at files on disk, which the markdown
+/// view loads (gpui has no HTTP client): relative ones in the extension's
+/// folder (`base`), web ones downloaded first. Blocks on the downloads.
+fn with_local_images(base: &str, markdown: &str) -> String {
+    let urls = image_urls(markdown);
+    let mut out = String::with_capacity(markdown.len());
+    let mut downloads = Vec::new();
+    let mut at = 0;
+    for r in &urls {
+        let url = resolve_image(base, &markdown[r.clone()]);
+        let path = match url.starts_with("http") {
+            true => {
+                let path = cached_image(&url);
+                downloads.push((url, path.clone()));
+                path
+            }
+            false if url.starts_with("data:") => PathBuf::new(),
+            false => PathBuf::from(url),
+        };
+        out.push_str(&markdown[at..r.start]);
+        match path.as_os_str().is_empty() {
+            true => out.push_str(&markdown[r.clone()]),
+            // <...> keeps a path with spaces one link destination.
+            false => {
+                let path = path.to_string_lossy().replace('\\', "/");
+                match markdown[..r.start].ends_with("](") {
+                    true => out.push_str(&format!("<{path}>")),
+                    false => out.push_str(&path),
+                }
+            }
+        }
+        at = r.end;
+    }
+    out.push_str(&markdown[at..]);
+    download_all(downloads.iter());
+    out
+}
+
+/// Swaps page `id`'s README and CHANGELOG for their local-image versions
+/// once those are ready; the text shows meanwhile, as VS Code's images fill in.
+fn localize_page_images(base: String, id: String, readme: String, changelog: String, cx: &mut Context<Workbench>) {
+    cx.spawn(async move |this, cx| {
+        let (readme, changelog) = (cx.background_spawn(async move {
+            (with_local_images(&base, &readme), with_local_images(&base, &changelog))
+        }))
+        .await;
+        this.update(cx, |this, cx| {
+            for page in this.docs.iter_mut().filter_map(|d| d.page.as_mut()).filter(|p| p.id == id) {
+                (page.readme, page.changelog) = (readme.clone().into(), changelog.clone().into());
+            }
+            cx.notify();
+        })
+        .ok();
+    })
+    .detach();
+}
+
 /// An Open VSX extension's README and CHANGELOG, each "" if it has none.
 fn fetch_markdown(id: &str) -> (String, String) {
     let get = |url: &str| -> Option<String> { ureq::get(url).call().ok()?.body_mut().read_to_string().ok() };
@@ -1927,6 +2036,9 @@ impl Workbench {
             changelog: markdown_file(&dir, "changelog"),
             listing: None,
         };
+        let base = dir.to_string_lossy().into_owned();
+        let (readme, changelog) = (page.readme.to_string(), page.changelog.to_string());
+        localize_page_images(base, page.id.clone(), readme, changelog, cx);
         self.push_page(&name, page, window, cx);
     }
 
@@ -1945,7 +2057,7 @@ impl Workbench {
         {
             return self.open_extension(l.id, window, cx);
         }
-        let id = l.id.clone();
+        let (id, version) = (l.id.clone(), l.version.clone());
         let page = Page {
             id: id.clone(),
             tab: 0,
@@ -1956,12 +2068,16 @@ impl Workbench {
         self.push_page(&l.name, page, window, cx);
         cx.spawn(async move |this, cx| {
             let of = id.clone();
+            // ponytail: vsce makes a GitHub repo's relative images absolute;
+            // others 404 here, as Open VSX keeps only a package's named files.
+            let base = format!("{OPEN_VSX}/{}/file", of.replacen('.', "/", 1) + "/" + &version);
             let (readme, changelog) = cx.background_spawn(async move { fetch_markdown(&of) }).await;
             this.update(cx, |this, cx| {
                 let pages = this.docs.iter_mut().filter_map(|d| d.page.as_mut());
                 for page in pages.filter(|p| p.id == id) {
                     (page.readme, page.changelog) = (readme.clone().into(), changelog.clone().into());
                 }
+                localize_page_images(base, id, readme, changelog, cx);
                 cx.notify();
             })
             .ok();
@@ -1971,8 +2087,7 @@ impl Workbench {
 
     /// Doc `ix`'s extension details: VS Code's header, then Details
     /// (README), Features (contributions) and Changelog.
-    // ponytail: installed extensions only, and the README's relative
-    // images don't load; an Open VSX result has no page yet.
+    // ponytail: an Open VSX result not installed renders through render_listing_page.
     pub(super) fn render_page(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
         let Some(page) = self.docs[ix].page.as_ref() else {
             return div().into_any_element();
@@ -2640,7 +2755,23 @@ impl Workbench {
 mod tests {
     use serde_json::Value;
 
-    use super::{IndentAction, editing_of, expand, hex, newer, short_count, token_style};
+    use super::{
+        IndentAction, editing_of, expand, hex, image_urls, newer, resolve_image, short_count,
+        token_style, with_local_images,
+    };
+
+    #[test]
+    fn readme_images() {
+        let md = "[![CI](https://x/ci.svg)](https://x)\n![shot](images/a.png \"t\")\n<img alt='b' src='./b.gif'>";
+        let urls: Vec<&str> = image_urls(md).into_iter().map(|r| &md[r]).collect();
+        assert_eq!(urls, ["https://x/ci.svg", "images/a.png", "./b.gif"]);
+        assert_eq!(
+            with_local_images("C:\\my ext", "![s](images/a.png) <img src=\"data:x\">"),
+            "![s](<C:/my ext/images/a.png>) <img src=\"data:x\">"
+        );
+        assert_eq!(resolve_image("https://o/file", "/images/a.png"), "https://o/file/images/a.png");
+        assert_eq!(resolve_image("https://o/file", "<https://x/ci.svg>"), "https://x/ci.svg");
+    }
 
     #[test]
     fn later_versions() {
