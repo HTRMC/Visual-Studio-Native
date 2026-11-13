@@ -364,9 +364,12 @@ Differences from VS Code still to close, smallest first within each area.
       work.
 - [x] Selection > Copy/Move Line Up/Down were inert; they and
       Shift+Alt+Up/Down, Alt+Up/Down copy or move the selected lines.
-- [ ] Copy/Move Line take the active selection's lines only, not every
-      cursor's; undoing one leaves the swapped lines selected instead of
-      putting the cursor back.
+- [x] Copy/Move Line took the active selection's lines only; they, the
+      comment toggles, Delete Line and Insert Line Above/Below now act on
+      every cursor, as one undo step.
+- [ ] Cursors on touching lines merge into one selection after a line
+      command (VS Code keeps them apart); undoing one leaves the changed
+      lines selected instead of putting the cursors back.
 - [x] Edit > Toggle Line Comment was inert; it and Ctrl+/ comment or
       uncomment the selected lines with the language's line comment.
 - [x] Edit > Toggle Block Comment was inert; it and Shift+Alt+A wrap or
@@ -374,7 +377,8 @@ Differences from VS Code still to close, smallest first within each area.
       lines in CSS/HTML/XML/Markdown.
 - [x] Ctrl+K Ctrl+C / Ctrl+K Ctrl+U (Add / Remove Line Comment) were
       missing; they and the comment commands are in the palette too.
-- [ ] Toggle Line/Block Comment handle the active selection only.
+- [x] Toggle Line/Block Comment handled the active selection only; they
+      now comment at every cursor.
 - [x] The palette had no Copy/Move Line Up/Down, Add Cursor Above/Below
       or Undo/Redo commands, which VS Code lists.
 - [x] Ctrl+D (Add Next Occurrence) and Ctrl+Shift+L (Select All

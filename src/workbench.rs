@@ -952,6 +952,63 @@ fn bracket_jump(text: &str, at: usize) -> Option<usize> {
     None
 }
 
+/// A line command on every cursor: cursors whose lines touch act as one,
+/// the lowest first so the others' offsets hold. Returns one edit for the
+/// whole change (one undo step) and the selections after, top first.
+fn edit_each(
+    text: &str,
+    sels: &[Range<usize>],
+    edit: impl Fn(&str, Range<usize>) -> Option<(Range<usize>, String, Range<usize>)>,
+) -> Option<(Range<usize>, String, Vec<Range<usize>>)> {
+    let mut sorted = sels.to_vec();
+    sorted.sort_by_key(|s| s.start);
+    let mut groups: Vec<(Range<usize>, Range<usize>)> = Vec::new();
+    for sel in sorted {
+        let lines = selected_lines(text, &sel);
+        match groups.last_mut() {
+            Some((l, s)) if lines.start <= l.end + 1 => {
+                l.end = l.end.max(lines.end);
+                s.end = s.end.max(sel.end);
+                // A caret at a line's start would leave that line out.
+                if selected_lines(text, s).end < l.end {
+                    s.end = l.end;
+                }
+            }
+            _ => groups.push((lines, sel)),
+        }
+    }
+    let mut out = text.to_string();
+    let mut after: Vec<Range<usize>> = Vec::new();
+    for (_, sel) in groups.into_iter().rev() {
+        let Some((range, new, sel)) = edit(&out, sel) else { continue };
+        let delta = new.len() as isize - range.len() as isize;
+        for s in &mut after {
+            s.start = (s.start as isize + delta) as usize;
+            s.end = (s.end as isize + delta) as usize;
+        }
+        out.replace_range(range, &new);
+        after.push(sel);
+    }
+    if after.is_empty() {
+        return None;
+    }
+    after.reverse();
+    // The edit is what differs between the texts.
+    let mut start = text.bytes().zip(out.bytes()).take_while(|(a, b)| a == b).count();
+    while !text.is_char_boundary(start) {
+        start -= 1;
+    }
+    let max_tail = text.len().min(out.len()) - start;
+    let mut tail = (text.bytes().rev().zip(out.bytes().rev()))
+        .take(max_tail)
+        .take_while(|(a, b)| a == b)
+        .count();
+    while !text.is_char_boundary(text.len() - tail) || !out.is_char_boundary(out.len() - tail) {
+        tail -= 1;
+    }
+    Some((start..text.len() - tail, out[start..out.len() - tail].to_string(), after))
+}
+
 fn selected_lines(text: &str, sel: &Range<usize>) -> Range<usize> {
     let line_start = |i: usize| text[..i].rfind('\n').map_or(0, |n| n + 1);
     // A selection ending at a line's start doesn't take that line, as in VS Code.
@@ -3456,7 +3513,7 @@ impl Workbench {
     /// editor's text and selection as one undo step.
     fn edit_lines(
         &mut self,
-        edit: impl FnOnce(&str, Range<usize>) -> Option<(Range<usize>, String, Range<usize>)>,
+        edit: impl Fn(&str, Range<usize>) -> Option<(Range<usize>, String, Range<usize>)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -3465,10 +3522,13 @@ impl Workbench {
         };
         doc.editor.update(cx, |e, cx| {
             let text = e.value();
-            if let Some((range, new, sel)) = edit(&text, e.selected_range()) {
+            if let Some((range, new, sels)) = edit_each(&text, &e.selected_ranges(), edit) {
                 e.set_selected_range(range, cx);
                 e.replace(new, window, cx);
-                e.set_selected_range(sel, cx);
+                e.set_selected_range(sels[0].clone(), cx);
+                for sel in &sels[1..] {
+                    e.add_selection(sel.clone(), cx);
+                }
             }
         });
     }
@@ -7722,11 +7782,30 @@ fn app_menu(
 mod tests {
     use super::{
         Encoding, block_toggled, capitalize, comment_toggled, copy_all, copy_target, detect_indent,
-        bracket_jump, expanded, level_folds, line_inserted, recursive_folds, line_selection, lines_deleted, lines_moved,
+        bracket_jump, edit_each, expanded, level_folds, line_inserted, recursive_folds, line_selection, lines_deleted, lines_moved,
         occurrences, with_eol, word_around,
     };
     use std::ops::Range;
     use super::FoldRange;
+
+    #[test]
+    fn each_cursor() {
+        let text = "a\nb\nc\nd\n";
+        // Cursors on a and c: each line commented, one edit for both.
+        let (range, new, sels) =
+            edit_each(text, &[4..4, 0..0], |t, s| comment_toggled(t, s, "//", None)).unwrap();
+        let mut out = text.to_string();
+        out.replace_range(range, &new);
+        assert_eq!(out, "// a\nb\n// c\nd\n");
+        assert_eq!(sels.len(), 2);
+        assert_eq!(&out[sels[1].start..sels[1].start + 1], "c");
+        // Cursors on touching lines move as one block.
+        let (range, new, _) =
+            edit_each(text, &[2..2, 4..4], |t, s| lines_moved(t, s, true, false)).unwrap();
+        let mut out = text.to_string();
+        out.replace_range(range, &new);
+        assert_eq!(out, "b\nc\na\nd\n");
+    }
 
     #[test]
     fn fold_picks() {

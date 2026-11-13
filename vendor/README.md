@@ -45,7 +45,8 @@ comment; on a gpui-kit update, copy the new version over and re-apply them.
   `fold_all` / `set_folds` for VS Code's Fold / Unfold / Fold All / Fold
   Recursively / Fold Level commands, and
   `fold_candidates` on the display map; `gutter_width`, `editor_style` and
-  `syntax_styles` for sticky scroll and the minimap, drawn beside the editor.
+  `syntax_styles` for sticky scroll and the minimap, drawn beside the editor;
+  `selected_ranges` so line commands act on every cursor.
 - **gpui-base 0.8.0** (`src/input/editor/lsp/semantic_tokens.rs`):
   `refresh_semantic_tokens` asks the provider again, for a server's
   `workspace/semanticTokens/refresh`.

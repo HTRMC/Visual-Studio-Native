@@ -3402,6 +3402,12 @@ impl<M: InputModeKind> InputBaseState<M> {
         (*self.selections.active()).into()
     }
 
+    /// vsn: every selection's byte range, the active one first, for
+    /// commands that act on each cursor.
+    pub fn selected_ranges(&self) -> Vec<std::ops::Range<usize>> {
+        self.selections.iter().map(|s| (*s).into()).collect()
+    }
+
     pub fn select_all(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         self.undo_manager.break_transaction_coalescing();
         self.selections.remove_all_but_active();

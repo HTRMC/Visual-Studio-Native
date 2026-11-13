@@ -2090,8 +2090,10 @@ impl Workbench {
         };
         let lang = doc.lang;
         let body = snippet.body.clone();
-        let mut placed = Vec::new();
-        let out = &mut placed;
+        // ponytail: with several cursors the snippet lands at each, but Tab
+        // walks the top one's stops only (it's filled last).
+        let placed = std::cell::RefCell::new(Vec::new());
+        let out = &placed;
         self.edit_lines(
             move |text, sel| {
                 let start = text[..sel.start].rfind('\n').map_or(0, |i| i + 1);
@@ -2110,12 +2112,13 @@ impl Workbench {
                     *stop = sel.start + stop.start..sel.start + stop.end;
                 }
                 let first = stops[0].clone();
-                *out = stops;
+                *out.borrow_mut() = stops;
                 Some((sel, new, first))
             },
             window,
             cx,
         );
+        let placed = placed.into_inner();
         if !placed.is_empty() {
             let editor = self.docs[self.active].editor.clone();
             self.tab_stops(&editor, placed, cx);
