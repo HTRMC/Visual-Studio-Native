@@ -2690,7 +2690,7 @@ impl Workbench {
     }
 
     fn save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
-        self.write(self.active, window, cx);
+        self.save_formatted(self.active, window, cx);
     }
 
     /// Auto Save: writes the dirty file editors (or just `editor`'s).

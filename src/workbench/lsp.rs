@@ -765,6 +765,27 @@ impl CodeActionProvider for Provider {
     }
 }
 
+/// A formatting request's answer applied to `editor`, unless it was typed
+/// over while the server worked (its edits would be stale).
+async fn format_reply(
+    reply: oneshot::Receiver<Value>,
+    editor: Entity<EditorState>,
+    before: SharedString,
+    cx: &mut AsyncWindowContext,
+) {
+    let reply = reply.await.unwrap_or_default();
+    let Ok(edits) = serde_json::from_value::<Vec<lsp_types::TextEdit>>(reply) else {
+        return;
+    };
+    editor
+        .update_in(cx, |e, window, cx| {
+            if !edits.is_empty() && e.value() == before {
+                apply_edits(e, edits, window, cx);
+            }
+        })
+        .ok();
+}
+
 /// Applies a server's `edits` to the editor's text as one undo step.
 fn apply_edits(
     e: &mut EditorState,
@@ -1286,19 +1307,43 @@ impl Workbench {
             method = "textDocument/rangeFormatting";
         }
         let reply = server.request(method, params);
-        cx.spawn_in(window, async move |_, cx| {
-            let reply = reply.await.unwrap_or_default();
-            let Ok(edits) = serde_json::from_value::<Vec<lsp_types::TextEdit>>(reply) else {
-                return;
-            };
-            editor
-                .update_in(cx, |e, window, cx| {
-                    // Typed over while the server worked: its edits are stale.
-                    if !edits.is_empty() && e.value() == before {
-                        apply_edits(e, edits, window, cx);
-                    }
-                })
-                .ok();
+        cx.spawn_in(window, async move |_, cx| format_reply(reply, editor, before, cx).await)
+            .detach();
+    }
+
+    /// editor.formatOnSave: Save formats editor `ix` with its server first,
+    /// waiting up to editor.formatOnSaveTimeout (750ms), then writes it.
+    // ponytail: Save only; VS Code formats on Save All and a delayed auto
+    // save's neighbours too, and `[lang]` overrides aren't read.
+    pub(super) fn save_formatted(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let settings = super::terminal::settings();
+        let server = (settings["editor.formatOnSave"] == true)
+            .then(|| self.docs.get(ix))
+            .flatten()
+            .and_then(|doc| {
+                (self.lsp.servers.values().flatten()).find(|s| s.open.lock().unwrap().contains_key(&doc.path))
+            });
+        let Some(server) = server else {
+            return self.write(ix, window, cx);
+        };
+        let doc = &self.docs[ix];
+        let (editor, before) = (doc.editor.clone(), doc.editor.read(cx).value());
+        let params = json!({
+            "textDocument": { "uri": path_uri(&doc.path) },
+            "options": { "tabSize": doc.indent.tab_size, "insertSpaces": !doc.indent.hard_tabs },
+        });
+        let reply = server.request("textDocument/formatting", params);
+        let timeout = settings["editor.formatOnSaveTimeout"].as_u64().unwrap_or(750);
+        cx.spawn_in(window, async move |this, cx| {
+            let timer = cx.background_executor().timer(std::time::Duration::from_millis(timeout));
+            let format = format_reply(reply, editor.clone(), before, cx);
+            futures::future::select(Box::pin(format), Box::pin(timer)).await;
+            this.update_in(cx, |this, window, cx| {
+                if let Some(ix) = this.docs.iter().position(|d| d.editor == editor) {
+                    this.write(ix, window, cx);
+                }
+            })
+            .ok();
         })
         .detach();
     }
