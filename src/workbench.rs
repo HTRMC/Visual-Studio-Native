@@ -1526,6 +1526,7 @@ impl Workbench {
         .detach();
         this.watch_root(cx);
         this.watch_settings(cx);
+        this.recheck_settings(window, cx);
         if zoom_level() != 0. {
             apply_zoom(window);
         }
@@ -2331,13 +2332,7 @@ impl Workbench {
             while rx.next().await.is_some() {
                 while rx.try_recv().is_ok() {}
                 let alive = this.update(cx, |this, cx| {
-                    this.in_window(cx, |this, window, cx| {
-                        if terminal::settings() != this.settings_seen {
-                            let old = this.settings_seen.clone();
-                            this.settings_changed(&old, window, cx);
-                            cx.notify();
-                        }
-                    })
+                    this.in_window(cx, |this, window, cx| this.recheck_settings(window, cx))
                 });
                 if alive.is_err() {
                     return;
@@ -2345,6 +2340,15 @@ impl Workbench {
             }
         });
         self.settings_watcher = Some((watcher, task));
+    }
+
+    /// Applies the settings if they differ from those last applied.
+    fn recheck_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if terminal::settings() != self.settings_seen {
+            let old = self.settings_seen.clone();
+            self.settings_changed(&old, window, cx);
+            cx.notify();
+        }
     }
 
     /// Applies settings.json's changes from `old`.
@@ -4363,6 +4367,9 @@ impl Workbench {
         self.watcher = None;
         self.palette.files_changed(true);
         self.launch_changed();
+        // The folder's .vscode/settings.json (or none) applies from now on.
+        *terminal::WORKSPACE.write().unwrap() = self.root.clone();
+        self.in_window(cx, |this, window, cx| this.recheck_settings(window, cx));
         let Some(root) = self.root.clone() else {
             return;
         };
@@ -4404,8 +4411,12 @@ impl Workbench {
                 let written: Vec<PathBuf> = burst.iter().flat_map(|(p, _)| p.clone()).collect();
                 let paths: Vec<PathBuf> =
                     (burst.into_iter()).filter(|(_, e)| *e).flat_map(|(p, _)| p).collect();
+                let settings = written.iter().any(|p| p.ends_with(".vscode/settings.json"));
                 let alive = this.update(cx, |this, cx| {
                     this.in_window(cx, move |this, window, cx| {
+                        if settings {
+                            this.recheck_settings(window, cx);
+                        }
                         this.disk_changed(&written, rescan, window, cx)
                     });
                     if paths.is_empty() && !rescan {

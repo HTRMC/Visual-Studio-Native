@@ -645,16 +645,35 @@ pub(super) fn settings_path() -> Option<PathBuf> {
     Some(dirs::config_dir()?.join("vsn").join("settings.json"))
 }
 
-/// The user's settings (JSON with comments and trailing commas), or null
-/// when there are none or they don't parse.
-pub(super) fn settings() -> serde_json::Value {
-    settings_path()
-        .and_then(|p| fs::read_to_string(p).ok())
+/// The open folder, whose `.vscode/settings.json` overrides the user's.
+pub(super) static WORKSPACE: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+
+/// A settings file (JSON with comments and trailing commas), or null when
+/// it's missing or doesn't parse.
+fn read_settings(path: Option<PathBuf>) -> serde_json::Value {
+    path.and_then(|p| fs::read_to_string(p).ok())
         .and_then(|text| {
             let text = text.trim_start_matches('\u{feff}');
             serde_json::from_str(&debug::strip_jsonc(text)).ok()
         })
         .unwrap_or_default()
+}
+
+/// The user's settings with the workspace's on top, as VS Code layers them.
+// ponytail: a workspace key replaces the user's whole value; VS Code merges
+// objects such as files.associations.
+pub(super) fn settings() -> serde_json::Value {
+    let mut s = read_settings(settings_path());
+    let ws = WORKSPACE.read().unwrap().as_ref().map(|r| r.join(".vscode").join("settings.json"));
+    if let serde_json::Value::Object(ws) = read_settings(ws) {
+        if s.is_null() {
+            s = serde_json::json!({});
+        }
+        if let Some(s) = s.as_object_mut() {
+            s.extend(ws);
+        }
+    }
+    s
 }
 
 pub(super) fn set_default_profile(name: &str) -> Result<(), String> {
@@ -672,7 +691,7 @@ pub(super) fn set_setting(key: &str, value: serde_json::Value) -> Result<(), Str
         Err(err) => return Err(format!("Unable to write into user settings ({err})")),
     };
     // A settings.json that doesn't parse is left alone rather than lost.
-    if !settings().is_object() && path.exists() {
+    if !read_settings(Some(path.clone())).is_object() && path.exists() {
         return Err(UNABLE.into());
     }
     let bom = if text.starts_with('\u{feff}') {

@@ -172,7 +172,11 @@ Differences from VS Code still to close, smallest first within each area.
       picking a default terminal profile then overwrote it.
 - [x] settings.json is watched: a change from outside vsn applies at once
       (theme, word wrap, file associations, zoom, minimap...).
-- [ ] No workspace `.vscode/settings.json`.
+- [x] A workspace's `.vscode/settings.json` overrides the user's settings,
+      at open and as it changes.
+- [ ] Workspace settings replace a user object setting whole (VS Code
+      merges `files.associations` and the like), and writes from the UI
+      always go to the user's file.
 - [x] Setting the default terminal profile rewrites settings.json as plain
       JSON, dropping its comments (VS Code edits the one property in place).
 - [x] Writing the default terminal profile into a settings.json that doesn't
