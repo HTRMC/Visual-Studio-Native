@@ -719,8 +719,10 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [x] Editor tabs take their file's problem color too.
 - [x] Problems panel: a filter box in its title keeps problems whose
       message, source or path has the text (`!text` drops them).
-- [ ] Problems panel: no related information, and the filter takes one
-      term (no globs, comma lists or severity menu).
+- [x] Problems panel: related information rows ("file(line, col): message")
+      under a problem; rows no longer squash when the list overflows.
+- [ ] Problems panel: the filter takes one term (no globs, comma lists or
+      severity menu).
 - [x] A crashed language server restarts and reopens its files, up to 5 times.
 - [x] A language server given up on left its squiggles behind; they, their
       Problems, inlay hints and CodeLens go with it.

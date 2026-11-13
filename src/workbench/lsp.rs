@@ -1968,7 +1968,7 @@ impl Workbench {
                     "general": { "positionEncodings": ["utf-16"] },
                     "textDocument": {
                         "synchronization": { "didSave": true },
-                        "publishDiagnostics": {},
+                        "publishDiagnostics": { "relatedInformation": true },
                         "hover": { "contentFormat": ["markdown", "plaintext"] },
                         // No resolveSupport: servers then send auto-imports' edits up front.
                         "completion": { "completionItem": { "snippetSupport": true } },
@@ -2261,6 +2261,7 @@ impl Workbench {
             rows.push(
                 h_flex()
                     .id(("problem-file", fi))
+                    .flex_none()
                     .h(px(22.))
                     .pl(px(8.))
                     .whitespace_nowrap()
@@ -2319,6 +2320,7 @@ impl Workbench {
                 rows.push(
                     h_flex()
                         .id(("problem", fi * 100_000 + pi))
+                        .flex_none()
                         .h(px(22.))
                         .pl(px(46.))
                         .whitespace_nowrap()
@@ -2352,6 +2354,47 @@ impl Workbench {
                         }))
                         .into_any_element(),
                 );
+                // relatedInformation: "file(line, col): message" rows under it,
+                // as VS Code's.
+                let related = p.raw["relatedInformation"].as_array().into_iter().flatten();
+                for (ri, info) in related.enumerate() {
+                    let loc = &info["location"];
+                    let Some(path) = loc["uri"].as_str().and_then(uri_path) else {
+                        continue;
+                    };
+                    let start = &loc["range"]["start"];
+                    let at = input::Position::new(
+                        start["line"].as_u64().unwrap_or(0) as u32,
+                        start["character"].as_u64().unwrap_or(0) as u32,
+                    );
+                    let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                    let message = info["message"].as_str().unwrap_or_default();
+                    rows.push(
+                        h_flex()
+                            .id(SharedString::from(format!("problem-related-{fi}-{pi}-{ri}")))
+                            .flex_none()
+                            .h(px(22.))
+                            .pl(px(68.))
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(col::hover()))
+                            .child(format!("{name}({}, {}): ", at.line + 1, at.character + 1))
+                            .child(
+                                div()
+                                    .ml(px(4.))
+                                    .text_color(col::fg_muted())
+                                    .child(message.lines().next().unwrap_or_default().to_string()),
+                            )
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_path(path.clone(), window, cx);
+                                if let Some(doc) = this.docs.get(this.active) {
+                                    reveal(&doc.editor.clone(), at, window, cx);
+                                }
+                            }))
+                            .into_any_element(),
+                    );
+                }
             }
         }
         if rows.is_empty() {
