@@ -697,7 +697,9 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [ ] Parameter hints ignore the server's trigger characters, don't follow cursor moves, can't cycle overloads, and show markdown as plain text.
 - [x] Completion asks on the server's trigger characters and says so in the request's context.
 - [ ] Completion snippets from servers are flattened (`snippetSupport` is off).
-- [ ] Problems panel: collapsing a file, filter, related information, and the Explorer's red file decorations.
+- [x] Problems panel: a file's row collapses its problems, and the title
+      bar's Collapse All (VS Code's, in place of Clear All) folds them all.
+- [ ] Problems panel: filter, related information, and the Explorer's red file decorations.
 - [x] A crashed language server restarts and reopens its files, up to 5 times.
 - [x] A language server given up on left its squiggles behind; they, their
       Problems, inlay hints and CodeLens go with it.

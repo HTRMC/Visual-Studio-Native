@@ -78,6 +78,8 @@ pub(super) struct Lsp {
     servers: HashMap<&'static str, Option<Arc<Server>>>,
     /// Each file's diagnostics, as its server last published them.
     problems: BTreeMap<PathBuf, Vec<Problem>>,
+    /// Files whose problems the Problems panel has collapsed.
+    collapsed: HashSet<PathBuf>,
     /// How often each server has died on its own.
     crashes: HashMap<&'static str, u32>,
     /// The languages extensions serve, and the host that serves each.
@@ -2154,6 +2156,12 @@ impl Workbench {
     }
 
     /// The Problems panel: each file's diagnostics under it, errors first.
+    /// The Problems panel's Collapse All.
+    pub(super) fn collapse_problems(&mut self, cx: &mut Context<Self>) {
+        self.lsp.collapsed.extend(self.lsp.problems.keys().cloned());
+        cx.notify();
+    }
+
     pub(super) fn render_problems(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.lsp.problems.is_empty() {
             return div()
@@ -2175,13 +2183,30 @@ impl Workbench {
                 })
                 .map(|d| d.display().to_string())
                 .unwrap_or_default();
+            let collapsed = self.lsp.collapsed.contains(path);
+            let file = path.clone();
             rows.push(
                 h_flex()
                     .id(("problem-file", fi))
                     .h(px(22.))
                     .pl(px(8.))
                     .whitespace_nowrap()
-                    .child(codicon(icon::CHEVRON_DOWN).w(px(16.)))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(col::hover()))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let set = &mut this.lsp.collapsed;
+                        if !set.remove(&file) {
+                            set.insert(file.clone());
+                        }
+                        cx.notify();
+                    }))
+                    .child(
+                        codicon(match collapsed {
+                            true => icon::CHEVRON_RIGHT,
+                            false => icon::CHEVRON_DOWN,
+                        })
+                        .w(px(16.)),
+                    )
                     .child(div().mr(px(6.)).child(file_icon(path)))
                     .child(name)
                     .child(
@@ -2206,6 +2231,9 @@ impl Workbench {
                     )
                     .into_any_element(),
             );
+            if collapsed {
+                continue;
+            }
             let mut sorted: Vec<&Problem> = list.iter().collect();
             sorted.sort_by_key(|p| (p.severity, p.line, p.col));
             for (pi, p) in sorted.into_iter().enumerate() {

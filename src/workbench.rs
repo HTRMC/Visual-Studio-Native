@@ -5771,6 +5771,8 @@ impl Workbench {
                 icon::TRASH,
                 icon::ELLIPSIS,
             ]
+        } else if self.panel_tab == 0 {
+            &[icon::FILTER, icon::COLLAPSE_ALL, icon::ELLIPSIS]
         } else {
             &[icon::FILTER, icon::CLEAR_ALL, icon::ELLIPSIS]
         };
@@ -5841,6 +5843,9 @@ impl Workbench {
                                     }
                                     (icon::CLEAR_ALL, output::OUTPUT) => button.on_click(
                                         cx.listener(|this, _, _, cx| this.clear_output(cx)),
+                                    ),
+                                    (icon::COLLAPSE_ALL, 0) => button.on_click(
+                                        cx.listener(|this, _, _, cx| this.collapse_problems(cx)),
                                     ),
                                     (icon::ADD, TERMINAL) => {
                                         button.on_click(cx.listener(|this, _, window, cx| {
@@ -8229,6 +8234,7 @@ mod tests {
 fn action_tip(ch: char) -> &'static str {
     match ch {
         icon::CLEAR_ALL => "Clear All",
+        icon::COLLAPSE_ALL => "Collapse All",
         icon::FILTER => "Filter",
         icon::ADD => "New Terminal (Ctrl+Shift+`)",
         icon::SPLIT_HORIZONTAL => "Split Terminal (Ctrl+Shift+5)",
