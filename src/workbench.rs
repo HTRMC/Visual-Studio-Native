@@ -169,6 +169,7 @@ actions!(
         ExpandLineSelection,
         JumpToBracket,
         CursorUndo,
+        CursorRedo,
         Fold,
         Unfold,
         ToggleFold,
@@ -807,6 +808,14 @@ fn lines_moved(
 
 /// The byte range of the whole lines `sel` touches in `text`, without the
 /// last one's line break.
+/// Cursor Undo/Redo's selections for one editor: earlier, later, and now.
+struct CursorHistory {
+    editor: EntityId,
+    undo: Vec<Vec<Range<usize>>>,
+    redo: Vec<Vec<Range<usize>>>,
+    now: Vec<Range<usize>>,
+}
+
 /// An editor Reopen Closed Editor can bring back: a file's text editor.
 fn reopenable(d: &Doc) -> bool {
     !d.untitled && d.page.is_none() && d.settings.is_none() && d.preview.is_none() && d.webview.is_none()
@@ -1451,7 +1460,7 @@ pub struct Workbench {
     zen_escape: Option<Instant>,
     /// Cursor Undo's history: the editor, its earlier selections, and the
     /// ones it has now.
-    cursor_undo: Option<(EntityId, Vec<Vec<Range<usize>>>, Vec<Range<usize>>)>,
+    cursor_undo: Option<CursorHistory>,
     /// Hot exit's pending write of unsaved text after an edit.
     backup: Option<Task<()>>,
     /// Notifications added since the center was last open: the bell's dot.
@@ -2896,35 +2905,47 @@ impl Workbench {
     fn track_cursor(&mut self, editor: &Entity<EditorState>, cx: &mut Context<Self>) {
         let now = editor.read(cx).selected_ranges();
         match &mut self.cursor_undo {
-            Some((id, stack, last)) if *id == editor.entity_id() => {
-                if *last != now {
+            Some(h) if h.editor == editor.entity_id() => {
+                if h.now != now {
                     // The status bar's Ln/Col follows.
                     cx.notify();
-                    stack.push(std::mem::replace(last, now));
+                    h.undo.push(std::mem::replace(&mut h.now, now));
+                    h.redo.clear();
                     // VS Code keeps 50.
-                    if stack.len() > 50 {
-                        stack.remove(0);
+                    if h.undo.len() > 50 {
+                        h.undo.remove(0);
                     }
                 }
             }
-            _ => self.cursor_undo = Some((editor.entity_id(), Vec::new(), now)),
+            _ => {
+                self.cursor_undo = Some(CursorHistory {
+                    editor: editor.entity_id(),
+                    undo: Vec::new(),
+                    redo: Vec::new(),
+                    now,
+                })
+            }
         }
     }
 
-    /// Cursor Undo (Ctrl+U): the active editor's selections before the last
-    /// change of them.
-    fn cursor_undo(&mut self, cx: &mut Context<Self>) {
+    /// Cursor Undo (Ctrl+U) or Redo: the active editor's selections before
+    /// (after) the last change of them.
+    fn cursor_undo(&mut self, redo: bool, cx: &mut Context<Self>) {
         let Some(editor) = self.docs.get(self.active).map(|d| d.editor.clone()) else {
             return;
         };
-        let Some((id, stack, last)) = &mut self.cursor_undo else {
+        let Some(h) = self.cursor_undo.as_mut().filter(|h| h.editor == editor.entity_id()) else {
             return;
         };
-        let Some(sels) = stack.pop().filter(|_| *id == editor.entity_id()) else {
+        let (from, to) = match redo {
+            false => (&mut h.undo, &mut h.redo),
+            true => (&mut h.redo, &mut h.undo),
+        };
+        let Some(sels) = from.pop() else {
             return;
         };
         // Not a move to remember.
-        *last = sels.clone();
+        to.push(std::mem::replace(&mut h.now, sels.clone()));
         cx.notify();
         editor.update(cx, |e, cx| {
             e.set_selected_range(sels[0].clone(), cx);
@@ -7099,7 +7120,8 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &ExpandLineSelection, _, cx| {
                 this.select_with(|t, sel| Some(line_selection(t, sel)), cx)
             }))
-            .on_action(cx.listener(|this, _: &CursorUndo, _, cx| this.cursor_undo(cx)))
+            .on_action(cx.listener(|this, _: &CursorUndo, _, cx| this.cursor_undo(false, cx)))
+            .on_action(cx.listener(|this, _: &CursorRedo, _, cx| this.cursor_undo(true, cx)))
             .on_action(cx.listener(|this, _: &JumpToBracket, _, cx| {
                 this.select_with(|t, sel| bracket_jump(t, sel.end).map(|at| at..at), cx)
             }))

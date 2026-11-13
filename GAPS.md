@@ -550,7 +550,8 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Cursor Undo (Ctrl+U, and in the palette) was missing; it steps back
       through selection changes since the last edit. The status bar's
       Ln/Col now follows selections set by commands (Ctrl+K Ctrl+D, ...).
-- [ ] No Cursor Redo. Insert Line Below/Above copy the
+- [x] Cursor Redo is in the palette.
+- [ ] Insert Line Below/Above copy the
       line's indent rather than following the language's indent rules; Go to
       Bracket counts brackets in strings and comments.
 - [x] Folding: the gutter chevrons were there; Fold / Unfold (Ctrl+Shift+[
