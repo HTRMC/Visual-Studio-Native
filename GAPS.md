@@ -568,9 +568,10 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Zoom: Zoom In / Out (Ctrl+= / Ctrl+-) and Reset Zoom (Ctrl+NumPad0,
       the palette) keep `window.zoomLevel` (1.2× a level) and scale the
       whole window.
+- [x] View > Appearance had Side Bar and Panel only; it has Zen Mode,
+      Minimap, Sticky Scroll and the zoom items, checked as they're on.
 - [ ] Ctrl+0 resets zoom too (gpui doesn't tell the keypad's 0 apart; VS
-      Code's Ctrl+0 focuses the side bar); View > Appearance has no zoom
-      items; title-bar menus that don't fit are cut off instead of moving
+      Code's Ctrl+0 focuses the side bar); title-bar menus that don't fit are cut off instead of moving
       into a "..." menu.
 - [x] Zen Mode (Ctrl+K Z: full screen, only the editor), Open Recent's
       picker (Ctrl+R outside the terminal, Open Recent > More...) and Close

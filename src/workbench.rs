@@ -7748,9 +7748,22 @@ fn app_menu(
             .menu("Command Palette...", Box::new(CommandPalette))
             .menu("Open View...", Box::new(OpenView))
             .separator()
-            .submenu("Appearance", window, cx, |m, _, _| {
-                m.menu("Primary Side Bar", Box::new(ToggleSidebar))
-                    .menu("Panel", Box::new(TogglePanel))
+            .submenu("Appearance", window, cx, move |m, _, cx| {
+                // VS Code's, less what vsn has no layout for.
+                let wb = recent.workbench.upgrade();
+                let on = |f: fn(&Workbench) -> bool| wb.as_ref().is_some_and(|w| f(w.read(cx)));
+                let zen = on(|w| w.zen.is_some());
+                (m.menu_element_with_check(zen, Box::new(ToggleZenMode), chord_row("Zen Mode", Some(Box::new(ToggleZenMode)))))
+                    .separator()
+                    .menu_with_check("Primary Side Bar", on(|w| w.sidebar), Box::new(ToggleSidebar))
+                    .menu_with_check("Panel", on(|w| w.panel), Box::new(TogglePanel))
+                    .separator()
+                    .menu_with_check("Minimap", on(|w| w.show_minimap), Box::new(ToggleMinimap))
+                    .menu_with_check("Sticky Scroll", on(|w| w.sticky_scroll), Box::new(ToggleStickyScroll))
+                    .separator()
+                    .menu("Zoom In", Box::new(ZoomIn))
+                    .menu("Zoom Out", Box::new(ZoomOut))
+                    .menu("Reset Zoom", Box::new(ZoomReset))
             })
             .submenu("Editor Layout", window, cx, |m, _, _| {
                 m.menu("Split Up", Box::new(Noop))
