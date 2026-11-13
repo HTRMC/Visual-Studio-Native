@@ -1110,6 +1110,8 @@ impl Workbench {
         SET_CONTEXT.lock().unwrap().clear();
         let mapper = cx.keyboard_mapper().clone();
         cx.clear_key_bindings();
+        // Clearing took gpui-kit's too: inputs lost Backspace and the arrows.
+        cx.bind_keys(super::KIT_KEYS.with_borrow(|k| k.clone()));
         cx.bind_keys(super::key_bindings(mapper.as_ref()));
         let js = self.ext.out.take().is_some();
         let wasm = self.ext.wasm.take().is_some();

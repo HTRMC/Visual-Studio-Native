@@ -48,6 +48,7 @@ fn main() {
             workbench::extensions::reload();
             workbench::extensions::apply_themes(cx);
 
+            workbench::remember_kit_keys(cx);
             let keys = workbench::key_bindings(cx.keyboard_mapper().as_ref());
             cx.bind_keys(keys);
 

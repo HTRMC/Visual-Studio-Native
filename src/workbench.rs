@@ -251,6 +251,17 @@ actions!(
     ]
 );
 
+thread_local! {
+    /// gpui-kit's own bindings (Input's Backspace, arrows...), bound before
+    /// vsn's, so restarting the extension host can bind them again.
+    static KIT_KEYS: std::cell::RefCell<Vec<KeyBinding>> = Default::default();
+}
+
+/// Remembers the bindings gpui-kit's init made; call before binding vsn's.
+pub fn remember_kit_keys(cx: &App) {
+    KIT_KEYS.set(cx.key_bindings().borrow().bindings().cloned().collect());
+}
+
 pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
     // Windows reports shift+symbol keys as the shifted char ("ctrl-%"), so
     // those go through the platform mapper; `KeyBinding::new` skips it.
