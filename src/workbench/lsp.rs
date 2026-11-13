@@ -2156,6 +2156,29 @@ impl Workbench {
     }
 
     /// The Problems panel: each file's diagnostics under it, errors first.
+    /// An explorer row's problem decoration: the color of its worst error
+    /// or warning, and their count (a dot for a folder).
+    pub(super) fn problem_deco(&self, path: &Path, dir: bool) -> Option<(Hsla, String)> {
+        let found = (self.lsp.problems.iter())
+            .filter(|(p, _)| match dir {
+                true => p.starts_with(path),
+                false => *p == path,
+            })
+            .flat_map(|(_, list)| list.iter().filter(|p| p.severity <= 2));
+        let (worst, count) = found.fold((3, 0), |(w, n), p| (w.min(p.severity), n + 1));
+        if count == 0 {
+            return None;
+        }
+        // list.errorForeground / list.warningForeground.
+        let color = c(if worst == 1 { 0xF88070 } else { 0xCCA700 });
+        let badge = match dir {
+            true => "\u{25CF}".to_string(),
+            false if count > 9 => "9+".to_string(),
+            false => count.to_string(),
+        };
+        Some((color, badge))
+    }
+
     /// The Problems panel's Collapse All.
     pub(super) fn collapse_problems(&mut self, cx: &mut Context<Self>) {
         self.lsp.collapsed.extend(self.lsp.problems.keys().cloned());

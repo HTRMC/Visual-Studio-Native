@@ -5257,7 +5257,22 @@ impl Workbench {
             })
             .map(|d| match self.renaming.as_ref().filter(|(p, _)| p == path) {
                 Some((_, input)) => d.child(name_box(input)),
-                None => d.child(div().overflow_hidden().text_ellipsis().child(name)),
+                None => {
+                    // Problems color the name and add a count, or a dot on a
+                    // folder holding them, as VS Code's decorations do.
+                    let deco = self.problem_deco(path, is_dir);
+                    d.child(
+                        div()
+                            .flex_1()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .when_some(deco.as_ref(), |d, (color, _)| d.text_color(*color))
+                            .child(name),
+                    )
+                    .when_some(deco, |d, (color, badge)| {
+                        d.child(div().flex_none().ml(px(6.)).text_size(px(11.)).text_color(color).child(badge))
+                    })
+                }
             })
             .on_click(cx.listener(move |this, _, window, cx| {
                 if this.renaming.is_some() {

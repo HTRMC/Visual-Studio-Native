@@ -699,7 +699,10 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [ ] Completion snippets from servers are flattened (`snippetSupport` is off).
 - [x] Problems panel: a file's row collapses its problems, and the title
       bar's Collapse All (VS Code's, in place of Clear All) folds them all.
-- [ ] Problems panel: filter, related information, and the Explorer's red file decorations.
+- [x] The explorer colors files with errors or warnings and shows their
+      count, and a dot on the folders holding them.
+- [ ] Problems panel: filter and related information; editor tabs aren't
+      colored by their problems (`workbench.editor.decorations.colors`).
 - [x] A crashed language server restarts and reopens its files, up to 5 times.
 - [x] A language server given up on left its squiggles behind; they, their
       Problems, inlay hints and CodeLens go with it.
