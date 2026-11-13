@@ -165,7 +165,11 @@ Differences from VS Code still to close, smallest first within each area.
       Explorer; each is in the palette too.
 - [x] The tab menu's Reveal in Explorer View (File: Reveal Active File in
       Explorer View) opens the file's folders and scrolls its row in.
-- [ ] The tab menu lacks Keep Open/Pin, Split and Share.
+- [x] Pin / Unpin (tab menu, Ctrl+K Shift+Enter, palette): a pinned tab
+      moves to the front with a pin in place of its close button, and Close
+      Others / to the Right / Saved / All leave it open.
+- [ ] Pinned tabs aren't kept over a restart, nor shrunk (`pinnedTabSizing`);
+      the tab menu lacks Keep Open (no preview editors), Split and Share.
 - [x] The explorer follows the active editor (VS Code's
       `explorer.autoReveal`): each switch opens its folders and scrolls it in.
 - [x] There's no `explorer.autoReveal` setting to turn following off (no

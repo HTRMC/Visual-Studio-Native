@@ -87,6 +87,8 @@ actions!(
         CloseSavedEditors,
         CloseOtherEditors,
         CloseEditorsToTheRight,
+        PinEditor,
+        UnpinEditor,
         CopyPath,
         CopyRelativePath,
         RevealInFileExplorer,
@@ -268,6 +270,7 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-k ctrl-w", CloseAllEditors, None),
         KeyBinding::new("ctrl-k w", CloseAllEditors, None),
         KeyBinding::new("ctrl-k u", CloseSavedEditors, None),
+        KeyBinding::new("ctrl-k shift-enter", PinEditor, None),
         KeyBinding::new("shift-alt-c", CopyPath, None),
         KeyBinding::new("ctrl-k ctrl-shift-alt-c", CopyRelativePath, None),
         KeyBinding::new("shift-alt-r", RevealInFileExplorer, None),
@@ -644,6 +647,9 @@ struct Doc {
     stamp: Option<(SystemTime, u64)>,
     /// The file is gone from disk: the tab is struck through, as VS Code's.
     deleted: bool,
+    /// Pinned: its tab sits with the other pinned ones at the front and the
+    /// bulk Close commands leave it open.
+    pinned: bool,
 }
 
 /// A file's modified time and size, which a write elsewhere changes.
@@ -1764,6 +1770,7 @@ impl Workbench {
             uri: None,
             stamp,
             deleted: false,
+            pinned: false,
         });
         self.activate(self.docs.len() - 1, window, cx);
         self.open_editors_changed(cx);
@@ -2256,6 +2263,17 @@ impl Workbench {
             }
         }
         cx.notify();
+    }
+
+    /// Pin or Unpin editor `ix`: it moves to the end of the pinned tabs, or
+    /// just after them.
+    fn set_pinned(&mut self, ix: usize, pin: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.get_mut(ix) else {
+            return;
+        };
+        doc.pinned = pin;
+        let to = self.docs.iter().enumerate().filter(|(i, d)| *i != ix && d.pinned).count();
+        self.move_doc(ix, to, window, cx);
     }
 
     fn move_doc(&mut self, from: usize, to: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -2774,8 +2792,9 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Pinned editors stay, as VS Code's Close Others / to the Right / All leave them.
         let targets: Vec<_> = (self.docs.iter().enumerate())
-            .filter(|(ix, d)| pick(*ix, d))
+            .filter(|(ix, d)| !d.pinned && pick(*ix, d))
             .map(|(_, d)| d.editor.clone())
             .collect();
         let names: Vec<_> = (self.docs.iter())
@@ -5437,7 +5456,25 @@ impl Workbench {
                         .when_some(tab_colors[ix], |d, color| d.text_color(color))
                         .child(name.clone()),
                 )
-                .child(
+                .when(doc.pinned, |d| {
+                    d.child(
+                        div()
+                            .id(("tab-unpin", ix))
+                            .tooltip(tip("Unpin (Ctrl+K Shift+Enter)"))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .size(px(20.))
+                            .rounded(px(4.))
+                            .hover(|s| s.bg(col::toolbar_hover()))
+                            .child(codicon(if doc.dirty { icon::PINNED_DIRTY } else { icon::PINNED }))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.set_pinned(ix, false, window, cx);
+                            })),
+                    )
+                })
+                .when(!doc.pinned, |d| d.child(
                     div()
                         .id(("tab-close", ix))
                         .tooltip(tip("Close (Ctrl+F4)"))
@@ -5482,7 +5519,7 @@ impl Workbench {
                             cx.stop_propagation();
                             this.close(ix, window, cx);
                         })),
-                )
+                ))
                 .on_click(cx.listener(move |this, _, window, cx| this.activate(ix, window, cx)))
                 .on_aux_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
                     if ev.is_middle_click() {
@@ -5519,8 +5556,8 @@ impl Workbench {
                 .context_menu({
                     let (wb, editor) = (wb.clone(), doc.editor.clone());
                     let last = ix + 1 == self.docs.len();
-                    let (path, lang) = (doc.path.clone(), doc.lang);
-                    move |menu, _, _| editor_tab_menu(menu, &wb, &editor, last, &path, lang)
+                    let (path, lang, pinned) = (doc.path.clone(), doc.lang, doc.pinned);
+                    move |menu, _, _| editor_tab_menu(menu, &wb, &editor, last, pinned, &path, lang)
                 })
         });
 
@@ -6951,6 +6988,12 @@ impl Render for Workbench {
                 let active = this.active;
                 this.close_editors(|ix, _| ix > active, w, cx)
             }))
+            // Ctrl+K Shift+Enter pins, or unpins a pinned editor, as in VS Code.
+            .on_action(cx.listener(|this, _: &PinEditor, w, cx| {
+                let pinned = this.docs.get(this.active).is_some_and(|d| d.pinned);
+                this.set_pinned(this.active, !pinned, w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &UnpinEditor, w, cx| this.set_pinned(this.active, false, w, cx)))
             .on_action(
                 cx.listener(|this, _: &CopyPath, _, cx| this.copy_path(this.active, false, cx)),
             )
@@ -6961,7 +7004,7 @@ impl Render for Workbench {
                 cx.listener(|this, _: &RevealInFileExplorer, _, _| this.reveal_in_os(this.active)),
             )
             .on_action(cx.listener(|this, _: &CloseSavedEditors, w, cx| {
-                this.remove_where(|d| !d.dirty, w, cx)
+                this.remove_where(|d| !d.dirty && !d.pinned, w, cx)
             }))
             .on_action(
                 cx.listener(|this, _: &ToggleMaximizedPanel, _, cx| this.toggle_max_panel(cx)),
@@ -8318,6 +8361,7 @@ fn editor_tab_menu(
     wb: &WeakEntity<Workbench>,
     editor: &Entity<EditorState>,
     last: bool,
+    pinned: bool,
     path: &Path,
     lang: &str,
 ) -> PopupMenu {
@@ -8379,6 +8423,11 @@ fn editor_tab_menu(
             this.activate(ix, w, cx);
             this.reveal_in_tree(&this.docs[ix].path.clone(), true, cx)
         }))
+        .separator()
+        .item(match pinned {
+            false => item("Pin", Some(Box::new(PinEditor)), |this, ix, w, cx| this.set_pinned(ix, true, w, cx)),
+            true => item("Unpin", Some(Box::new(PinEditor)), |this, ix, w, cx| this.set_pinned(ix, false, w, cx)),
+        })
         .when(lang == "markdown", |m| {
             m.separator()
                 .item(item("Open Preview", None, |this, ix, w, cx| {

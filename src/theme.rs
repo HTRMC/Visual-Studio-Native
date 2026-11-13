@@ -112,6 +112,8 @@ pub mod icon {
     pub const CHEVRON_DOWN: char = '\u{EAB4}';
     pub const CHEVRON_UP: char = '\u{EAB7}';
     pub const CLOSE: char = '\u{EA76}';
+    pub const PINNED: char = '\u{EBA0}';
+    pub const PINNED_DIRTY: char = '\u{EBB2}';
     pub const ELLIPSIS: char = '\u{EA7C}';
     pub const NEW_FILE: char = '\u{EA7F}';
     pub const NEW_FOLDER: char = '\u{EA80}';

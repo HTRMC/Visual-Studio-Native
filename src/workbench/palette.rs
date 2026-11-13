@@ -92,6 +92,8 @@ fn builtin_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("Workspaces: Close Workspace", Box::new(CloseFolder)),
         ("View: Close Editor", Box::new(CloseEditor)),
         ("View: Close All Editors", Box::new(CloseAllEditors)),
+        ("View: Pin Editor", Box::new(PinEditor)),
+        ("View: Unpin Editor", Box::new(UnpinEditor)),
         (
             "View: Close Saved Editors in Group",
             Box::new(CloseSavedEditors),
