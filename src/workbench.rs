@@ -201,6 +201,9 @@ actions!(
         CutFile,
         CopyFile,
         PasteFile,
+        RenameFile,
+        DeleteFile,
+        DeleteFilePermanently,
         FindInFolder,
         OpenSettingsJson,
         OpenSettings,
@@ -249,6 +252,9 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-x", CutFile, Some("Explorer")),
         KeyBinding::new("ctrl-c", CopyFile, Some("Explorer")),
         KeyBinding::new("ctrl-v", PasteFile, Some("Explorer")),
+        KeyBinding::new("f2", RenameFile, Some("Explorer")),
+        KeyBinding::new("delete", DeleteFile, Some("Explorer")),
+        KeyBinding::new("shift-delete", DeleteFilePermanently, Some("Explorer")),
         KeyBinding::new("shift-alt-f", FindInFolder, Some("Explorer")),
         KeyBinding::new("ctrl-shift-f", ShowSearch, None),
         KeyBinding::new("ctrl-shift-h", ReplaceInFiles, None),
@@ -282,7 +288,8 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-k ctrl-x", TrimTrailingWhitespace, None),
         KeyBinding::new("shift-alt-f", FormatDocument, None),
         KeyBinding::new("ctrl-k ctrl-f", FormatSelection, None),
-        KeyBinding::new("f2", RenameSymbol, None),
+        // As VS Code's when clause; a global binding would beat the explorer's F2.
+        KeyBinding::new("f2", RenameSymbol, Some("editorTextFocus")),
         KeyBinding::new("shift-f12", FindAllReferences, None),
         KeyBinding::new("ctrl-f12", GoToImplementation, None),
         KeyBinding::new("shift-alt-h", ShowCallHierarchy, None),
@@ -1101,6 +1108,8 @@ pub struct Workbench {
     /// The explorer's New File/Folder row: the folder it goes in, whether it
     /// makes a folder, and its name box.
     new_item: Option<(PathBuf, bool, Entity<InputState>)>,
+    /// The explorer row being renamed and its name box.
+    renaming: Option<(PathBuf, Entity<InputState>)>,
     /// Set once the user agreed to quit, so closing doesn't ask twice.
     quitting: bool,
     root_open: bool,
@@ -1203,6 +1212,7 @@ impl Workbench {
             dirs: HashMap::new(),
             watcher: None,
             new_item: None,
+            renaming: None,
             quitting: false,
             root_open: true,
             docs: Vec::new(),
@@ -1804,7 +1814,12 @@ impl Workbench {
         if let Err(err) = replaced.and_then(|_| fs::rename(from, to)) {
             return self.error(format!("Unable to move '{}' ({err})", from.display()), cx);
         }
-        // Open editors and expanded folders follow the move.
+        self.moved(from, to, dir, cx);
+    }
+
+    /// Open editors, expanded folders and the selection follow an explorer
+    /// item moved from `from` to `to`, in the folder `dir`.
+    fn moved(&mut self, from: &Path, to: &Path, dir: &Path, cx: &mut Context<Self>) {
         let moved = |p: &Path| p.strip_prefix(from).ok().map(|rest| to.join(rest));
         for doc in &mut self.docs {
             if let Some(path) = moved(&doc.path) {
@@ -3748,6 +3763,23 @@ impl Workbench {
                                 .on_action(cx.listener(|this, _: &PasteFile, window, cx| {
                                     this.paste_file(this.tree_cursor.clone(), window, cx)
                                 }))
+                                .on_action(cx.listener(|this, _: &RenameFile, window, cx| {
+                                    if let Some(path) = this.tree_cursor.clone() {
+                                        this.start_rename(path, window, cx)
+                                    }
+                                }))
+                                .on_action(cx.listener(|this, _: &DeleteFile, window, cx| {
+                                    if let Some(path) = this.tree_cursor.clone() {
+                                        this.delete_item(path, false, window, cx)
+                                    }
+                                }))
+                                .on_action(cx.listener(
+                                    |this, _: &DeleteFilePermanently, window, cx| {
+                                        if let Some(path) = this.tree_cursor.clone() {
+                                            this.delete_item(path, true, window, cx)
+                                        }
+                                    },
+                                ))
                                 // VS Code's file commands take the explorer's
                                 // focused row over the active editor.
                                 .on_action(cx.listener(|this, _: &RevealInFileExplorer, _, cx| {
@@ -4013,7 +4045,8 @@ impl Workbench {
     /// here.
     fn tree_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         // Keys typed into the New File/Folder name are its own.
-        let Some(root) = self.root.clone().filter(|_| self.new_item.is_none()) else {
+        let boxed = self.new_item.is_some() || self.renaming.is_some();
+        let Some(root) = self.root.clone().filter(|_| !boxed) else {
             return;
         };
         if ev.keystroke.modifiers.modified() {
@@ -4244,6 +4277,135 @@ impl Workbench {
         }
     }
 
+    /// VS Code's explorer Rename (F2): the row's name becomes a box with the
+    /// name before its extension selected.
+    fn start_rename(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if self.root.as_ref() == Some(&path) || self.new_item.is_some() {
+            return;
+        }
+        let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let stem = match name.rfind('.') {
+            Some(i) if i > 0 && !path.is_dir() => i,
+            _ => name.len(),
+        };
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(name));
+        input.update(cx, |s, cx| s.set_selected_range(0..stem, cx));
+        cx.subscribe_in(&input, window, |this, input, ev: &InputEvent, window, cx| {
+            if !this.renaming.as_ref().is_some_and(|r| &r.1 == input) {
+                return;
+            }
+            match ev {
+                InputEvent::PressEnter { .. } => {
+                    this.rename_item(cx);
+                    window.focus(&this.tree_focus, cx);
+                }
+                InputEvent::Blur => this.rename_item(cx),
+                _ => {}
+            }
+        })
+        .detach();
+        let focus = input.clone();
+        window.defer(cx, move |window, cx| focus.update(cx, |s, cx| s.focus(window, cx)));
+        self.tree_sel = Some(path.clone());
+        self.tree_cursor = Some(path.clone());
+        self.renaming = Some((path, input));
+        cx.notify();
+    }
+
+    /// Renames the row being renamed to its box's name; a case-only change
+    /// renames too, and slashes move it into folders made on the way.
+    fn rename_item(&mut self, cx: &mut Context<Self>) {
+        let Some((from, input)) = self.renaming.take() else {
+            return;
+        };
+        cx.notify();
+        let name = input.read(cx).value().trim().to_string();
+        let Some(dir) = from.parent().map(Path::to_path_buf) else {
+            return;
+        };
+        let to = dir.join(&name);
+        if name.is_empty() || to == from {
+            return;
+        }
+        let same = to.to_string_lossy().to_lowercase() == from.to_string_lossy().to_lowercase();
+        if to.exists() && !same {
+            return self.error(
+                format!(
+                    "A file or folder '{name}' already exists at this location. Please choose a different name."
+                ),
+                cx,
+            );
+        }
+        let made = (to.parent().map_or(Ok(()), fs::create_dir_all)).and_then(|_| fs::rename(&from, &to));
+        if let Err(err) = made {
+            return self.error(format!("Unable to rename '{}' ({err})", from.display()), cx);
+        }
+        self.moved(&from, &to, to.parent().unwrap_or(&dir), cx);
+    }
+
+    /// VS Code's explorer Delete: to the Recycle Bin, or gone for good with
+    /// Shift+Delete, after asking; the focus moves to the next row.
+    fn delete_item(
+        &mut self,
+        path: PathBuf,
+        permanent: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.root.as_ref() == Some(&path) || self.new_item.is_some() || self.renaming.is_some() {
+            return;
+        }
+        let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let dir = path.is_dir();
+        let contents = if dir { " and its contents" } else { "" };
+        let (message, detail, button) = match permanent {
+            false => (
+                format!("Are you sure you want to delete '{name}'{contents}?"),
+                format!(
+                    "You can restore this {} from the Recycle Bin.",
+                    if dir { "folder" } else { "file" }
+                ),
+                "Move to Recycle Bin",
+            ),
+            true => (
+                format!("Are you sure you want to permanently delete '{name}'{contents}?"),
+                "This action is irreversible!".to_string(),
+                "Delete",
+            ),
+        };
+        let answer = window.prompt(PromptLevel::Warning, &message, Some(&detail), &[button, "Cancel"], cx);
+        cx.spawn_in(window, async move |this, cx| {
+            if answer.await != Ok(0) {
+                return;
+            }
+            this.update(cx, |this, cx| {
+                let gone = match (permanent, dir) {
+                    (false, _) => recycle(&path),
+                    (true, true) => fs::remove_dir_all(&path),
+                    (true, false) => fs::remove_file(&path),
+                };
+                if let Err(err) = gone {
+                    return this.error(format!("Failed to delete '{name}' ({err})"), cx);
+                }
+                let mut rows = Vec::new();
+                if let Some(root) = this.root.clone() {
+                    this.tree_rows(&root, 0, &mut rows);
+                }
+                let next = rows.iter().position(|r| r.0 == path).and_then(|i| {
+                    (rows[i + 1..].iter().find(|r| !r.0.starts_with(&path)))
+                        .or(i.checked_sub(1).map(|j| &rows[j]))
+                        .map(|r| r.0.clone())
+                });
+                this.tree_sel = next.clone();
+                this.tree_cursor = next;
+                this.dirs.clear();
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn render_new_item(&self, depth: usize, is_dir: bool, cx: &mut Context<Self>) -> AnyElement {
         let Some((_, _, input)) = &self.new_item else {
             return div().into_any_element();
@@ -4260,15 +4422,7 @@ impl Workbench {
                 true => d.children(folder_icon(Path::new("folder"), false).map(|i| div().mr(px(6.)).child(i))),
                 false => d.child(div().mr(px(6.)).child(file_icon(Path::new("")))),
             })
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .border_1()
-                    .border_color(col::focus())
-                    .bg(col::input())
-                    .child(Input::new(input).appearance(false).text_size(px(13.))),
-            )
+            .child(name_box(input))
             .on_action(cx.listener(|this, _: &input::Escape, window, cx| {
                 this.new_item = None;
                 window.focus(&this.tree_focus, cx);
@@ -4401,8 +4555,14 @@ impl Workbench {
                 true => d.children(folder_icon(path, open).map(|i| div().mr(px(6.)).child(i))),
                 false => d.child(div().mr(px(6.)).child(file_icon(path))),
             })
-            .child(div().overflow_hidden().text_ellipsis().child(name))
+            .map(|d| match self.renaming.as_ref().filter(|(p, _)| p == path) {
+                Some((_, input)) => d.child(name_box(input)),
+                None => d.child(div().overflow_hidden().text_ellipsis().child(name)),
+            })
             .on_click(cx.listener(move |this, _, window, cx| {
+                if this.renaming.is_some() {
+                    return;
+                }
                 this.tree_open(&click_path, is_dir, window, cx);
                 // A click opens the file but leaves focus in the explorer.
                 window.focus(&this.tree_focus, cx);
@@ -5614,6 +5774,41 @@ fn activity_hover(text: SharedString, row: f32) -> impl IntoElement {
         )
 }
 
+/// The explorer's inline name box (New File/Folder, Rename).
+fn name_box(input: &Entity<InputState>) -> impl IntoElement + use<> {
+    div()
+        .flex_1()
+        .min_w_0()
+        .border_1()
+        .border_color(col::focus())
+        .bg(col::input())
+        // Clicks in the box stay there, not on the row under it.
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(Input::new(input).appearance(false).text_size(px(13.)))
+}
+
+/// Sends `path` to the Recycle Bin, as VS Code's explorer Delete does.
+fn recycle(path: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows::Win32::UI::Shell::{
+        FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT,
+        SHFILEOPSTRUCTW, SHFileOperationW,
+    };
+    // A list of one path, ended by two NULs.
+    let from: Vec<u16> = path.as_os_str().encode_wide().chain([0, 0]).collect();
+    let mut op = SHFILEOPSTRUCTW {
+        wFunc: FO_DELETE,
+        pFrom: windows::core::PCWSTR(from.as_ptr()),
+        fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI).0 as u16,
+        ..Default::default()
+    };
+    // SAFETY: `from` outlives the call and is double-NUL-terminated.
+    match unsafe { SHFileOperationW(&mut op) } {
+        0 if !op.fAnyOperationsAborted.as_bool() => Ok(()),
+        code => Err(std::io::Error::other(format!("error {code:#x}"))),
+    }
+}
+
 /// Opens File Explorer on `path`'s folder with it selected, as Electron's
 /// `shell.showItemInFolder` does for VS Code: SHOpenFolderAndSelectItems
 /// reuses a window already on that folder, and takes paths with spaces that
@@ -5687,8 +5882,7 @@ fn reveal_path(path: &Path) {
 
 /// An explorer row's right-click menu, as VS Code's for a file or folder;
 /// the `root` one is the empty area's.
-// ponytail: no Open to the Side, Rename or Delete yet (no inline rename,
-// split editors or recycle bin).
+// ponytail: no Open to the Side yet (no split editors).
 fn explorer_menu(
     menu: PopupMenu,
     wb: &WeakEntity<Workbench>,
@@ -5779,6 +5973,17 @@ fn explorer_menu(
             Some(Box::new(CopyRelativePath)),
             |this, path, _, cx| this.copy_file_path(path, true, cx),
         ));
+    let menu = match root {
+        true => menu,
+        false => menu
+            .separator()
+            .item(item("Rename...", Some(Box::new(RenameFile)), |this, path, w, cx| {
+                this.start_rename(path.to_path_buf(), w, cx)
+            }))
+            .item(item("Delete", Some(Box::new(DeleteFile)), |this, path, w, cx| {
+                this.delete_item(path.to_path_buf(), false, w, cx)
+            })),
+    };
     let mut focus = KeyContext::parse("Explorer filesExplorerFocus explorerViewletFocus").unwrap();
     if is_dir {
         focus.add("explorerResourceIsFolder");

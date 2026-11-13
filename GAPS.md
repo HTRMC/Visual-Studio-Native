@@ -213,8 +213,12 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] PageUp/PageDown move the explorer's selection a page of rows.
 - [x] PageUp/PageDown first stop at the first/last row in view, as VS
       Code's do, then move a page.
-- [ ] The explorer lacks type-to-find, F2/Delete on the selection, and
-      Ctrl/Shift multi-select.
+- [x] F2 renames the explorer's focused item in place (the name before its
+      extension selected; open editors follow) and Delete sends it to the
+      Recycle Bin after asking (Shift+Delete deletes it for good); both are
+      in its menu too. F2 in an editor is still Rename Symbol.
+- [ ] The explorer lacks type-to-find and Ctrl/Shift multi-select; a deleted
+      file's open editor isn't marked deleted.
 - [x] Ctrl+Shift+E (View: Show Explorer, View > Explorer) opens the
       explorer and puts focus in it, instead of toggling the side bar.
 - [x] The explorer's files and folders have a right-click menu: Open,
@@ -227,7 +231,7 @@ Differences from VS Code still to close, smallest first within each area.
       (and the menu's) now put a name box in the focused folder; Enter or
       clicking away makes it (slashes make the folders between), Escape drops
       it, and a new file opens.
-- [ ] The explorer menu lacks Open to the Side, Rename and Delete.
+- [ ] The explorer menu lacks Open to the Side.
 - [x] The explorer went stale after a build flooded Windows' change buffer;
       a lost burst now re-reads every listing.
 - [x] Typing hid the mouse pointer (gpui's default); VS Code leaves it.
