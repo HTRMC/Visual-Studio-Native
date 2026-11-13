@@ -762,6 +762,13 @@ fn lines_moved(
 
 /// The byte range of the whole lines `sel` touches in `text`, without the
 /// last one's line break.
+/// files.hotExit: "onExit" (the default) keeps unsaved changes over a quit
+/// instead of asking; "off" asks.
+// ponytail: "onExitAndWindowClose" acts as "onExit" (one window).
+fn hot_exit() -> bool {
+    terminal::settings()["files.hotExit"] != "off"
+}
+
 /// window.zoomLevel: each level is 20% bigger, as in VS Code.
 fn zoom_level() -> f64 {
     terminal::settings()["window.zoomLevel"].as_f64().unwrap_or(0.).clamp(-8., 9.)
@@ -2822,13 +2829,21 @@ impl Workbench {
     }
 
     /// Remembers the folder and its open editors for the next start, as VS
-    /// Code's window.restoreWindows "all" reopens them.
-    fn save_session(&self) {
+    /// Code's window.restoreWindows "all" reopens them; with hot exit, also
+    /// the unsaved text of dirty ones (Untitled too).
+    fn save_session(&self, cx: &App) {
         let Some(path) = session_path() else { return };
         let mut s = session();
+        let hot = hot_exit();
         let files: Vec<_> = (self.docs.iter())
-            .filter(|d| !d.untitled && d.page.is_none() && d.path.is_file())
+            .filter(|d| (!d.untitled && d.path.is_file()) || (hot && d.dirty && !d.binary))
+            .filter(|d| d.page.is_none())
             .filter(|d| d.webview.as_ref().is_none_or(|w| w.panel.is_none()))
+            .collect();
+        // ponytail: backups live in session.json, so a huge unsaved file makes it huge.
+        let backups: serde_json::Map<String, serde_json::Value> = (files.iter())
+            .filter(|d| hot && d.dirty)
+            .map(|d| (d.path.to_string_lossy().into_owned(), d.editor.read(cx).value().to_string().into()))
             .collect();
         let active = (files.iter())
             .position(|d| self.docs.get(self.active).is_some_and(|a| a.path == d.path));
@@ -2837,7 +2852,7 @@ impl Workbench {
             .as_ref()
             .map_or(String::new(), |r| r.to_string_lossy().into_owned());
         s["last"] = serde_json::json!(self.root);
-        s["editors"][key] = serde_json::json!({ "files": files.iter().map(|d| &d.path).collect::<Vec<_>>(), "active": active });
+        s["editors"][key] = serde_json::json!({ "files": files.iter().map(|d| &d.path).collect::<Vec<_>>(), "active": active, "backups": backups });
         fs::create_dir_all(path.parent().unwrap()).ok();
         fs::write(path, s.to_string()).ok();
     }
@@ -2853,7 +2868,10 @@ impl Workbench {
         let files: Vec<PathBuf> =
             serde_json::from_value(saved["files"].clone()).unwrap_or_default();
         for path in files {
-            self.open_path(path, window, cx);
+            match saved["backups"][path.to_string_lossy().as_ref()].as_str() {
+                Some(text) => self.restore_backup(path, text, window, cx),
+                None => self.open_path(path, window, cx),
+            }
         }
         let active = saved["active"].as_u64().and_then(|ix| {
             let path = saved["files"][ix as usize].as_str()?;
@@ -2864,7 +2882,22 @@ impl Workbench {
         }
     }
 
-    /// True when nothing is unsaved. Otherwise asks Save All / Don't Save / Cancel
+    /// Hot exit: an editor back with the unsaved text it had at quit. An
+    /// Untitled one (a bare name) or a file gone from disk starts empty.
+    fn restore_backup(&mut self, path: PathBuf, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        match path.is_file() {
+            true => self.open_path(path.clone(), window, cx),
+            false => {
+                let untitled = !path.is_absolute();
+                self.push_doc(path.clone(), String::new(), Encoding::Utf8, false, untitled, window, cx)
+            }
+        }
+        if let Some(doc) = self.docs.iter().find(|d| d.path == path && !d.binary) {
+            doc.editor.update(cx, |e, cx| e.replace_all(text, window, cx));
+        }
+    }
+
+    /// True when nothing is unsaved or hot exit keeps it. Otherwise asks Save All / Don't Save / Cancel
     /// and quits by itself once the answer allows it.
     fn can_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let dirty: Vec<String> = self
@@ -2879,8 +2912,8 @@ impl Workbench {
                     .to_string()
             })
             .collect();
-        if self.quitting || dirty.is_empty() {
-            self.save_session();
+        if self.quitting || dirty.is_empty() || hot_exit() {
+            self.save_session(cx);
             return true;
         }
         let message = match dirty.as_slice() {
@@ -2916,7 +2949,7 @@ impl Workbench {
                 }
                 // A failed save keeps its editor dirty; stay open so nothing is lost.
                 if this.docs.iter().all(|d| !d.dirty) || choice == 1 {
-                    this.save_session();
+                    this.save_session(cx);
                     this.quitting = true;
                     cx.quit();
                 }
@@ -6246,7 +6279,7 @@ impl Render for Workbench {
             )
         );
         if session != self.saved_session {
-            self.save_session();
+            self.save_session(cx);
             self.saved_session = session;
         }
         self.sync_webviews();

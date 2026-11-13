@@ -295,8 +295,12 @@ Differences from VS Code still to close, smallest first within each area.
       too, and coming back to the window rechecks every editor.
 - [ ] The save conflict offers Revert where VS Code offers Compare (no diff
       editor), and a large file (over 20MB) isn't reloaded.
-- [ ] No hot exit: quitting with unsaved changes asks Save / Don't Save
-      (VS Code's files.hotExit "onExit" keeps them for the next start).
+- [x] Hot exit (`files.hotExit`, "onExit" by default): quitting with
+      unsaved changes no longer asks; dirty editors, Untitled ones too, come
+      back with their text on the next start ("off" asks as before).
+- [ ] Hot exit backups live in session.json (no Backups folder), are
+      written only when tabs change and at quit (a crash loses edits since),
+      and keep no undo history.
 - [x] No "File: Revert File" command (the File menu's entry was inert).
 - [x] Revert File leaves an Untitled editor as is (VS Code empties it).
 - [x] File > Save As... was inert; it, Ctrl+Shift+S and the palette's
