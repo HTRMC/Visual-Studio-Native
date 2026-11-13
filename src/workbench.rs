@@ -157,6 +157,8 @@ actions!(
         ZoomIn,
         ToggleMinimap,
         ReopenClosedEditor,
+        NextProblem,
+        PreviousProblem,
         OpenRecentPicker,
         ToggleZenMode,
         ToggleStickyScroll,
@@ -384,6 +386,8 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         // VS Code: Ctrl+NumPad0 (its Ctrl+0 focuses the side bar, not built here).
         KeyBinding::new("ctrl-0", ZoomReset, None),
         KeyBinding::new("ctrl-shift-t", ReopenClosedEditor, None),
+        KeyBinding::new("f8", NextProblem, None),
+        KeyBinding::new("shift-f8", PreviousProblem, None),
         // The terminal keeps Ctrl+R for the shell's history search, as VS Code.
         KeyBinding::new("ctrl-r", OpenRecentPicker, Some("!terminalFocus")),
         KeyBinding::new("ctrl-k f", CloseFolder, None),
@@ -6852,6 +6856,10 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &OpenRecentPicker, window, cx| {
                 this.recent_picker(window, cx)
             }))
+            .on_action(cx.listener(|this, _: &NextProblem, window, cx| this.next_problem(true, window, cx)))
+            .on_action(cx.listener(|this, _: &PreviousProblem, window, cx| {
+                this.next_problem(false, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &ReopenClosedEditor, window, cx| {
                 this.reopen_closed(window, cx)
             }))
@@ -7630,7 +7638,11 @@ fn app_menu(
             .menu("Go to Implementations", Box::new(GoToImplementation))
             .menu("Go to References", Box::new(FindAllReferences))
             .separator()
-            .menu("Go to Line/Column...", Box::new(GoToLine)),
+            .menu("Go to Line/Column...", Box::new(GoToLine))
+            .menu("Go to Bracket", Box::new(JumpToBracket))
+            .separator()
+            .menu("Next Problem", Box::new(NextProblem))
+            .menu("Previous Problem", Box::new(PreviousProblem)),
         "Run" => menu
             .menu("Start Debugging", Box::new(StartDebugging))
             .menu("Run Without Debugging", Box::new(RunWithoutDebugging))

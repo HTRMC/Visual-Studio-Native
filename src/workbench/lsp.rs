@@ -2063,6 +2063,34 @@ impl Workbench {
     }
 
     /// Puts `path`'s diagnostics on its editor as squiggles.
+    /// Go to Next / Previous Problem in Files (F8 / Shift+F8): the next
+    /// error, warning or info after the cursor, on into the next file with
+    /// some and round again.
+    // ponytail: moves the cursor (the squiggle's hover tells it); no peek widget.
+    pub(super) fn next_problem(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let all: Vec<(&PathBuf, u32, u32)> = (self.lsp.problems.iter())
+            .flat_map(|(path, ps)| {
+                let mut ps: Vec<_> = ps.iter().filter(|p| p.severity <= 3).map(|p| (path, p.line, p.col)).collect();
+                ps.sort();
+                ps
+            })
+            .collect();
+        let here = self.docs.get(self.active).map(|d| {
+            let at = d.editor.read(cx).cursor_position();
+            (d.path.clone(), at.line, at.character)
+        });
+        let after = |p: &(&PathBuf, u32, u32)| here.as_ref().is_none_or(|h| (p.0, p.1, p.2) > (&h.0, h.1, h.2));
+        let before = |p: &(&PathBuf, u32, u32)| here.as_ref().is_none_or(|h| (p.0, p.1, p.2) < (&h.0, h.1, h.2));
+        let pick = match forward {
+            true => all.iter().find(|p| after(p)).or(all.first()),
+            false => all.iter().rev().find(|p| before(p)).or(all.last()),
+        };
+        if let Some(&(path, line, col)) = pick {
+            let at = input::Position::new(line, col);
+            self.go_to(path.clone(), at, window, cx);
+        }
+    }
+
     pub(super) fn show_diagnostics(&mut self, path: &Path, cx: &mut Context<Self>) {
         let Some(doc) = self.docs.iter().find(|d| d.path == path) else {
             return;

@@ -520,9 +520,11 @@ Differences from VS Code still to close, smallest first within each area.
       links, stack frames) put it at the viewport's edge; VS Code centers it.
 - [x] The mouse's back/forward side buttons didn't navigate.
 - [x] Go menu: Switch Editor's Next/Previous Editor (Ctrl+PageDown/Up).
+- [x] Go to Next / Previous Problem (F8 / Shift+F8, the Go menu, the
+      palette) moves through errors, warnings and infos across files.
 - [ ] Go menu's other navigation entries (Next/Previous Used Editor's
-      Ctrl+Tab picker, Switch Group, Next/Previous Problem, Next/Previous
-      Change) are missing.
+      Ctrl+Tab picker, Switch Group, Next/Previous Change) are missing; F8
+      has no peek widget.
 - [x] Delete Line (Ctrl+Shift+K), Insert Line Below/Above (Ctrl+Enter,
       Ctrl+Shift+Enter), Expand Line Selection (Ctrl+L), Go to Bracket
       (Ctrl+Shift+\), Change All Occurrences (Ctrl+F2) and Change Language
