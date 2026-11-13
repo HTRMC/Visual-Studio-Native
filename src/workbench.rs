@@ -156,6 +156,7 @@ actions!(
         DeleteLines,
         ZoomIn,
         ToggleMinimap,
+        ReopenClosedEditor,
         ToggleStickyScroll,
         ZoomOut,
         ZoomReset,
@@ -362,6 +363,7 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("ctrl--", ZoomOut, None),
         // VS Code: Ctrl+NumPad0 (its Ctrl+0 focuses the side bar, not built here).
         KeyBinding::new("ctrl-0", ZoomReset, None),
+        KeyBinding::new("ctrl-shift-t", ReopenClosedEditor, None),
         KeyBinding::new("ctrl-d", AddNextOccurrence, Some("Input && mode == editor")),
         KeyBinding::new(
             "shift-alt-right",
@@ -764,6 +766,11 @@ fn lines_moved(
 
 /// The byte range of the whole lines `sel` touches in `text`, without the
 /// last one's line break.
+/// An editor Reopen Closed Editor can bring back: a file's text editor.
+fn reopenable(d: &Doc) -> bool {
+    !d.untitled && d.page.is_none() && d.settings.is_none() && d.preview.is_none() && d.webview.is_none()
+}
+
 /// files.hotExit: "onExit" (the default) keeps unsaved changes over a quit
 /// instead of asking; "off" asks.
 // ponytail: "onExitAndWindowClose" acts as "onExit" (one window).
@@ -1305,6 +1312,8 @@ pub struct Workbench {
     show_minimap: bool,
     sticky_scroll: bool,
     minimap_drag: Rc<std::cell::Cell<Option<(Pixels, f32)>>>,
+    /// Files whose editors closed, latest last, for Reopen Closed Editor.
+    closed: Vec<PathBuf>,
     /// Notifications added since the center was last open: the bell's dot.
     unseen: usize,
     /// Whether the bell's notification center is open.
@@ -1404,6 +1413,7 @@ impl Workbench {
             show_minimap: terminal::settings()["editor.minimap.enabled"] != false,
             sticky_scroll: terminal::settings()["editor.stickyScroll.enabled"] != false,
             minimap_drag: Default::default(),
+            closed: Vec::new(),
             unseen: 0,
             center: false,
             act_hover: None,
@@ -2642,6 +2652,10 @@ impl Workbench {
         for d in self.docs.iter().filter(|d| gone(d)) {
             self.webview_closed(d);
         }
+        let closed: Vec<_> = (self.docs.iter().filter(|d| gone(d) && reopenable(d)))
+            .map(|d| d.path.clone())
+            .collect();
+        self.closed.extend(closed);
         self.docs.retain(|d| !gone(d));
         self.lsp_closed();
         self.open_editors_changed(cx);
@@ -2658,6 +2672,9 @@ impl Workbench {
     fn remove(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let doc = self.docs.remove(ix);
         self.webview_closed(&doc);
+        if reopenable(&doc) {
+            self.closed.push(doc.path.clone());
+        }
         self.lsp_closed();
         self.open_editors_changed(cx);
         if self.active > ix || self.active >= self.docs.len() {
@@ -2669,6 +2686,16 @@ impl Workbench {
             self.activate(self.active, window, cx);
         }
         cx.notify();
+    }
+
+    /// View: Reopen Closed Editor (Ctrl+Shift+T): the last closed file that
+    /// is still there and not open again.
+    fn reopen_closed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        while let Some(path) = self.closed.pop() {
+            if path.is_file() && !self.docs.iter().any(|d| d.path == path) {
+                return self.open_path(path, window, cx);
+            }
+        }
     }
 
     fn open_file(&mut self, _: &OpenFile, _: &mut Window, cx: &mut Context<Self>) {
@@ -6661,6 +6688,9 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &MoveLinesDown, window, cx| {
                 this.line_op(false, false, window, cx)
             }))
+            .on_action(cx.listener(|this, _: &ReopenClosedEditor, window, cx| {
+                this.reopen_closed(window, cx)
+            }))
             .on_action(cx.listener(|this, _: &ToggleMinimap, _, cx| {
                 this.toggle_setting("editor.minimap.enabled", cx)
             }))
@@ -7269,7 +7299,7 @@ fn app_menu(
             .map(|m| chord(m, "Open Folder...", OpenFolder))
             .submenu("Open Recent", window, cx, move |mut m, _, _| {
                 // VS Code's menu shows 10 of each; gone ones are left out.
-                // ponytail: no Reopen Closed Editor
+                m = m.menu("Reopen Closed Editor", Box::new(ReopenClosedEditor)).separator();
                 for (folder, list) in [(true, &recent.folders), (false, &recent.files)] {
                     let paths = list.iter().map(PathBuf::from).filter(|p| p.exists());
                     for path in paths.take(10) {

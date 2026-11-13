@@ -336,8 +336,9 @@ Differences from VS Code still to close, smallest first within each area.
       Tools.
 - [x] File > Open Recent held only More...; it lists recent folders (not
       the open one) and files opened from outside the explorer, as VS Code.
-- [ ] Open Recent lacks Reopen Closed Editor, and leaves out gone paths
-      where VS Code offers to remove them.
+- [x] Reopen Closed Editor (Ctrl+Shift+T, Open Recent's first entry, the
+      palette) brings back the last closed file.
+- [ ] Open Recent leaves out gone paths where VS Code offers to remove them.
 - [x] Open Recent > Clear Recently Opened... (and the palette's) clears it
       and Quick Open's history, behind VS Code's warning.
 - [x] Run > Open Configurations was inert; it and "Debug: Open 'launch.json'"

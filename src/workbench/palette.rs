@@ -78,6 +78,7 @@ fn builtin_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("File: Open File...", Box::new(OpenFile)),
         ("File: Open Folder...", Box::new(OpenFolder)),
         ("File: Clear Recently Opened...", Box::new(ClearRecent)),
+        ("View: Reopen Closed Editor", Box::new(ReopenClosedEditor)),
         ("File: Save", Box::new(Save)),
         ("File: Save As...", Box::new(SaveAs)),
         ("File: Save All", Box::new(SaveAll)),
