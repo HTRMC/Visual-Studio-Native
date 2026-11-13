@@ -89,6 +89,12 @@ fn builtin() -> Map<String, Value> {
             "default": "onExit",
             "markdownDescription": "[Hot Exit](https://aka.ms/vscode-hot-exit) controls whether unsaved files are remembered between sessions, allowing the save prompt when exiting the editor to be skipped.",
         },
+        "workbench.editor.pinnedTabSizing": {
+            "type": "string",
+            "enum": ["normal", "compact", "shrink"],
+            "default": "normal",
+            "markdownDescription": "Controls the size of pinned editor tabs. Pinned tabs are sorted to the beginning of all opened tabs and typically do not close until unpinned. This value is ignored when `#workbench.editor.showTabs#` is not set to `multiple`.",
+        },
         "zenMode.centerLayout": {
             "type": "boolean",
             "default": true,

@@ -170,8 +170,9 @@ Differences from VS Code still to close, smallest first within each area.
       moves to the front with a pin in place of its close button, and Close
       Others / to the Right / Saved / All leave it open.
 - [x] Pinned tabs are kept over a restart.
-- [ ] Pinned tabs aren't shrunk (`pinnedTabSizing`);
-      the tab menu lacks Keep Open (no preview editors), Split and Share.
+- [x] `workbench.editor.pinnedTabSizing`: compact (38px, icon only) and
+      shrink (80px) pinned tabs.
+- [ ] The tab menu lacks Keep Open (no preview editors), Split and Share.
 - [x] The explorer follows the active editor (VS Code's
       `explorer.autoReveal`): each switch opens its folders and scrolls it in.
 - [x] There's no `explorer.autoReveal` setting to turn following off (no

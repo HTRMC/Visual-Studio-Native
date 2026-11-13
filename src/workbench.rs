@@ -5418,6 +5418,8 @@ impl Workbench {
         let tab_colors: Vec<_> = (self.docs.iter())
             .map(|d| self.problem_deco(&d.path, false).map(|(color, _)| color))
             .collect();
+        // workbench.editor.pinnedTabSizing: VS Code's 38px icon-only tab, or 80px.
+        let sizing = self.settings_seen["workbench.editor.pinnedTabSizing"].clone();
         let tabs = self.docs.iter().enumerate().map(|(ix, doc)| {
             // A tab dragged from the left lands after this one, anything
             // else before it; the border shows which side.
@@ -5426,6 +5428,8 @@ impl Workbench {
                 move |path: &Path| open.iter().position(|p| p == path).is_some_and(|f| f < ix)
             };
             let active = ix == self.active;
+            let compact = doc.pinned && sizing == "compact";
+            let shrink = doc.pinned && sizing == "shrink";
             let name = Self::doc_name(doc);
             let group = SharedString::from(format!("tab-{ix}"));
             let full = match doc.deleted {
@@ -5443,6 +5447,8 @@ impl Workbench {
                 .pr(px(4.))
                 .gap(px(6.))
                 .min_w(px(80.))
+                .when(shrink, |d| d.w(px(80.)))
+                .when(compact, |d| d.w(px(38.)).min_w(px(38.)).px_0().justify_center())
                 .cursor_pointer()
                 .border_r_1()
                 .border_color(col::border())
@@ -5470,13 +5476,17 @@ impl Workbench {
                 .child(
                     div()
                         .flex_1()
+                        .min_w_0()
                         .whitespace_nowrap()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .when(compact, |d| d.hidden())
                         .when(doc.deleted, |d| d.line_through())
                         // VS Code's workbench.editor.decorations.colors.
                         .when_some(tab_colors[ix], |d, color| d.text_color(color))
                         .child(name.clone()),
                 )
-                .when(doc.pinned, |d| {
+                .when(doc.pinned && !compact, |d| {
                     d.child(
                         div()
                             .id(("tab-unpin", ix))
