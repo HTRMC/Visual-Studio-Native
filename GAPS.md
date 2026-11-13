@@ -694,9 +694,8 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [ ] Completion snippets from servers are flattened (`snippetSupport` is off).
 - [ ] Problems panel: collapsing a file, filter, related information, and the Explorer's red file decorations.
 - [x] A crashed language server restarts and reopens its files, up to 5 times.
-- [x] A language server given up on left its squiggles behind; they and
-      their Problems go with it.
-- [ ] A language server given up on leaves its inlay hints and CodeLens behind.
+- [x] A language server given up on left its squiggles behind; they, their
+      Problems, inlay hints and CodeLens go with it.
 - [x] Language extensions (`vscode-languageclient`, e.g. Zig's) run their own server in the host; hover, completion, definition, formatting and diagnostics reach the editor, and the built-in server for that language steps aside.
 - [x] An extension's `update(key, undefined)` removes the setting instead of writing `null`.
 - [ ] Host providers: document selectors' `pattern`/`scheme` aren't checked, completion snippets are flattened to plain text, and several diagnostic collections for one file overwrite each other.

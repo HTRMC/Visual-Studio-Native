@@ -2035,6 +2035,12 @@ impl Workbench {
                         self.lsp.problems.remove(&path);
                         self.show_diagnostics(&path, cx);
                     }
+                    for doc in self.docs.iter().filter(|d| langs.contains(&d.lang)) {
+                        doc.editor.update(cx, |e, cx| {
+                            e.set_inlay_hints(Vec::new(), cx);
+                            e.set_code_lenses(Vec::new(), cx);
+                        });
+                    }
                     let text = format!(
                         "The {} server crashed 5 times. The server will not be restarted.",
                         cmd[0]
