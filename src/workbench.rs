@@ -3260,7 +3260,9 @@ impl Workbench {
             .as_ref()
             .map_or(String::new(), |r| r.to_string_lossy().into_owned());
         s["last"] = serde_json::json!(self.root);
-        s["editors"][key] = serde_json::json!({ "files": files.iter().map(|d| &d.path).collect::<Vec<_>>(), "active": active, "backups": backups });
+        // Pinned tabs lead, so their count says which.
+        let pinned = files.iter().take_while(|d| d.pinned).count();
+        s["editors"][key] = serde_json::json!({ "files": files.iter().map(|d| &d.path).collect::<Vec<_>>(), "active": active, "backups": backups, "pinned": pinned });
         fs::create_dir_all(path.parent().unwrap()).ok();
         fs::write(path, s.to_string()).ok();
     }
@@ -3279,6 +3281,12 @@ impl Workbench {
             match saved["backups"][path.to_string_lossy().as_ref()].as_str() {
                 Some(text) => self.restore_backup(path, text, window, cx),
                 None => self.open_path(path, window, cx),
+            }
+        }
+        let pinned = saved["pinned"].as_u64().unwrap_or(0) as usize;
+        for path in (saved["files"].as_array().into_iter().flatten().take(pinned)).filter_map(|p| p.as_str()) {
+            if let Some(d) = self.docs.iter_mut().find(|d| d.path == Path::new(path)) {
+                d.pinned = true;
             }
         }
         let active = saved["active"].as_u64().and_then(|ix| {
@@ -6827,7 +6835,7 @@ impl Render for Workbench {
             "{:?}",
             (
                 &self.root,
-                self.docs.iter().map(|d| &d.path).collect::<Vec<_>>(),
+                self.docs.iter().map(|d| (&d.path, d.pinned)).collect::<Vec<_>>(),
                 self.active
             )
         );
