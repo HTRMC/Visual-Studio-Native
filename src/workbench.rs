@@ -714,7 +714,6 @@ enum Encoding {
 }
 
 /// A hash of an editor's text, to tell whether it's back to the saved text.
-/// Whether files.autoSave saves after a delay; other modes count as off.
 /// Whether settings `s` turn on editor.wordWrap (any mode but "off"; VS Code's
 /// default is "off").
 // ponytail: "wordWrapColumn"/"bounded" wrap at the window edge, not the column.
@@ -729,8 +728,13 @@ fn modern_ui(s: &serde_json::Value) -> bool {
     on
 }
 
+/// Whether files.autoSave saves after a delay.
 fn auto_save() -> bool {
-    terminal::settings()["files.autoSave"] == "afterDelay"
+    auto_save_is("afterDelay")
+}
+
+fn auto_save_is(mode: &str) -> bool {
+    terminal::settings()["files.autoSave"] == mode
 }
 
 /// VS Code's large file limits (20MB or 300K lines): no highlighting,
@@ -1597,6 +1601,9 @@ impl Workbench {
         cx.observe_window_activation(window, |this, window, cx| {
             if window.is_window_active() {
                 this.disk_changed(&[], true, window, cx);
+            } else if auto_save_is("onWindowChange") || auto_save_is("onFocusChange") {
+                // Leaving the window saves too, as in VS Code.
+                this.auto_save_now(None, window, cx);
             }
         })
         .detach();
@@ -1915,6 +1922,10 @@ impl Workbench {
                 }
                 if matches!(ev, InputEvent::Blur) {
                     this.hide_signature(cx);
+                    // "onFocusChange" saves an editor as focus leaves it.
+                    if auto_save_is("onFocusChange") {
+                        this.auto_save_now(Some(editor), window, cx);
+                    }
                 }
                 if let InputEvent::InlayClicked(id) | InputEvent::CodeLensClicked(id) = ev {
                     this.lsp_decor_clicked(*id, window, cx);
@@ -2618,10 +2629,21 @@ impl Workbench {
         self.write(self.active, window, cx);
     }
 
+    /// Auto Save: writes the dirty file editors (or just `editor`'s).
+    /// Untitled editors wait for Save, and a file changed on disk for an
+    /// explicit save to ask.
+    fn auto_save_now(&mut self, editor: Option<&Entity<EditorState>>, window: &mut Window, cx: &mut Context<Self>) {
+        for ix in 0..self.docs.len() {
+            let d = &self.docs[ix];
+            if d.dirty && !d.untitled && editor.is_none_or(|e| *e == d.editor) && !self.disk_newer(ix) {
+                self.write(ix, window, cx);
+            }
+        }
+    }
+
     /// files.autoSave "afterDelay": saves dirty file editors once typing
-    /// pauses for files.autoSaveDelay ms. Untitled editors wait for Save.
-    // ponytail: one debounce for all editors, and only "afterDelay";
-    // "onFocusChange"/"onWindowChange" need focus-out hooks.
+    /// pauses for files.autoSaveDelay ms.
+    // ponytail: one debounce for all editors.
     fn schedule_autosave(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let delay = terminal::settings()["files.autoSaveDelay"]
             .as_u64()
@@ -2631,12 +2653,8 @@ impl Workbench {
                 .timer(Duration::from_millis(delay))
                 .await;
             _ = this.update_in(cx, |this, window, cx| {
-                for ix in 0..this.docs.len() {
-                    let d = &this.docs[ix];
-                    // A file changed on disk waits for an explicit save to ask.
-                    if d.dirty && !d.untitled && auto_save() && !this.disk_newer(ix) {
-                        this.write(ix, window, cx);
-                    }
+                if auto_save() {
+                    this.auto_save_now(None, window, cx);
                 }
             });
         }));

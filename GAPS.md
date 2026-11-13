@@ -419,8 +419,11 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] File > Auto Save was inert; it and "File: Toggle Auto Save" flip
       files.autoSave, and "afterDelay" saves dirty files after
       files.autoSaveDelay.
-- [ ] files.autoSave "onFocusChange" / "onWindowChange" count as off, and
-      the delay is one debounce for all editors (VS Code's is per editor).
+- [x] files.autoSave "onFocusChange" / "onWindowChange" counted as off; they
+      save an editor as focus leaves it, or every dirty file as the window
+      loses focus.
+- [ ] The auto save delay is one debounce for all editors (VS Code's is per
+      editor), and File > Auto Save's check is on for "afterDelay" only.
 - [x] Writing a setting (default profile, file associations) rewrote
       settings.json as plain JSON, dropping its comments; it's now edited in
       place like VS Code's jsonc-parser `modify`.
