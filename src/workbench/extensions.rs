@@ -1948,7 +1948,6 @@ impl Workbench {
 
     /// Preferences: Color Theme: light themes, then dark ones, as VS Code
     /// groups them.
-    // ponytail: no live preview while moving through the list.
     pub(super) fn select_color_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut themes = color_themes();
         themes.sort_by_key(|t| (t.dark, t.label.to_lowercase()));

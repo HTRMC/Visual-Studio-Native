@@ -2499,6 +2499,16 @@ impl Workbench {
             return;
         }
         self.palette_unpreview(true, cx);
+        // A theme picker closed without a pick: back to the configured theme.
+        match self.palette.items.as_ref().map(|i| &i.picker) {
+            Some(Picker::Theme(_)) => {
+                super::extensions::apply_theme(&super::extensions::configured_theme(), cx);
+            }
+            Some(Picker::IconTheme(_)) => {
+                super::extensions::apply_icon_theme(super::extensions::configured_icon_theme().as_deref())
+            }
+            _ => {}
+        }
         let p = &mut self.palette;
         // An extension's quick pick or input box closed without an answer.
         if let (
@@ -3026,6 +3036,20 @@ impl Workbench {
         }
     }
 
+    /// The color and icon theme pickers show the highlighted theme, as in VS Code.
+    fn preview_theme(&mut self, row: usize, cx: &mut Context<Self>) {
+        let Some(&Pick::Item(ix, _)) = self.palette.shown.get(row) else {
+            return;
+        };
+        match self.palette.items.as_ref().map(|i| &i.picker) {
+            Some(Picker::Theme(names)) => {
+                super::extensions::apply_theme(&names[ix].clone(), cx);
+            }
+            Some(Picker::IconTheme(ids)) => super::extensions::apply_icon_theme(ids[ix].as_deref()),
+            _ => {}
+        }
+    }
+
     /// Ends a preview, scrolling back to where the editor was unless a pick moved it.
     fn palette_unpreview(&mut self, restore: bool, cx: &mut Context<Self>) {
         let p = &mut self.palette;
@@ -3456,6 +3480,7 @@ impl Workbench {
                         this3
                             .update(cx, |this, cx| {
                                 this.palette.selected = ix.row;
+                                this.preview_theme(ix.row, cx);
                                 if this.palette.query.starts_with([':', '@']) {
                                     this.palette_preview(ix.row, cx);
                                 }

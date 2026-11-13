@@ -596,7 +596,8 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [x] Snippets: Insert Snippet; languages' file extensions, labels and comments.
 - [x] The terminal's text followed no theme; it takes `terminal.foreground`.
 - [ ] Toasts, menus and other hard-coded `c(0x..)` colors stay dark under a light theme.
-- [ ] The theme picker doesn't preview as the selection moves.
+- [x] The color and file icon theme pickers preview the highlighted theme,
+      and Escape goes back to the configured one.
 - [x] Snippets: Tab and Shift+Tab move between tab stops, inserted or completed by prefix.
 - [ ] Snippets: a repeated tab stop isn't mirrored; edits away from the current stop put the later ones off.
 - [x] Extension details page (README, changelog) when clicking a row.
