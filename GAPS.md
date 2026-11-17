@@ -661,7 +661,7 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [x] Extensions' own views: activity bar containers, tree views, welcome content, `view/title` and `view/item/context` menus.
 - [x] Webview views (`registerWebviewViewProvider`, as Cline's and Claude Code's side bars) were left out; they show in their container, resolved the first time they show, with `onDidChangeVisibility`, `show()` and `<view>.focus`.
 - [ ] Webview views: no `title`, `description` or `badge` shown, no `retainContextWhenHidden` difference (pages always live), and the page's default background is the editor's.
-- [ ] Webviews lacked VS Code's default styles and, for the first one made, the theme; both are in now. Only a curated set of `--vscode-*` color variables is given, not every theme color.
+- [x] Webviews lacked VS Code's default styles and, for the first one made, the theme; both are in now. Only a curated set of `--vscode-*` color variables is given, not every theme color.
 - [ ] Extension views: no panel containers or secondary side bar; views don't resize or reorder; a change refreshes the whole tree; no `reveal`, selection, checkboxes or expand events; links inside welcome text don't click.
 - [ ] Extension source controls: one commit box, the first provider's; groups don't collapse; no status letters, multi-select or `actionButton`; `resourceStates` changed in place (not reassigned) don't sync.
 - [ ] Real nested submenus; with extension items, the editor's own menu items are always enabled.
