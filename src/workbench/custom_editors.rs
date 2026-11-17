@@ -45,9 +45,13 @@ pub(super) struct ViewWebview {
 pub(super) struct Webviews {
     /// Custom editors' handles; the host's panels count from 1.
     next: u64,
-    /// When a shortcut pressed in a webview last ran, so the host's echo of
-    /// it (draw.io posts its own `vscodeShortcut`) doesn't run it again.
-    key_at: Option<Instant>,
+    /// Unsaved binary custom documents' backups (`backupCustomDocument`)
+    /// by file, for hot exit; at start, the ones to reopen.
+    pub backups: HashMap<PathBuf, String>,
+    /// The shortcut last pressed in a webview and when, so the host's echo
+    /// of it (draw.io runs `workbench.action.files.save` on its Ctrl+S)
+    /// doesn't run it again.
+    key_at: Option<(Instant, Keystroke)>,
     /// The webview shown this frame: the active tab's, unless the panel
     /// is maximized over it.
     pub shown: Option<u64>,
@@ -176,8 +180,8 @@ impl Workbench {
                     let Ok(keystroke) = Keystroke::parse(key) else {
                         continue;
                     };
-                    let done =
-                        this.update(cx, |this, _| this.webviews.key_at = Some(Instant::now()));
+                    let at = (Instant::now(), keystroke.clone());
+                    let done = this.update(cx, |this, _| this.webviews.key_at = Some(at));
                     if done.is_err()
                         || cx
                             .update(|window, cx| window.dispatch_keystroke(keystroke, cx))
@@ -212,10 +216,15 @@ impl Workbench {
         .detach();
     }
 
-    /// Whether a host `execute` of a vsn action is the echo of a shortcut
-    /// just pressed in a webview, which vsn already ran.
-    pub(super) fn webview_key_echo(&self) -> bool {
-        (self.webviews.key_at).is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(300))
+    /// Whether a host `execute` of `action` is the echo of the shortcut for
+    /// it just pressed in a webview, which vsn already ran.
+    pub(super) fn webview_key_echo(&self, action: &dyn Action, cx: &App) -> bool {
+        let Some((at, key)) = &self.webviews.key_at else {
+            return false;
+        };
+        at.elapsed() < std::time::Duration::from_millis(300)
+            && (cx.key_bindings().borrow().bindings_for_action(action))
+                .any(|b| b.match_keystrokes(std::slice::from_ref(key)) == Some(false))
     }
 
     /// The roots a custom editor's page may load: its extension's folder,
@@ -270,6 +279,7 @@ impl Workbench {
             "languageId": lang,
             "text": text,
             "dirty": dirty,
+            "backupId": self.webviews.backups.get(&path),
         }));
         cx.notify();
     }
@@ -860,6 +870,15 @@ impl Workbench {
                     }
                 }
             }
+            "customBackup" => {
+                if let Some(ix) = self.webview_doc(&msg["handle"])
+                    && self.docs[ix].dirty
+                {
+                    let path = self.docs[ix].path.clone();
+                    self.webviews.backups.insert(path, text("id"));
+                    self.save_session(cx);
+                }
+            }
             "customDirty" => {
                 let Some(ix) = self.webview_doc(&msg["handle"]) else {
                     return true;
@@ -882,6 +901,10 @@ impl Workbench {
                 }
                 let doc = &mut self.docs[ix];
                 doc.dirty = msg["dirty"] == true;
+                if !doc.dirty {
+                    self.webviews.backups.remove(&doc.path);
+                }
+                let doc = &self.docs[ix];
                 let close = !doc.dirty
                     && msg["saved"] == true
                     && doc.webview.as_ref().is_some_and(|w| w.closing);

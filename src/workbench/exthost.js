@@ -537,11 +537,32 @@ const customEditors = new Map();
 function registerCustomEditorProvider(viewType, provider, options = {}) {
   const entry = { provider, options };
   customEditors.set(viewType, entry);
-  // A binary editor's edits mark vsn's tab dirty.
+  // A binary editor's edits mark vsn's tab dirty, and are backed up a
+  // second after the last for hot exit.
   const sub = provider.onDidChangeCustomDocument && provider.onDidChangeCustomDocument((e) => {
-    for (const [handle, p] of panels) if (p.document === e.document) send({ m: 'customDirty', handle, dirty: true });
+    for (const [handle, p] of panels) {
+      if (p.document !== e.document) continue;
+      send({ m: 'customDirty', handle, dirty: true });
+      if (!provider.backupCustomDocument) continue;
+      clearTimeout(p.backupTimer);
+      p.backupTimer = setTimeout(() => backupCustomDocument(handle, p, provider), 1000);
+    }
   });
   return new Disposable(() => { sub?.dispose(); if (customEditors.get(viewType) === entry) customEditors.delete(viewType); });
+}
+
+// A binary custom document's unsaved state, in a file of vsn's backups
+// (one per document) that `openCustomDocument` reopens as its `backupId`.
+async function backupCustomDocument(handle, p, provider) {
+  const name = require('crypto').createHash('md5').update(p.document.uri.toString()).digest('hex');
+  const destination = Uri.file(path.join(os.homedir(), '.vsn', 'backups', 'custom', name));
+  try {
+    fs.mkdirSync(path.dirname(destination.fsPath), { recursive: true });
+    const backup = await provider.backupCustomDocument(p.document, { destination }, new CancellationTokenSource().token);
+    if (!p.gone) send({ m: 'customBackup', handle, id: backup.id });
+  } catch (err) {
+    log(`Backing up '${p.document.uri.fsPath}' failed: ${errorText(err)}`);
+  }
 }
 
 // vsn opened a file in a custom editor: the provider fills its webview.
@@ -568,8 +589,10 @@ async function resolveCustomEditor(msg) {
     } else {
       p.binary = true;
       send({ m: 'customKind', handle: msg.handle, text: false, find: !!entry.options.webviewOptions?.enableFindWidget });
-      p.document = await provider.openCustomDocument(uri, { backupId: undefined, untitledDocumentData: undefined }, token);
+      p.document = await provider.openCustomDocument(uri, { backupId: msg.backupId ?? undefined, untitledDocumentData: undefined }, token);
       p.provider = provider;
+      // Reopened from its backup at hot exit: unsaved, as it was.
+      if (msg.backupId) send({ m: 'customDirty', handle: msg.handle, dirty: true });
       await provider.resolveCustomEditor(p.document, p.panel, token);
     }
   } catch (err) {

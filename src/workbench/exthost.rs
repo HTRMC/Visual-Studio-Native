@@ -1563,8 +1563,8 @@ impl Workbench {
                     return cx.notify();
                 }
                 let action = builtin_action(&command);
-                // draw.io posts the shortcuts pressed in it, which vsn ran already.
-                if action.is_some() && self.webview_key_echo() {
+                // draw.io runs the shortcuts pressed in it, which vsn ran already.
+                if action.as_deref().is_some_and(|a| self.webview_key_echo(a, cx)) {
                     return;
                 }
                 // A lens' "N references": VS Code peeks them, vsn lists them.

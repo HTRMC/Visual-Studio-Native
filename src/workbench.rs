@@ -3304,7 +3304,7 @@ impl Workbench {
             .collect();
         // ponytail: backups live in session.json, so a huge unsaved file makes it huge.
         let backups: serde_json::Map<String, serde_json::Value> = (files.iter())
-            .filter(|d| hot && d.dirty)
+            .filter(|d| hot && d.dirty && d.webview.as_ref().is_none_or(|w| w.text))
             .map(|d| (d.path.to_string_lossy().into_owned(), d.editor.read(cx).value().to_string().into()))
             .collect();
         let active = (files.iter())
@@ -3316,12 +3316,17 @@ impl Workbench {
         s["last"] = serde_json::json!(self.root);
         // Pinned tabs lead, so their count says which.
         let pinned = files.iter().take_while(|d| d.pinned).count();
+        // Binary custom documents' backups, which their editors reopen.
+        let custom: serde_json::Map<String, serde_json::Value> = (files.iter())
+            .filter(|d| hot && d.dirty)
+            .filter_map(|d| Some((d.path.to_string_lossy().into_owned(), self.webviews.backups.get(&d.path)?.clone().into())))
+            .collect();
         // Webview panels, for their serializers to revive.
         let panels: Vec<_> = (self.docs.iter())
             .filter_map(|d| d.webview.as_ref())
             .filter_map(|w| Some(serde_json::json!({ "viewType": w.view_type, "title": w.panel.as_ref()?, "state": webview::state(w.handle) })))
             .collect();
-        s["editors"][key] = serde_json::json!({ "files": files.iter().map(|d| &d.path).collect::<Vec<_>>(), "active": active, "backups": backups, "pinned": pinned, "panels": panels });
+        s["editors"][key] = serde_json::json!({ "files": files.iter().map(|d| &d.path).collect::<Vec<_>>(), "active": active, "backups": backups, "pinned": pinned, "panels": panels, "customBackups": custom });
         fs::create_dir_all(path.parent().unwrap()).ok();
         fs::write(path, s.to_string()).ok();
     }
@@ -3336,6 +3341,8 @@ impl Workbench {
         let saved = &s["editors"][key];
         let files: Vec<PathBuf> =
             serde_json::from_value(saved["files"].clone()).unwrap_or_default();
+        self.webviews.backups =
+            serde_json::from_value(saved["customBackups"].clone()).unwrap_or_default();
         for path in files {
             match saved["backups"][path.to_string_lossy().as_ref()].as_str() {
                 Some(text) => self.restore_backup(path, text, window, cx),
