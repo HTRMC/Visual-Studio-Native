@@ -797,10 +797,14 @@ impl Workbench {
                 let find = msg["find"] == true;
                 webview::set_find(handle, find);
                 webview::set_state(handle, msg["state"].clone());
-                // A panel revived at start doesn't take the active tab.
-                let revived = msg["revived"] == true;
+                // A panel revived at start goes back where it was, and
+                // takes the active tab only if it had it.
+                let revived = msg["revived"].is_object();
+                let index = msg["revived"]["index"].as_u64().map(|i| i as usize);
+                let active = msg["revived"]["active"] == true;
                 self.in_window(cx, move |this, window, cx| {
                     let path = PathBuf::from(format!("webview-panel-{handle}"));
+                    let was = this.active;
                     this.push_doc(path, String::new(), Encoding::Utf8, true, false, window, cx);
                     let ix = this.docs.len() - 1;
                     this.docs[ix].webview = Some(DocWebview {
@@ -813,8 +817,17 @@ impl Workbench {
                         focus: cx.focus_handle(),
                     });
                     if !revived {
-                        this.activate(ix, window, cx);
+                        return this.activate(ix, window, cx);
                     }
+                    let to = index.map_or(ix, |i| i.min(ix));
+                    let doc = this.docs.remove(ix);
+                    this.docs.insert(to, doc);
+                    match active {
+                        true => this.activate(to, window, cx),
+                        // The tab active before shifts right of it.
+                        false => this.active = was + usize::from(to <= was && was < ix),
+                    }
+                    cx.notify();
                 });
             }
             "webviewViewInfo" => {
@@ -986,7 +999,17 @@ impl Workbench {
 /// Where webview `handle` shows, when `shown`: its element's bounds.
 pub(super) fn webview_canvas(handle: u64, shown: bool, focus: FocusHandle) -> impl IntoElement {
     // Files dropped with Shift held go to the page, as in VS Code; without,
-    // they open in vsn.
+    // they open in vsn. Dragged over it with Shift, the page sees them come.
+    let over = move |paths: &[PathBuf], at: Point<Pixels>, inside: bool, window: &mut Window| {
+        match inside && webview::shift_held() {
+            true => {
+                let s = window.scale_factor();
+                let px = |v: Pixels| (f32::from(v) * s).round() as i32;
+                webview::drag_files(handle, paths, (px(at.x), px(at.y)));
+            }
+            false => webview::drag_leave(handle),
+        }
+    };
     let drop = move |paths: &[PathBuf], window: &mut Window, cx: &mut App| {
         if webview::shift_held() {
             cx.stop_propagation();
@@ -999,10 +1022,20 @@ pub(super) fn webview_canvas(handle: u64, shown: bool, focus: FocusHandle) -> im
                 webview::finish_drop(handle);
             })
             .detach();
+        } else {
+            webview::drag_leave(handle);
         }
     };
     div()
         .size_full()
+        .on_drag_move(move |e: &DragMoveEvent<ExternalPaths>, window, cx| {
+            let inside = e.bounds.contains(&e.event.position);
+            over(e.drag(cx).paths(), e.event.position, inside, window)
+        })
+        .on_drag_move(move |e: &DragMoveEvent<super::DraggedFile>, window, cx| {
+            let inside = e.bounds.contains(&e.event.position);
+            over(std::slice::from_ref(&e.drag(cx).0), e.event.position, inside, window)
+        })
         .on_drop(move |paths: &ExternalPaths, window, cx| drop(paths.paths(), window, cx))
         .on_drop(move |file: &super::DraggedFile, window, cx| {
             drop(std::slice::from_ref(&file.0), window, cx)

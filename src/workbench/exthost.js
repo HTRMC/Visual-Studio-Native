@@ -517,14 +517,14 @@ function registerWebviewPanelSerializer(viewType, serializer) {
 }
 
 // A panel open when vsn last quit: its serializer, if any, fills a new one.
-// ponytail: its options (scripts, roots, find) are the serializer's to set again.
+// ponytail: its options (scripts, roots) are the serializer's to set again.
 async function revivePanel(msg) {
   if (!serializers.has(msg.viewType)) await Promise.all([...extensions.values()].map((e) => e.activating));
   const serializer = serializers.get(msg.viewType);
   if (!serializer) return;
   const handle = ++nextPanel;
   const p = makePanel(handle, msg.viewType, msg.title, {});
-  send({ m: 'webviewPanel', handle, viewType: msg.viewType, title: String(msg.title), roots: webviewRoots({}), state: msg.state ?? null, revived: true });
+  send({ m: 'webviewPanel', handle, viewType: msg.viewType, title: String(msg.title), roots: webviewRoots({}), state: msg.state ?? null, find: !!msg.find, revived: { index: msg.index ?? null, active: !!msg.active } });
   try {
     await serializer.deserializeWebviewPanel(p.panel, msg.state ?? undefined);
   } catch (err) {

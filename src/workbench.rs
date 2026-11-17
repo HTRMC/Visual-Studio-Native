@@ -69,6 +69,7 @@ mod webview {
     pub fn set_find(_: u64, _: bool) {}
     pub fn drag_files(_: u64, _: &[PathBuf], _: (i32, i32)) {}
     pub fn finish_drop(_: u64) {}
+    pub fn drag_leave(_: u64) {}
     pub fn shift_held() -> bool {
         false
     }
@@ -3326,10 +3327,14 @@ impl Workbench {
             .filter(|d| hot && d.dirty)
             .filter_map(|d| Some((d.path.to_string_lossy().into_owned(), self.webviews.backups.get(&d.path)?.clone().into())))
             .collect();
-        // Webview panels, for their serializers to revive.
-        let panels: Vec<_> = (self.docs.iter())
-            .filter_map(|d| d.webview.as_ref())
-            .filter_map(|w| Some(serde_json::json!({ "viewType": w.view_type, "title": w.panel.as_ref()?, "state": webview::state(w.handle) })))
+        // Webview panels, for their serializers to revive in their places.
+        let panels: Vec<_> = (self.docs.iter().enumerate())
+            .filter(|(_, d)| d.webview.as_ref().is_some_and(|w| w.panel.is_some()) || files.iter().any(|f| std::ptr::eq(*f, *d)))
+            .enumerate()
+            .filter_map(|(index, (ix, d))| {
+                let w = d.webview.as_ref().filter(|w| w.panel.is_some())?;
+                Some(serde_json::json!({ "viewType": w.view_type, "title": w.panel, "state": webview::state(w.handle), "find": w.find, "index": index, "active": ix == self.active }))
+            })
             .collect();
         s["editors"][key] = serde_json::json!({ "files": files.iter().map(|d| &d.path).collect::<Vec<_>>(), "active": active, "backups": backups, "pinned": pinned, "panels": panels, "customBackups": custom });
         fs::create_dir_all(path.parent().unwrap()).ok();

@@ -884,13 +884,28 @@ pub fn place(handle: u64, bounds: RECT) {
 /// Windows' Explorer. The drop waits as the browser takes the page's
 /// `dragover` answer in its own time, and refuses a drop before it.
 pub fn drag_files(handle: u64, paths: &[PathBuf], at: (i32, i32)) {
-    let Some((comp, bounds)) = STATE.with_borrow(|s| {
+    let Some((comp, bounds, dragging)) = STATE.with_borrow(|s| {
         let slot = s.slots.get(&handle)?;
         let comp = slot.comp.as_ref()?.cast::<ICoreWebView2CompositionController3>().ok()?;
-        Some((comp, slot.bounds?))
+        Some((comp, slot.bounds?, slot.dropping.is_some()))
     }) else {
         return;
     };
+    let point = POINT {
+        x: at.0 - bounds.left,
+        y: at.1 - bounds.top,
+    };
+    // MK_SHIFT, and DROPEFFECT_COPY.
+    let mut effect = 1;
+    if dragging {
+        unsafe { comp.DragOver(0x4, point, &mut effect) }.ok();
+        STATE.with_borrow_mut(|s| {
+            let dropping = s.slots.get_mut(&handle)?.dropping.as_mut()?;
+            dropping.1 = point;
+            Some(())
+        });
+        return;
+    }
     let pidls: Vec<*mut ITEMIDLIST> = (paths.iter())
         .filter_map(|p| {
             let mut pidl = std::ptr::null_mut();
@@ -910,12 +925,6 @@ pub fn drag_files(handle: u64, paths: &[PathBuf], at: (i32, i32)) {
         unsafe { ILFree(Some(pidl)) };
     }
     let Ok(data) = data else { return };
-    let point = POINT {
-        x: at.0 - bounds.left,
-        y: at.1 - bounds.top,
-    };
-    // MK_SHIFT, and DROPEFFECT_COPY.
-    let mut effect = 1;
     unsafe { comp.DragEnter(&data, 0x4, point, &mut effect) }.ok();
     STATE.with_borrow_mut(|s| s.slots.get_mut(&handle).map(|slot| slot.dropping = Some((data, point))));
 }
@@ -925,6 +934,18 @@ pub fn drag_files(handle: u64, paths: &[PathBuf], at: (i32, i32)) {
 pub fn shift_held() -> bool {
     use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
     (unsafe { GetAsyncKeyState(VK_SHIFT.0 as i32) }) < 0
+}
+
+/// The files [`drag_files`] dragged over webview `handle`'s page left it.
+pub fn drag_leave(handle: u64) {
+    let comp = STATE.with_borrow_mut(|s| {
+        let slot = s.slots.get_mut(&handle)?;
+        slot.dropping.take()?;
+        slot.comp.as_ref()?.cast::<ICoreWebView2CompositionController3>().ok()
+    });
+    if let Some(comp) = comp {
+        unsafe { comp.DragLeave() }.ok();
+    }
 }
 
 /// Drops the files [`drag_files`] dragged over webview `handle`'s page.
