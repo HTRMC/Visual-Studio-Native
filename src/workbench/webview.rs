@@ -24,7 +24,10 @@ use windows::{
                 GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_F1, VK_F24, VK_LBUTTON, VK_LWIN,
                 VK_MBUTTON, VK_MENU, VK_RBUTTON, VK_RWIN, VK_SHIFT, VK_XBUTTON1, VK_XBUTTON2,
             },
-            Shell::SHCreateMemStream,
+            Shell::{
+                BHID_DataObject, Common::ITEMIDLIST, ILFree, SHCreateMemStream,
+                SHCreateShellItemArrayFromIDLists, SHParseDisplayName,
+            },
             WindowsAndMessaging::HCURSOR,
         },
     },
@@ -106,6 +109,9 @@ struct Slot {
     finding: Option<(String, bool)>,
     /// Find's match events are hooked up.
     find_hooked: bool,
+    /// Files being dropped on the page, and where: the drop lands once the
+    /// page has seen them over it.
+    dropping: Option<(windows::Win32::System::Com::IDataObject, POINT)>,
     /// What the page last gave `setState`: its `getState` after a reload,
     /// and kept in the session so a panel's serializer can revive it.
     state: Value,
@@ -161,6 +167,7 @@ pub fn create(handle: u64, roots: Vec<PathBuf>) {
                 finding: None,
                 find_hooked: false,
                 state: Value::Null,
+                dropping: None,
             },
         );
         match &s.env {
@@ -868,6 +875,72 @@ pub fn place(handle: u64, bounds: RECT) {
     });
     if changed.is_some() {
         show(handle, Some(bounds));
+    }
+}
+
+/// Drags files `paths` over webview `handle`'s page at window point `at`
+/// (physical pixels), for [`finish_drop`] to drop, as VS Code passes a
+/// Shift+drop to its webviews: the page gets them as `File`s, as from
+/// Windows' Explorer. The drop waits as the browser takes the page's
+/// `dragover` answer in its own time, and refuses a drop before it.
+pub fn drag_files(handle: u64, paths: &[PathBuf], at: (i32, i32)) {
+    let Some((comp, bounds)) = STATE.with_borrow(|s| {
+        let slot = s.slots.get(&handle)?;
+        let comp = slot.comp.as_ref()?.cast::<ICoreWebView2CompositionController3>().ok()?;
+        Some((comp, slot.bounds?))
+    }) else {
+        return;
+    };
+    let pidls: Vec<*mut ITEMIDLIST> = (paths.iter())
+        .filter_map(|p| {
+            let mut pidl = std::ptr::null_mut();
+            let name = windows_core::HSTRING::from(p.as_os_str());
+            unsafe { SHParseDisplayName(&name, None, &mut pidl, 0, None) }.ok()?;
+            Some(pidl)
+        })
+        .collect();
+    let items: Vec<*const ITEMIDLIST> = pidls.iter().map(|p| p.cast_const()).collect();
+    // Explorer's own data object for them, with the CF_HDROP pages read.
+    let data = unsafe {
+        SHCreateShellItemArrayFromIDLists(&items).and_then(|a| {
+            a.BindToHandler::<_, windows::Win32::System::Com::IDataObject>(None, &BHID_DataObject)
+        })
+    };
+    for pidl in pidls {
+        unsafe { ILFree(Some(pidl)) };
+    }
+    let Ok(data) = data else { return };
+    let point = POINT {
+        x: at.0 - bounds.left,
+        y: at.1 - bounds.top,
+    };
+    // MK_SHIFT, and DROPEFFECT_COPY.
+    let mut effect = 1;
+    unsafe { comp.DragEnter(&data, 0x4, point, &mut effect) }.ok();
+    STATE.with_borrow_mut(|s| s.slots.get_mut(&handle).map(|slot| slot.dropping = Some((data, point))));
+}
+
+/// Shift is down now. A drag from Explorer keeps keys from vsn's window, so
+/// its modifiers don't know.
+pub fn shift_held() -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    (unsafe { GetAsyncKeyState(VK_SHIFT.0 as i32) }) < 0
+}
+
+/// Drops the files [`drag_files`] dragged over webview `handle`'s page.
+pub fn finish_drop(handle: u64) {
+    let Some((comp, (data, point))) = STATE.with_borrow_mut(|s| {
+        let slot = s.slots.get_mut(&handle)?;
+        let comp = slot.comp.as_ref()?.cast::<ICoreWebView2CompositionController3>().ok()?;
+        Some((comp, slot.dropping.take()?))
+    }) else {
+        return;
+    };
+    let mut effect = 1;
+    unsafe {
+        comp.DragOver(0x4, point, &mut effect).ok();
+        effect = 1;
+        comp.Drop(&data, 0x4, point, &mut effect).ok();
     }
 }
 

@@ -67,6 +67,11 @@ mod webview {
     pub fn hide_others(_: &[u64]) {}
     pub fn set_sidebar(_: u64) {}
     pub fn set_find(_: u64, _: bool) {}
+    pub fn drag_files(_: u64, _: &[PathBuf], _: (i32, i32)) {}
+    pub fn finish_drop(_: u64) {}
+    pub fn shift_held() -> bool {
+        false
+    }
     pub fn state(_: u64) -> serde_json::Value {
         serde_json::Value::Null
     }

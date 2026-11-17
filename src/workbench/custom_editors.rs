@@ -985,6 +985,32 @@ impl Workbench {
 
 /// Where webview `handle` shows, when `shown`: its element's bounds.
 pub(super) fn webview_canvas(handle: u64, shown: bool, focus: FocusHandle) -> impl IntoElement {
+    // Files dropped with Shift held go to the page, as in VS Code; without,
+    // they open in vsn.
+    let drop = move |paths: &[PathBuf], window: &mut Window, cx: &mut App| {
+        if webview::shift_held() {
+            cx.stop_propagation();
+            let (at, s) = (window.mouse_position(), window.scale_factor());
+            let px = |v: Pixels| (f32::from(v) * s).round() as i32;
+            webview::drag_files(handle, paths, (px(at.x), px(at.y)));
+            let wait = cx.background_executor().timer(std::time::Duration::from_millis(150));
+            cx.spawn(async move |_| {
+                wait.await;
+                webview::finish_drop(handle);
+            })
+            .detach();
+        }
+    };
+    div()
+        .size_full()
+        .on_drop(move |paths: &ExternalPaths, window, cx| drop(paths.paths(), window, cx))
+        .on_drop(move |file: &super::DraggedFile, window, cx| {
+            drop(std::slice::from_ref(&file.0), window, cx)
+        })
+        .child(webview_canvas_inner(handle, shown, focus))
+}
+
+fn webview_canvas_inner(handle: u64, shown: bool, focus: FocusHandle) -> impl IntoElement {
     canvas(
         move |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
         move |bounds, hitbox, window, _| {
