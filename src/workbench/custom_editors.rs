@@ -219,12 +219,7 @@ impl Workbench {
     /// Whether a host `execute` of `action` is the echo of the shortcut for
     /// it just pressed in a webview, which vsn already ran.
     pub(super) fn webview_key_echo(&self, action: &dyn Action, cx: &App) -> bool {
-        let Some((at, key)) = &self.webviews.key_at else {
-            return false;
-        };
-        at.elapsed() < std::time::Duration::from_millis(300)
-            && (cx.key_bindings().borrow().bindings_for_action(action))
-                .any(|b| b.match_keystrokes(std::slice::from_ref(key)) == Some(false))
+        key_echo(self.webviews.key_at.as_ref(), action, &cx.key_bindings().borrow())
     }
 
     /// The roots a custom editor's page may load: its extension's folder,
@@ -677,7 +672,7 @@ impl Workbench {
             .relative()
             .key_context(keys)
             .track_focus(&w.focus)
-            .child(webview_canvas(handle, shown, focus))
+            .child(webview_canvas(handle, shown, focus, Some(cx.weak_entity())))
             .children(find)
             .into_any_element()
     }
@@ -997,9 +992,31 @@ impl Workbench {
 }
 
 /// Where webview `handle` shows, when `shown`: its element's bounds.
-pub(super) fn webview_canvas(handle: u64, shown: bool, focus: FocusHandle) -> impl IntoElement {
-    // Files dropped with Shift held go to the page, as in VS Code; without,
-    // they open in vsn. Dragged over it with Shift, the page sees them come.
+/// Whether `action` is what shortcut `key_at` (when, which) ran, under
+/// 300ms ago: an extension running it now echoes the shortcut.
+pub(super) fn key_echo(
+    key_at: Option<&(Instant, Keystroke)>,
+    action: &dyn Action,
+    keymap: &gpui::Keymap,
+) -> bool {
+    let Some((at, key)) = key_at else {
+        return false;
+    };
+    at.elapsed() < std::time::Duration::from_millis(300)
+        && (keymap.bindings_for_action(action))
+            .any(|b| b.match_keystrokes(std::slice::from_ref(key)) == Some(false))
+}
+
+/// Webview `handle`'s place. Files dropped on it with Shift held go to the
+/// page, as in VS Code, and it sees them come while they're dragged over;
+/// without Shift, an editor's (`wb`) open them, as the editor area would:
+/// gpui's drop goes to the innermost element taking it, never its parent.
+pub(super) fn webview_canvas(
+    handle: u64,
+    shown: bool,
+    focus: FocusHandle,
+    wb: Option<WeakEntity<Workbench>>,
+) -> impl IntoElement {
     let over = move |paths: &[PathBuf], at: Point<Pixels>, inside: bool, window: &mut Window| {
         match inside && webview::shift_held() {
             true => {
@@ -1010,7 +1027,7 @@ pub(super) fn webview_canvas(handle: u64, shown: bool, focus: FocusHandle) -> im
             false => webview::drag_leave(handle),
         }
     };
-    let drop = move |paths: &[PathBuf], window: &mut Window, cx: &mut App| {
+    let drop = move |paths: &[PathBuf], ours: bool, window: &mut Window, cx: &mut App| {
         if webview::shift_held() {
             cx.stop_propagation();
             let (at, s) = (window.mouse_position(), window.scale_factor());
@@ -1024,6 +1041,12 @@ pub(super) fn webview_canvas(handle: u64, shown: bool, focus: FocusHandle) -> im
             .detach();
         } else {
             webview::drag_leave(handle);
+            let Some(wb) = &wb else { return };
+            wb.update(cx, |this, cx| match ours {
+                true => paths.iter().for_each(|p| this.open_path(p.clone(), window, cx)),
+                false => this.drop_paths(paths, None, window, cx),
+            })
+            .ok();
         }
     };
     div()
@@ -1036,9 +1059,12 @@ pub(super) fn webview_canvas(handle: u64, shown: bool, focus: FocusHandle) -> im
             let inside = e.bounds.contains(&e.event.position);
             over(std::slice::from_ref(&e.drag(cx).0), e.event.position, inside, window)
         })
-        .on_drop(move |paths: &ExternalPaths, window, cx| drop(paths.paths(), window, cx))
+        .on_drop({
+            let drop = drop.clone();
+            move |paths: &ExternalPaths, window, cx| drop(paths.paths(), false, window, cx)
+        })
         .on_drop(move |file: &super::DraggedFile, window, cx| {
-            drop(std::slice::from_ref(&file.0), window, cx)
+            drop(std::slice::from_ref(&file.0), true, window, cx)
         })
         .child(webview_canvas_inner(handle, shown, focus))
 }

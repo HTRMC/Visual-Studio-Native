@@ -929,11 +929,16 @@ pub fn drag_files(handle: u64, paths: &[PathBuf], at: (i32, i32)) {
     STATE.with_borrow_mut(|s| s.slots.get_mut(&handle).map(|slot| slot.dropping = Some((data, point))));
 }
 
-/// Shift is down now. A drag from Explorer keeps keys from vsn's window, so
-/// its modifiers don't know.
+/// Shift is held for the drag under way: files from Windows say so in
+/// their drag's key state (a drag from Explorer keeps keys from vsn's
+/// window, so its modifiers don't know); vsn's own drags read the key.
 pub fn shift_held() -> bool {
     use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-    (unsafe { GetAsyncKeyState(VK_SHIFT.0 as i32) }) < 0
+    const MK_SHIFT: u32 = 0x4;
+    match gpui_windows::drop_key_state() {
+        Some(keys) => keys & MK_SHIFT != 0,
+        None => (unsafe { GetAsyncKeyState(VK_SHIFT.0 as i32) }) < 0,
+    }
 }
 
 /// The files [`drag_files`] dragged over webview `handle`'s page left it.

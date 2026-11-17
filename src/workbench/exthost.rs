@@ -1991,7 +1991,7 @@ impl Workbench {
             .when(!fill, |d| d.h(px(240.)))
             .key_context(keys)
             .track_focus(&focus)
-            .child(super::custom_editors::webview_canvas(handle, shown, focus))
+            .child(super::custom_editors::webview_canvas(handle, shown, focus, None))
             .into_any_element()
     }
 

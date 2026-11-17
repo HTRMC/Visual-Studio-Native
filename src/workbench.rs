@@ -8246,6 +8246,23 @@ mod tests {
     }
 
     #[test]
+    fn a_webview_shortcut_echo_is_only_its_own_action() {
+        use crate::gpui::{DummyKeyboardMapper, Keymap, Keystroke};
+        use std::time::{Duration, Instant};
+        let keymap = Keymap::new(super::key_bindings(&DummyKeyboardMapper));
+        let pressed = |k: &str, ago: u64| (Instant::now() - Duration::from_millis(ago), Keystroke::parse(k).unwrap());
+        let echo = |at: &(Instant, Keystroke), action: &dyn crate::gpui::Action| {
+            super::custom_editors::key_echo(Some(at), action, &keymap)
+        };
+        // draw.io runs workbench.action.files.save on its Ctrl+S.
+        assert!(echo(&pressed("ctrl-s", 50), &super::Save));
+        assert!(!echo(&pressed("ctrl-s", 50), &super::QuickOpen));
+        assert!(!echo(&pressed("ctrl-p", 50), &super::Save));
+        assert!(!echo(&pressed("ctrl-s", 400), &super::Save));
+        assert!(!super::custom_editors::key_echo(None, &super::Save, &keymap));
+    }
+
+    #[test]
     fn terminal_keys_reach_the_shell() {
         use crate::gpui::{DummyKeyboardMapper, KeyContext, Keymap, Keystroke};
         let keymap = Keymap::new(super::key_bindings(&DummyKeyboardMapper));

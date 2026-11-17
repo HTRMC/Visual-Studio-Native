@@ -1153,15 +1153,28 @@ impl WindowsDragDropHandler {
     }
 }
 
+thread_local! {
+    /// vsn: the key state (`MK_*`) of the files being dragged over a window.
+    static DROP_KEYS: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+}
+
+/// vsn: the key state (`MK_*` flags) Windows gives the files being dragged
+/// over (or just dropped on) a window, as the drag's source sees the keys;
+/// None when no files are being dragged in.
+pub fn drop_key_state() -> Option<u32> {
+    DROP_KEYS.get()
+}
+
 #[allow(non_snake_case)]
 impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
     fn DragEnter(
         &self,
         pdataobj: windows::core::Ref<IDataObject>,
-        _grfkeystate: MODIFIERKEYS_FLAGS,
+        grfkeystate: MODIFIERKEYS_FLAGS,
         pt: &POINTL,
         pdweffect: *mut DROPEFFECT,
     ) -> windows::core::Result<()> {
+        DROP_KEYS.set(Some(grfkeystate.0)); // vsn
         unsafe {
             let idata_obj = pdataobj.ok()?;
             let config = FORMATETC {
@@ -1215,10 +1228,11 @@ impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
 
     fn DragOver(
         &self,
-        _grfkeystate: MODIFIERKEYS_FLAGS,
+        grfkeystate: MODIFIERKEYS_FLAGS,
         pt: &POINTL,
         pdweffect: *mut DROPEFFECT,
     ) -> windows::core::Result<()> {
+        DROP_KEYS.set(Some(grfkeystate.0)); // vsn
         let mut cursor_position = POINT { x: pt.x, y: pt.y };
         unsafe {
             *pdweffect = DROPEFFECT_COPY;
@@ -1244,6 +1258,7 @@ impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
     }
 
     fn DragLeave(&self) -> windows::core::Result<()> {
+        DROP_KEYS.set(None); // vsn
         unsafe {
             self.0.drop_target_helper.DragLeave().log_err();
         }
@@ -1256,10 +1271,11 @@ impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
     fn Drop(
         &self,
         pdataobj: windows::core::Ref<IDataObject>,
-        _grfkeystate: MODIFIERKEYS_FLAGS,
+        grfkeystate: MODIFIERKEYS_FLAGS,
         pt: &POINTL,
         pdweffect: *mut DROPEFFECT,
     ) -> windows::core::Result<()> {
+        DROP_KEYS.set(Some(grfkeystate.0)); // vsn
         let idata_obj = pdataobj.ok()?;
         let mut cursor_position = POINT { x: pt.x, y: pt.y };
         unsafe {
@@ -1281,6 +1297,7 @@ impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
             ),
         });
         self.handle_drag_drop(input);
+        DROP_KEYS.set(None); // vsn
 
         Ok(())
     }

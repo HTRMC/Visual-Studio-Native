@@ -19,6 +19,9 @@ comment; on a gpui-kit update, copy the new version over and re-apply them.
 - **gpui-pre-windows 0.3.9** (`src/events.rs`, `src/window.rs`): `set_zoom`
   multiplies every DPI-derived scale factor (window.zoomLevel) and re-lays
   the window out at the new scale.
+- **gpui-pre-windows 0.3.9** (`src/window.rs`, `src/gpui_windows.rs`):
+  `drop_key_state` gives the `MK_*` key state Windows passes the drop target
+  for files dragged in, so a Shift+drop reaches a webview page.
 - **gpui-base 0.8.0** (`src/scrollbar.rs`): a scrollbar thumb drag redraws on
   every mouse move on Windows instead of throttling through a coarse timer.
 - **gpui-base 0.8.0** (`src/input/editor/display_map/`, `src/input/base/`):
