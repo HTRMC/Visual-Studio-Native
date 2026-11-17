@@ -509,6 +509,29 @@ function createWebviewPanel(viewType, title, showOptions, options = {}) {
   return p.panel;
 }
 
+// Panel serializers by view type, which revive a panel open at the last quit.
+const serializers = new Map();
+function registerWebviewPanelSerializer(viewType, serializer) {
+  serializers.set(viewType, serializer);
+  return new Disposable(() => { if (serializers.get(viewType) === serializer) serializers.delete(viewType); });
+}
+
+// A panel open when vsn last quit: its serializer, if any, fills a new one.
+// ponytail: its options (scripts, roots, find) are the serializer's to set again.
+async function revivePanel(msg) {
+  if (!serializers.has(msg.viewType)) await Promise.all([...extensions.values()].map((e) => e.activating));
+  const serializer = serializers.get(msg.viewType);
+  if (!serializer) return;
+  const handle = ++nextPanel;
+  const p = makePanel(handle, msg.viewType, msg.title, {});
+  send({ m: 'webviewPanel', handle, viewType: msg.viewType, title: String(msg.title), roots: webviewRoots({}), state: msg.state ?? null, revived: true });
+  try {
+    await serializer.deserializeWebviewPanel(p.panel, msg.state ?? undefined);
+  } catch (err) {
+    send({ m: 'error', text: `Restoring '${msg.title}' failed: ${errorText(err)}` });
+  }
+}
+
 // Custom editor providers by view type: { provider, options }.
 const customEditors = new Map();
 function registerCustomEditorProvider(viewType, provider, options = {}) {
@@ -650,7 +673,7 @@ const vscodeWindow = {
   createWebviewPanel,
   registerCustomEditorProvider,
   registerWebviewViewProvider,
-  registerWebviewPanelSerializer: () => new Disposable(() => {}),
+  registerWebviewPanelSerializer,
   // ponytail: vsn has no `vsn://` links to hand an extension, so a handler
   // is kept but never called.
   registerUriHandler: () => new Disposable(() => {}),
@@ -1965,6 +1988,9 @@ rl.on('line', (line) => {
         return;
       case 'resolveWebviewView':
         resolveWebviewView(msg);
+        return;
+      case 'revivePanel':
+        revivePanel(msg);
         return;
       case 'customSave': case 'customSaveAs': case 'customRevert':
         customFile(msg);

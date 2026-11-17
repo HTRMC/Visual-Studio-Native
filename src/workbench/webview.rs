@@ -106,6 +106,9 @@ struct Slot {
     finding: Option<(String, bool)>,
     /// Find's match events are hooked up.
     find_hooked: bool,
+    /// What the page last gave `setState`: its `getState` after a reload,
+    /// and kept in the session so a panel's serializer can revive it.
+    state: Value,
 }
 
 #[derive(Default)]
@@ -157,6 +160,7 @@ pub fn create(handle: u64, roots: Vec<PathBuf>) {
                 find: false,
                 finding: None,
                 find_hooked: false,
+                state: Value::Null,
             },
         );
         match &s.env {
@@ -287,8 +291,13 @@ fn setup(
         let mut json = PWSTR::null();
         unsafe { args.WebMessageAsJson(&mut json) }?;
         let json = CoTaskMemPWSTR::from(json).to_string();
-        if let Ok(msg) = serde_json::from_str(&json) {
-            emit(Event::Message(handle, msg));
+        match serde_json::from_str::<Value>(&json) {
+            Ok(Value::Object(mut m)) if m.contains_key("$vsnState") => {
+                let state = m.remove("$vsnState").unwrap_or_default();
+                STATE.with_borrow_mut(|s| s.slots.get_mut(&handle).map(|slot| slot.state = state));
+            }
+            Ok(msg) => emit(Event::Message(handle, msg)),
+            Err(_) => {}
         }
         Ok(())
     }));
@@ -635,11 +644,12 @@ pub fn set_roots(handle: u64, roots: Vec<PathBuf>) {
 /// `acquireVsCodeApi` and the theme. The script goes in first, so the
 /// page starts with it.
 fn load(handle: u64) {
-    let Some((webview, old, nav, theme)) = STATE.with_borrow_mut(|s| {
+    let Some((webview, old, nav, theme, state)) = STATE.with_borrow_mut(|s| {
         let theme = s.theme.clone();
         let slot = s.slots.get_mut(&handle)?;
         slot.ready = false;
-        Some((slot.webview.clone()?, slot.script.take(), slot.nav, theme))
+        let state = slot.state.clone();
+        Some((slot.webview.clone()?, slot.script.take(), slot.nav, theme, state))
     }) else {
         return;
     };
@@ -647,7 +657,9 @@ fn load(handle: u64) {
         let old = CoTaskMemPWSTR::from(old.as_str());
         unsafe { webview.RemoveScriptToExecuteOnDocumentCreated(*old.as_ref().as_pcwstr()) }.ok();
     }
-    let script = PRELUDE.replace("$THEME", &theme.to_string());
+    let script = PRELUDE
+        .replace("$THEME", &theme.to_string())
+        .replace("$STATE", &state.to_string());
     let script = CoTaskMemPWSTR::from(script.as_str());
     let view = webview.clone();
     let added =
@@ -666,10 +678,11 @@ const PRELUDE: &str = r#"(() => {
   if (window.top !== window) return;
   const post = (m) => window.chrome.webview.postMessage(m);
   let acquired = false;
+  let state = $STATE;
   const api = Object.freeze({
     postMessage: (m) => post(m),
-    getState: () => { try { return JSON.parse(sessionStorage.getItem('vscode-state')) ?? undefined } catch { return undefined } },
-    setState: (s) => { try { sessionStorage.setItem('vscode-state', JSON.stringify(s)) } catch {} return s },
+    getState: () => state ?? undefined,
+    setState: (s) => { state = s; post({ $vsnState: s ?? null }); return s },
   });
   window.acquireVsCodeApi = () => {
     if (acquired) throw new Error('An instance of the VS Code API has already been acquired');
@@ -970,6 +983,16 @@ pub fn focus(handle: u64) {
     if let Some(controller) = controller {
         unsafe { controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC) }.ok();
     }
+}
+
+/// Webview `handle`'s page state (`setState`), Null if none.
+pub fn state(handle: u64) -> Value {
+    STATE.with_borrow(|s| s.slots.get(&handle).map_or(Value::Null, |slot| slot.state.clone()))
+}
+
+/// The state webview `handle`'s next page starts with, as a revived panel's.
+pub fn set_state(handle: u64, state: Value) {
+    STATE.with_borrow_mut(|s| s.slots.get_mut(&handle).map(|slot| slot.state = state));
 }
 
 /// Gives webview `handle` vsn's find widget (`enableFindWidget`).

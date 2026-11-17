@@ -786,6 +786,9 @@ impl Workbench {
                 let (view_type, title) = (text("viewType"), text("title"));
                 let find = msg["find"] == true;
                 webview::set_find(handle, find);
+                webview::set_state(handle, msg["state"].clone());
+                // A panel revived at start doesn't take the active tab.
+                let revived = msg["revived"] == true;
                 self.in_window(cx, move |this, window, cx| {
                     let path = PathBuf::from(format!("webview-panel-{handle}"));
                     this.push_doc(path, String::new(), Encoding::Utf8, true, false, window, cx);
@@ -799,7 +802,9 @@ impl Workbench {
                         find,
                         focus: cx.focus_handle(),
                     });
-                    this.activate(ix, window, cx);
+                    if !revived {
+                        this.activate(ix, window, cx);
+                    }
                 });
             }
             "webviewViewInfo" => {

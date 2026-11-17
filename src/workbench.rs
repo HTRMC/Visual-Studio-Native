@@ -67,6 +67,10 @@ mod webview {
     pub fn hide_others(_: &[u64]) {}
     pub fn set_sidebar(_: u64) {}
     pub fn set_find(_: u64, _: bool) {}
+    pub fn state(_: u64) -> serde_json::Value {
+        serde_json::Value::Null
+    }
+    pub fn set_state(_: u64, _: serde_json::Value) {}
     pub fn find(_: u64, _: &str, _: bool, _: bool) {}
     pub fn stop_find(_: u64) {}
     pub fn focus(_: u64) {}
@@ -3312,7 +3316,12 @@ impl Workbench {
         s["last"] = serde_json::json!(self.root);
         // Pinned tabs lead, so their count says which.
         let pinned = files.iter().take_while(|d| d.pinned).count();
-        s["editors"][key] = serde_json::json!({ "files": files.iter().map(|d| &d.path).collect::<Vec<_>>(), "active": active, "backups": backups, "pinned": pinned });
+        // Webview panels, for their serializers to revive.
+        let panels: Vec<_> = (self.docs.iter())
+            .filter_map(|d| d.webview.as_ref())
+            .filter_map(|w| Some(serde_json::json!({ "viewType": w.view_type, "title": w.panel.as_ref()?, "state": webview::state(w.handle) })))
+            .collect();
+        s["editors"][key] = serde_json::json!({ "files": files.iter().map(|d| &d.path).collect::<Vec<_>>(), "active": active, "backups": backups, "pinned": pinned, "panels": panels });
         fs::create_dir_all(path.parent().unwrap()).ok();
         fs::write(path, s.to_string()).ok();
     }
@@ -3345,6 +3354,13 @@ impl Workbench {
         });
         if let Some(ix) = active {
             self.activate(ix, window, cx);
+        }
+        for panel in saved["panels"].as_array().into_iter().flatten() {
+            let view_type = panel["viewType"].as_str().unwrap_or_default();
+            self.activate_extensions(&format!("onWebviewPanel:{view_type}"), cx);
+            let mut msg = panel.clone();
+            msg["m"] = "revivePanel".into();
+            self.ext.send(msg);
         }
     }
 
