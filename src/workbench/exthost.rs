@@ -107,6 +107,8 @@ pub(super) struct Host {
     /// extensions `onView` activated.
     closed_views: HashSet<String>,
     seen_views: HashSet<String>,
+    /// Webview views by view id, made as they first show.
+    pub(super) webview_views: HashMap<String, super::custom_editors::ViewWebview>,
 }
 
 impl Host {
@@ -248,11 +250,14 @@ pub(super) struct ExtView {
     /// Its `viewsWelcome` content, shown while it's empty: lines of text or
     /// `[Label](command:id)` buttons.
     pub welcome: Vec<String>,
+    /// A `"type": "webview"` view, which a webview view provider fills.
+    pub webview: bool,
+    /// Its extension's folder, which its page may load from.
+    pub dir: PathBuf,
 }
 
 /// The views extensions contribute to view container `container`, built-in
 /// (`explorer`, `scm`, `debug`) or theirs, whose `when` holds.
-// ponytail: webview views are left out.
 pub(super) fn ext_views(container: &str) -> Vec<ExtView> {
     let exts = installed();
     let enabled = || exts.iter().filter(|e| e.enabled);
@@ -264,7 +269,7 @@ pub(super) fn ext_views(container: &str) -> Vec<ExtView> {
                 .flatten()
                 .map(move |v| (e, v))
         })
-        .filter(|(_, v)| v["type"] != "webview" && holds(&v["when"]))
+        .filter(|(_, v)| holds(&v["when"]))
         .filter_map(|(e, v)| {
             let id = v["id"].as_str()?.to_string();
             let welcome = enabled()
@@ -279,6 +284,8 @@ pub(super) fn ext_views(container: &str) -> Vec<ExtView> {
                 name: e.localize(&v["name"]),
                 id,
                 welcome,
+                webview: v["type"] == "webview",
+                dir: e.dir.clone(),
             })
         })
         .collect()
@@ -1153,6 +1160,10 @@ impl Workbench {
     pub(super) fn restart_extension_host(&mut self, cx: &mut Context<Self>) {
         SET_CONTEXT.lock().unwrap().clear();
         super::rebind_keys(cx);
+        // Their providers were the old host's; the next show resolves anew.
+        for (_, w) in self.ext.webview_views.drain() {
+            webview::dispose(w.handle);
+        }
         let js = self.ext.out.take().is_some();
         let wasm = self.ext.wasm.take().is_some();
         if js || wasm {
@@ -1539,6 +1550,11 @@ impl Workbench {
                     self.set_root(path.clone(), cx);
                     return self.restart_extension_host(cx);
                 }
+                // VS Code's `<view>.focus` and `<view>.open` for each view.
+                let view = command.strip_suffix(".focus").or(command.strip_suffix(".open"));
+                if view.is_some_and(|v| self.show_ext_view(v, cx)) {
+                    return;
+                }
                 let container = command.strip_prefix("workbench.view.extension.");
                 if let Some(ix) =
                     container.and_then(|c| view_containers().iter().position(|v| v.id == c))
@@ -1885,6 +1901,20 @@ impl Workbench {
                     .context_menu(move |m, _, _| ext_menu_items(m, &wb, &more, Vec::new())))
                 .into_any_element(),
             };
+            if v.webview {
+                let body = self.webview_view_body(&v, fill, cx);
+                sections.push(
+                    v_flex()
+                        .when(vi > 0 || !fill, |d| d.border_t_1())
+                        .border_color(col::border())
+                        .when(open && fill, |d| d.flex_1().min_h_0())
+                        // A lone untitled view, as Cline's, has no header.
+                        .when(!(fill && v.name.is_empty()), |d| d.child(header))
+                        .when(open, |d| d.child(body))
+                        .into_any_element(),
+                );
+                continue;
+            }
             let tree = self.ext.trees.get(&v.id).cloned().unwrap_or_default();
             let items = tree["items"].as_array().cloned().unwrap_or_default();
             let mut rows = Vec::new();
@@ -1919,6 +1949,83 @@ impl Workbench {
             );
         }
         sections
+    }
+
+    /// Webview view `v`'s page, its webview made and resolved by its
+    /// provider the first time it shows, as VS Code's.
+    fn webview_view_body(&mut self, v: &ExtView, fill: bool, cx: &mut Context<Self>) -> AnyElement {
+        let made = self.ext.webview_views.get(&v.id).map(|w| (w.handle, w.focus.clone()));
+        let (handle, focus) = match made {
+            Some(made) => made,
+            None => {
+                let handle = self.new_webview_handle();
+                let focus = cx.focus_handle();
+                let roots = [v.dir.clone()].into_iter().chain(self.root.clone()).collect();
+                self.sync_webview_theme();
+                webview::create(handle, roots);
+                (self.ext).send(json!({
+                    "m": "resolveWebviewView", "handle": handle, "viewId": v.id, "title": v.name,
+                }));
+                let w = super::custom_editors::ViewWebview { handle, focus: focus.clone() };
+                self.ext.webview_views.insert(v.id.clone(), w);
+                (handle, focus)
+            }
+        };
+        let shown = self.sidebar_webviews().contains(&handle);
+        let mut keys = KeyContext::default();
+        keys.set("focusedView", v.id.clone());
+        keys.add("webviewViewFocus");
+        (div().id(SharedString::from(format!("view-body-{}", v.id))))
+            .flex_1()
+            .min_h_0()
+            .when(!fill, |d| d.h(px(240.)))
+            .key_context(keys)
+            .track_focus(&focus)
+            .child(super::custom_editors::webview_canvas(handle, shown, focus))
+            .into_any_element()
+    }
+
+    /// The webview views the side bar shows: its container's open ones.
+    pub(super) fn sidebar_webviews(&self) -> Vec<u64> {
+        if !self.sidebar {
+            return Vec::new();
+        }
+        let containers;
+        let container = match self.view {
+            View::Explorer => "explorer",
+            View::Scm => "scm",
+            View::Run => "debug",
+            View::Ext(ix) => {
+                containers = view_containers();
+                match containers.get(ix) {
+                    Some(c) => c.id.as_str(),
+                    None => return Vec::new(),
+                }
+            }
+            _ => return Vec::new(),
+        };
+        (ext_views(container).into_iter())
+            .filter(|v| v.webview && !self.ext.closed_views.contains(&v.id))
+            .filter_map(|v| Some(self.ext.webview_views.get(&v.id)?.handle))
+            .collect()
+    }
+
+    /// Shows the side bar container with view `id`, open, as VS Code's
+    /// `<id>.focus` and a webview view's `show()`. False if no container
+    /// has it.
+    pub(super) fn show_ext_view(&mut self, id: &str, cx: &mut Context<Self>) -> bool {
+        let has = |c: &str| ext_views(c).iter().any(|v| v.id == id);
+        let view = match (view_containers().iter()).position(|c| has(&c.id)) {
+            Some(ix) => View::Ext(ix),
+            None if has("explorer") => View::Explorer,
+            None if has("scm") => View::Scm,
+            None if has("debug") => View::Run,
+            None => return false,
+        };
+        self.ext.closed_views.remove(id);
+        (self.sidebar, self.view) = (true, view);
+        cx.notify();
+        true
     }
 
     /// A view's `viewsWelcome` content: `[Label](command:id)` lines as

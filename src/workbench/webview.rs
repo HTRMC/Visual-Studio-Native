@@ -642,6 +642,7 @@ const PRELUDE: &str = r#"(() => {
     return api;
   };
   const theme = (t) => {
+    if (!t) return;
     const apply = () => {
       const b = document.body;
       if (!b) return;
@@ -655,6 +656,29 @@ const PRELUDE: &str = r#"(() => {
     if (document.body) apply(); else document.addEventListener('DOMContentLoaded', apply);
   };
   theme($THEME);
+  // VS Code's default webview styles, first in the head so the page's win.
+  const defaults = () => {
+    const s = document.createElement('style');
+    s.id = '_defaultStyles';
+    s.textContent = `
+      html { scrollbar-color: var(--vscode-scrollbarSlider-background) var(--vscode-editor-background); }
+      body { background-color: transparent; color: var(--vscode-editor-foreground); font-family: var(--vscode-font-family);
+        font-weight: var(--vscode-font-weight); font-size: var(--vscode-font-size); margin: 0; padding: 0 20px; }
+      img, video { max-width: 100%; max-height: 100%; }
+      a, a code { color: var(--vscode-textLink-foreground); }
+      a:hover { color: var(--vscode-textLink-activeForeground); }
+      code { font-family: var(--vscode-editor-font-family); color: var(--vscode-textPreformat-foreground);
+        background-color: var(--vscode-textPreformat-background); padding: 1px 3px; border-radius: 4px; }
+      pre code { padding: 0; }
+      blockquote { background: var(--vscode-textBlockQuote-background); border-color: var(--vscode-textBlockQuote-border); }
+      ::-webkit-scrollbar { width: 10px; height: 10px; }
+      ::-webkit-scrollbar-corner { background-color: var(--vscode-editor-background); }
+      ::-webkit-scrollbar-thumb { background-color: var(--vscode-scrollbarSlider-background); }
+      ::-webkit-scrollbar-thumb:hover { background-color: var(--vscode-scrollbarSlider-hoverBackground); }
+      ::-webkit-scrollbar-thumb:active { background-color: var(--vscode-scrollbarSlider-activeBackground); }`;
+    document.head.prepend(s);
+  };
+  if (document.head) defaults(); else document.addEventListener('DOMContentLoaded', defaults);
   window.chrome.webview.addEventListener('message', (e) => {
     if (e.data && e.data.__vsnTheme) return theme(e.data.__vsnTheme);
     window.dispatchEvent(new MessageEvent('message', { data: e.data, origin: location.origin }));
@@ -794,10 +818,10 @@ pub fn place(handle: u64, bounds: RECT) {
 }
 
 /// Hides every webview but `keep`, which a `place` this frame shows.
-pub fn hide_others(keep: Option<u64>) {
+pub fn hide_others(keep: &[u64]) {
     let hidden: Vec<u64> = STATE.with_borrow_mut(|s| {
         (s.slots.iter_mut())
-            .filter(|(h, slot)| Some(**h) != keep && slot.bounds.is_some())
+            .filter(|(h, slot)| !keep.contains(h) && slot.bounds.is_some())
             .map(|(h, slot)| {
                 slot.bounds = None;
                 *h

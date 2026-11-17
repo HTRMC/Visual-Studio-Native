@@ -64,7 +64,7 @@ mod webview {
     pub fn set_roots(_: u64, _: Vec<PathBuf>) {}
     pub fn post(_: u64, _: String) {}
     pub fn set_theme(_: serde_json::Value) {}
-    pub fn hide_others(_: Option<u64>) {}
+    pub fn hide_others(_: &[u64]) {}
     pub fn focus(_: u64) {}
     pub fn dispose(_: u64) {}
 }

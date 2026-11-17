@@ -514,6 +514,45 @@ async function resolveCustomEditor(msg) {
   }
 }
 
+// Webview view providers by view id: { provider, options }.
+const webviewViews = new Map();
+function registerWebviewViewProvider(viewId, provider, options = {}) {
+  const entry = { provider, options };
+  webviewViews.set(viewId, entry);
+  return new Disposable(() => { if (webviewViews.get(viewId) === entry) webviewViews.delete(viewId); });
+}
+
+// vsn showed webview view `viewId` for the first time: its provider fills
+// the webview vsn made for it.
+async function resolveWebviewView(msg) {
+  if (!webviewViews.has(msg.viewId)) await Promise.all([...extensions.values()].map((e) => e.activating));
+  const entry = webviewViews.get(msg.viewId);
+  if (!entry) return send({ m: 'error', text: `No webview view '${msg.viewId}' is registered.` });
+  const p = makePanel(msg.handle, msg.viewId, msg.title || '', entry.options.webviewOptions);
+  const visibility = new EventEmitter();
+  p.visibilityChanged = visibility;
+  let description, badge;
+  p.view = {
+    viewType: msg.viewId,
+    webview: p.panel.webview,
+    get title() { return p.panel.title; },
+    set title(t) { p.panel.title = t; },
+    get description() { return description; },
+    set description(d) { description = d; },
+    get badge() { return badge; },
+    set badge(b) { badge = b; },
+    get visible() { return p.visible; },
+    onDidChangeVisibility: visibility.event,
+    onDidDispose: p.disposed.event,
+    show() { send({ m: 'webviewViewShow', viewId: msg.viewId }); },
+  };
+  try {
+    await entry.provider.resolveWebviewView(p.view, { state: undefined }, new CancellationTokenSource().token);
+  } catch (err) {
+    send({ m: 'error', text: `Resolving webview view '${msg.viewId}' failed: ${errorText(err)}` });
+  }
+}
+
 // vsn's Save, Save As and Revert of a binary custom editor.
 async function customFile(msg) {
   const p = panels.get(msg.handle);
@@ -568,6 +607,7 @@ const vscodeWindow = {
   state: { focused: true },
   createWebviewPanel,
   registerCustomEditorProvider,
+  registerWebviewViewProvider,
   registerWebviewPanelSerializer: () => new Disposable(() => {}),
   // ponytail: vsn has no `vsn://` links to hand an extension, so a handler
   // is kept but never called.
@@ -1881,6 +1921,9 @@ rl.on('line', (line) => {
         // Not awaited: the provider may ask vsn things first.
         resolveCustomEditor(msg);
         return;
+      case 'resolveWebviewView':
+        resolveWebviewView(msg);
+        return;
       case 'customSave': case 'customSaveAs': case 'customRevert':
         customFile(msg);
         return;
@@ -1888,6 +1931,7 @@ rl.on('line', (line) => {
         const p = panels.get(msg.handle);
         if (!p || (p.active === msg.active && p.visible === msg.visible)) return;
         [p.active, p.visible] = [msg.active, msg.visible];
+        if (p.view) return p.visibilityChanged.fire();
         return p.viewState.fire({ webviewPanel: p.panel });
       }
       case 'webviewClosed':

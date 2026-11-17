@@ -27,6 +27,13 @@ pub(super) struct DocWebview {
     pub focus: FocusHandle,
 }
 
+/// An extension's webview view in the side bar
+/// (`registerWebviewViewProvider`), made the first time it shows.
+pub(super) struct ViewWebview {
+    pub handle: u64,
+    pub focus: FocusHandle,
+}
+
 #[derive(Default)]
 pub(super) struct Webviews {
     /// Custom editors' handles; the host's panels count from 1.
@@ -37,6 +44,9 @@ pub(super) struct Webviews {
     /// The webview shown this frame: the active tab's, unless the panel
     /// is maximized over it.
     pub shown: Option<u64>,
+    /// The side bar's webview views shown this frame, as the host last
+    /// heard.
+    views: Vec<u64>,
     /// The theme the host and pages last got.
     theme: Value,
 }
@@ -203,6 +213,12 @@ impl Workbench {
             .collect()
     }
 
+    /// A new webview's handle, for a custom editor or a webview view.
+    pub(super) fn new_webview_handle(&mut self) -> u64 {
+        self.webviews.next += 1;
+        self.webviews.next - 1
+    }
+
     /// Shows editor `ix`'s file in custom editor `view_type`.
     pub(super) fn attach_custom_editor(
         &mut self,
@@ -211,8 +227,7 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) {
         self.activate_extensions(&format!("onCustomEditor:{view_type}"), cx);
-        let handle = self.webviews.next;
-        self.webviews.next += 1;
+        let handle = self.new_webview_handle();
         let doc = &mut self.docs[ix];
         let path = doc.path.clone();
         doc.webview = Some(DocWebview {
@@ -224,6 +239,7 @@ impl Workbench {
             focus: cx.focus_handle(),
         });
         let (lang, text, dirty) = (doc.lang, doc.editor.read(cx).value(), doc.dirty);
+        self.sync_webview_theme();
         webview::create(handle, self.custom_roots(&view_type, &path));
         self.ext.send(json!({
             "m": "resolveCustomEditor",
@@ -347,10 +363,27 @@ impl Workbench {
             .filter(|_| !(self.panel && self.panel_max))
             .map(|w| w.handle);
         self.webviews.shown = keep;
-        webview::hide_others(keep);
-        if self.docs.iter().all(|d| d.webview.is_none()) {
+        let views = self.sidebar_webviews();
+        // The host's views learn they're shown or hidden, as VS Code's
+        // onDidChangeVisibility.
+        for &ViewWebview { handle, .. } in self.ext.webview_views.values() {
+            let (was, is) = (self.webviews.views.contains(&handle), views.contains(&handle));
+            if was != is {
+                let msg = json!({ "m": "webviewView", "handle": handle, "active": is, "visible": is });
+                self.ext.send(msg);
+            }
+        }
+        webview::hide_others(&keep.into_iter().chain(views.iter().copied()).collect::<Vec<_>>());
+        self.webviews.views = views;
+        if self.docs.iter().all(|d| d.webview.is_none()) && self.ext.webview_views.is_empty() {
             return;
         }
+        self.sync_webview_theme();
+    }
+
+    /// The pages' theme, from the workbench's colors; before a webview is
+    /// made, so its page loads with it.
+    pub(super) fn sync_webview_theme(&mut self) {
         let dark = col::editor().l < 0.5;
         let font = "\"Segoe WPC\", \"Segoe UI\", sans-serif";
         let theme = json!({
@@ -363,7 +396,77 @@ impl Workbench {
                 "--vscode-foreground": hex(col::fg()),
                 "--vscode-focusBorder": hex(col::accent()),
                 "--vscode-sideBar-background": hex(col::bg()),
+                "--vscode-sideBar-foreground": hex(col::fg()),
+                "--vscode-panel-background": hex(col::bg()),
                 "--vscode-panel-border": hex(col::border()),
+                "--vscode-descriptionForeground": hex(col::fg_muted()),
+                "--vscode-disabledForeground": hex(col::fg_dim()),
+                "--vscode-errorForeground": "#f85149",
+                "--vscode-textLink-foreground": hex(col::accent()),
+                "--vscode-textLink-activeForeground": hex(col::accent()),
+                "--vscode-button-background": hex(col::accent()),
+                "--vscode-button-foreground": "#ffffff",
+                "--vscode-button-hoverBackground": hex(col::accent().blend(col::hover())),
+                "--vscode-button-secondaryBackground": hex(col::tab_active()),
+                "--vscode-button-secondaryForeground": hex(col::fg()),
+                "--vscode-button-secondaryHoverBackground": hex(col::status_hover()),
+                "--vscode-input-background": hex(col::input()),
+                "--vscode-input-foreground": hex(col::fg()),
+                "--vscode-input-border": hex(col::input_border()),
+                "--vscode-input-placeholderForeground": hex(col::fg_muted()),
+                "--vscode-dropdown-background": hex(col::input()),
+                "--vscode-dropdown-foreground": hex(col::fg()),
+                "--vscode-dropdown-border": hex(col::input_border()),
+                "--vscode-checkbox-background": hex(col::input()),
+                "--vscode-checkbox-border": hex(col::input_border()),
+                "--vscode-list-hoverBackground": hex(col::bg().blend(col::hover())),
+                "--vscode-list-activeSelectionBackground": hex(col::bg().blend(col::selected())),
+                "--vscode-list-activeSelectionForeground": hex(col::fg()),
+                "--vscode-toolbar-hoverBackground": hex(col::bg().blend(col::toolbar_hover())),
+                "--vscode-badge-background": hex(col::accent()),
+                "--vscode-badge-foreground": "#ffffff",
+                "--vscode-widget-border": hex(col::border()),
+                "--vscode-editorWidget-background": hex(col::bg()),
+                "--vscode-editorWidget-border": hex(col::border()),
+                "--vscode-textCodeBlock-background": hex(col::tab_active()),
+                "--vscode-textBlockQuote-background": hex(col::tab_active()),
+                "--vscode-textPreformat-foreground": hex(col::fg()),
+                "--vscode-scrollbarSlider-background": "#79797966",
+                "--vscode-scrollbarSlider-hoverBackground": "#646464b3",
+                "--vscode-scrollbarSlider-activeBackground": "#bfbfbf66",
+                "--vscode-quickInput-background": hex(col::bg()),
+                "--vscode-menu-background": hex(col::bg()),
+                "--vscode-menu-foreground": hex(col::fg()),
+                "--vscode-icon-foreground": hex(col::fg()),
+                "--vscode-sidebar-background": hex(col::bg()),
+                "--vscode-editorGroup-border": hex(col::border()),
+                "--vscode-widget-shadow": "#0000005c",
+                "--vscode-textSeparator-foreground": hex(col::fg_dim()),
+                "--vscode-textBlockQuote-border": hex(col::accent()),
+                "--vscode-editorError-foreground": "#f14c4c",
+                "--vscode-editorWarning-foreground": "#cca700",
+                "--vscode-editorInfo-foreground": "#3794ff",
+                "--vscode-problemsErrorIcon-foreground": "#f14c4c",
+                "--vscode-notificationsInfoIcon-foreground": "#3794ff",
+                "--vscode-testing-iconPassed": "#73c991",
+                "--vscode-testing-iconFailed": "#f14c4c",
+                "--vscode-charts-green": "#89d185",
+                "--vscode-charts-yellow": "#cca700",
+                "--vscode-charts-red": "#f14c4c",
+                "--vscode-charts-blue": "#3794ff",
+                "--vscode-inputValidation-errorBackground": "#5a1d1d",
+                "--vscode-inputValidation-errorBorder": "#be1100",
+                "--vscode-inputValidation-errorForeground": hex(col::fg()),
+                "--vscode-inputValidation-warningBackground": "#352a05",
+                "--vscode-inputValidation-warningBorder": "#b89500",
+                "--vscode-inputValidation-warningForeground": hex(col::fg()),
+                "--vscode-quickInputList-focusBackground": hex(col::bg().blend(col::selected())),
+                "--vscode-quickInputList-focusForeground": hex(col::fg()),
+                "--vscode-diffEditor-insertedTextBackground": "#9ccc2c33",
+                "--vscode-diffEditor-removedTextBackground": "#ff000033",
+                "--vscode-banner-background": hex(col::bg().blend(col::selected())),
+                "--vscode-banner-foreground": hex(col::fg()),
+                "--vscode-terminal-ansiBlue": "#2472c8",
                 "--vscode-font-family": font,
                 "--vscode-font-size": "13px",
                 "--vscode-font-weight": "normal",
@@ -398,21 +501,7 @@ impl Workbench {
             .size_full()
             .key_context(keys)
             .track_focus(&w.focus)
-            .child(
-                canvas(
-                    move |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
-                    move |bounds, hitbox, window, _| {
-                        if !shown {
-                            return;
-                        }
-                        #[cfg(windows)]
-                        paint_webview(handle, focus, bounds, hitbox, window);
-                        #[cfg(not(windows))]
-                        let _ = (handle, focus, bounds, hitbox);
-                    },
-                )
-                .size_full(),
-            )
+            .child(webview_canvas(handle, shown, focus))
             .into_any_element()
     }
 
@@ -525,6 +614,7 @@ impl Workbench {
                     return true;
                 };
                 // Made now, so the page the host sends next has its place.
+                self.sync_webview_theme();
                 webview::create(handle, roots(msg).unwrap_or_default());
                 let (view_type, title) = (text("viewType"), text("title"));
                 self.in_window(cx, move |this, window, cx| {
@@ -541,6 +631,10 @@ impl Workbench {
                     });
                     this.activate(ix, window, cx);
                 });
+            }
+            "webviewViewShow" => {
+                let id = text("viewId");
+                self.show_ext_view(&id, cx);
             }
             "webviewTitle" => {
                 if let Some(ix) = self.webview_doc(&msg["handle"])
@@ -658,6 +752,23 @@ impl Workbench {
         }
         true
     }
+}
+
+/// Where webview `handle` shows, when `shown`: its element's bounds.
+pub(super) fn webview_canvas(handle: u64, shown: bool, focus: FocusHandle) -> impl IntoElement {
+    canvas(
+        move |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+        move |bounds, hitbox, window, _| {
+            if !shown {
+                return;
+            }
+            #[cfg(windows)]
+            paint_webview(handle, focus, bounds, hitbox, window);
+            #[cfg(not(windows))]
+            let _ = (handle, focus, bounds, hitbox);
+        },
+    )
+    .size_full()
 }
 
 /// Webview `handle` at `bounds`: placed under a hole, with the mouse over
