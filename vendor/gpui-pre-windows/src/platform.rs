@@ -503,6 +503,15 @@ fn translate_accelerator(msg: &MSG) -> Option<()> {
     if msg.message != WM_KEYDOWN && msg.message != WM_SYSKEYDOWN {
         return None;
     }
+    // vsn: only gpui's own windows take its keydown. For another window on
+    // this thread (WebView2's focus window, which a page's arrow keys,
+    // Delete and other non-character keys come through), DefWindowProc's 0
+    // read as handled and the page never saw the keydown.
+    let mut class = [0u16; 16];
+    let len = unsafe { GetClassNameW(msg.hwnd, &mut class) } as usize;
+    if class[..len] != *"Zed::Window".encode_utf16().collect::<Vec<_>>() {
+        return None;
+    }
 
     let result = unsafe {
         SendMessageW(

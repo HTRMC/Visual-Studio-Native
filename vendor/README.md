@@ -19,6 +19,10 @@ comment; on a gpui-kit update, copy the new version over and re-apply them.
 - **gpui-pre-windows 0.3.9** (`src/events.rs`, `src/window.rs`): `set_zoom`
   multiplies every DPI-derived scale factor (window.zoomLevel) and re-lays
   the window out at the new scale.
+- **gpui-pre-windows 0.3.9** (`src/platform.rs`): `translate_accelerator`
+  sends its keydown only to gpui's own windows, so a webview page gets the
+  keydown of arrows, Delete and other keys WebView2 routes through vsn's
+  message loop.
 - **gpui-pre-windows 0.3.9** (`src/window.rs`, `src/gpui_windows.rs`):
   `drop_key_state` gives the `MK_*` key state Windows passes the drop target
   for files dragged in, so a Shift+drop reaches a webview page.
