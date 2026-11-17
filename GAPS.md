@@ -696,7 +696,7 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [ ] Tasks: `CustomExecution` throws; a task runs in a new terminal under cmd.exe each time, not the reused task terminal; no `onDidStartTask`/`onDidEndTask`, `taskExecutions` stays empty and `terminate()` does nothing; no tasks.json or Run Task command.
 - [x] Debug lenses (rust-analyzer's "Debug") start vsn's debugger through `debug.startDebugging` with lldb-dap (found on PATH or in LLVM's install dir); vsn sets `PYTHONHOME` for it to the Python on PATH, as LLVM's Windows lldb otherwise dies looking for its standard library next to itself.
 - [ ] `debug.register*` providers are stubs and there are no debug session events (`onDidStartDebugSession` and the like); `activeDebugSession` stays undefined.
-- [ ] rust-analyzer: no test explorer, walkthroughs, `.rast` syntax, `jsonValidation` schemas, crate graph webview, or `command:` links in hovers; status item tooltips and `withProgress` don't show.
+- [ ] rust-analyzer: no test explorer, walkthroughs, `.rast` syntax, `jsonValidation` schemas, or `command:` links in hovers; status item tooltips and `withProgress` don't show.
 - [x] Output channels' `append` started a new line and `show()`/`clear()`/
       `replace()` did nothing; append continues the line, show opens the
       panel on the channel, clear and replace work.
