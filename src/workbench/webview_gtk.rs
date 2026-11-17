@@ -152,6 +152,8 @@ struct Placed {
     find: bool,
     /// Its newest frame, in gpui's atlas.
     image: Option<Arc<RenderImage>>,
+    /// Files being dragged over the page with Shift, and where (CSS pixels).
+    dragging: Option<(Vec<PathBuf>, (f64, f64))>,
 }
 
 thread_local! {
@@ -379,13 +381,79 @@ pub fn stop_find(handle: u64) {
     });
 }
 
-// ponytail: Shift+drop of files on a page is Windows-only (WebView2 takes
-// Explorer's drag); a GTK drag would need a real XDND source.
-pub fn drag_files(_: u64, _: &[PathBuf], _: (i32, i32)) {}
-pub fn finish_drop(_: u64) {}
-pub fn drag_leave(_: u64) {}
+/// Drags files `paths` over webview `handle`'s page at window point `at`
+/// (physical pixels), for [`finish_drop`] to drop, as VS Code passes a
+/// Shift+drop to its webviews: the page sees DOM drag events whose
+/// `dataTransfer` holds them as `File`s.
+// ponytail: synthesized in the page, not a real GTK drag (that would need an
+// XDND source of vsn's own); pages see the same events either way.
+pub fn drag_files(handle: u64, paths: &[PathBuf], at: (i32, i32)) {
+    let Some(point) = UI.with_borrow_mut(|u| {
+        let p = u.get_mut(&handle)?;
+        let ((left, top, ..), scale) = p.bounds?;
+        let css = |v: i32, edge: i32| (v - edge) as f64 / scale as f64;
+        let point = (css(at.0, left), css(at.1, top));
+        p.dragging = Some((paths.to_vec(), point));
+        Some(point)
+    }) else {
+        return;
+    };
+    let paths = paths.to_vec();
+    gtk(move || drag_in_page(handle, "dragover", point, paths));
+}
+
+/// Drops the files [`drag_files`] dragged over webview `handle`'s page.
+pub fn finish_drop(handle: u64) {
+    let dragging = UI.with_borrow_mut(|u| u.get_mut(&handle)?.dragging.take());
+    if let Some((paths, point)) = dragging {
+        gtk(move || drag_in_page(handle, "drop", point, paths));
+    }
+}
+
+/// The files [`drag_files`] dragged over webview `handle`'s page left it.
+pub fn drag_leave(handle: u64) {
+    let dragging = UI.with_borrow_mut(|u| u.get_mut(&handle)?.dragging.take());
+    if let Some((paths, point)) = dragging {
+        gtk(move || drag_in_page(handle, "dragleave", point, paths));
+    }
+}
+
+/// Shift is held, as X says: while another app's drag has the pointer,
+/// vsn's own idea of the modifiers is stale.
 pub fn shift_held() -> bool {
-    false
+    use std::ffi::{c_int, c_uint, c_ulong, c_void};
+    #[link(name = "X11")]
+    unsafe extern "C" {
+        fn XOpenDisplay(name: *const std::ffi::c_char) -> *mut c_void;
+        fn XDefaultRootWindow(display: *mut c_void) -> c_ulong;
+        fn XQueryPointer(
+            display: *mut c_void,
+            window: c_ulong,
+            root: *mut c_ulong,
+            child: *mut c_ulong,
+            root_x: *mut c_int,
+            root_y: *mut c_int,
+            x: *mut c_int,
+            y: *mut c_int,
+            mask: *mut c_uint,
+        ) -> c_int;
+    }
+    thread_local! {
+        // SAFETY: opens the default display, or gives null.
+        static DISPLAY: *mut c_void = unsafe { XOpenDisplay(std::ptr::null()) };
+    }
+    let display = DISPLAY.with(|d| *d);
+    if display.is_null() {
+        return false;
+    }
+    let (mut win, mut at, mut mask) = (0, 0, 0);
+    // SAFETY: an open display, and out-pointers to locals.
+    let on_screen = unsafe {
+        let root = XDefaultRootWindow(display);
+        let (w, x, y, z) = (&mut 0, &mut 0, &mut 0, &mut 0);
+        XQueryPointer(display, root, &mut win, w, &mut at, x, y, z, &mut mask)
+    };
+    on_screen != 0 && mask & 1 != 0 // ShiftMask
 }
 
 pub fn dispose(handle: u64) {
@@ -529,6 +597,22 @@ const SHIM: &str = r#"(() => {
     addEventListener: (type, f) => type === 'message' && listeners.push(f),
   };
   window.__vsnPost = (data) => listeners.forEach((f) => f({ data }));
+  // A Shift+drag of files over the page: DOM drag events, their
+  // dataTransfer holding the files, their bytes (base64) once dropped.
+  let over = null;
+  window.__vsnDrag = (kind, x, y, names, bytes) => {
+    const files = names.map((n, i) =>
+      new File(bytes ? [Uint8Array.from(atob(bytes[i]), (c) => c.charCodeAt(0))] : [], n));
+    const dataTransfer = new DataTransfer();
+    files.forEach((f) => dataTransfer.items.add(f));
+    const fire = (type, at) => at.dispatchEvent(new DragEvent(type,
+      { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, dataTransfer }));
+    if (kind === 'dragleave') { if (over) fire('dragleave', over); over = null; return; }
+    const at = document.elementFromPoint(x, y) || document.body;
+    if (at !== over) { if (over) fire('dragleave', over); fire('dragenter', at); over = at; }
+    fire(kind, at);
+    if (kind === 'drop') over = null;
+  };
 })();
 "#;
 
@@ -1051,6 +1135,38 @@ fn focus_view(handle: u64) {
             dispatch(e, &window, true);
         }
     }
+}
+
+/// Drag event `kind` of files `paths` at `point` (CSS pixels) in webview
+/// `handle`'s page; a drop hands the page their bytes, as the page's CSP
+/// may not let it fetch them.
+fn drag_in_page(handle: u64, kind: &str, point: (f64, f64), paths: Vec<PathBuf>) {
+    let names: Vec<String> = (paths.iter())
+        .map(|p| {
+            p.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    let Some(view) = with(handle, |v| v.view.clone()) else {
+        return;
+    };
+    // ponytail: whole files inline in one script; a stream if pages take
+    // drops of big files.
+    let bytes = (kind == "drop").then(|| {
+        (paths.iter())
+            .map(|p| glib::base64_encode(&std::fs::read(p).unwrap_or_default()).to_string())
+            .collect::<Vec<_>>()
+    });
+    let (x, y) = point;
+    let script = format!(
+        "window.__vsnDrag?.({}, {x}, {y}, {}, {})",
+        json!(kind),
+        json!(names),
+        json!(bytes)
+    );
+    view.evaluate_javascript(&script, None, None, None::<&gio::Cancellable>, |_| {});
 }
 
 fn find_in(handle: u64, term: String, case: bool, back: bool) {
