@@ -1714,6 +1714,16 @@ classes.Task = class Task extends classes.Task {
   constructor(...a) { super(...a); this.presentationOptions = {}; this.runOptions = {}; }
 };
 
+// Its factories, as VS Code's; Claude Code calls `error` as it loads.
+Object.assign(classes.NotebookCellOutputItem, {
+  text: (v, mime = 'text/plain') => new classes.NotebookCellOutputItem(new TextEncoder().encode(v), mime),
+  json: (v, mime = 'text/x-json') => classes.NotebookCellOutputItem.text(JSON.stringify(v, undefined, '\t'), mime),
+  stdout: (v) => classes.NotebookCellOutputItem.text(v, 'application/vnd.code.notebook.stdout'),
+  stderr: (v) => classes.NotebookCellOutputItem.text(v, 'application/vnd.code.notebook.stderr'),
+  error: (e) => classes.NotebookCellOutputItem.text(
+    JSON.stringify({ name: e?.name, message: e?.message, stack: e?.stack }), 'application/vnd.code.notebook.error'),
+});
+
 class CancellationError extends Error {
   constructor() { super('Canceled'); this.name = 'Canceled'; }
 }
