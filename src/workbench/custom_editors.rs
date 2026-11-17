@@ -171,7 +171,31 @@ impl Workbench {
                 webview::init(h.hwnd.get(), tx);
             }
         }
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
+        {
+            webview::init(tx);
+            // Keys typed in a page go to it, and the shortcuts among them
+            // to vsn's keybindings too, as VS Code's webviews pass them on.
+            let wb = cx.weak_entity();
+            cx.intercept_keystrokes(move |e, window, cx| {
+                let focused = KEY_TARGETS.with_borrow(|t| {
+                    t.iter()
+                        .find(|(_, f)| f.upgrade().is_some_and(|f| f.is_focused(window)))
+                        .map(|(h, _)| *h)
+                });
+                let Some(handle) = focused else { return };
+                webview::key(handle, &e.keystroke);
+                match webview::is_shortcut(handle, &e.keystroke) {
+                    true => {
+                        let at = (Instant::now(), e.keystroke.clone());
+                        wb.update(cx, |this, _| this.webviews.key_at = Some(at)).ok();
+                    }
+                    false => cx.stop_propagation(),
+                }
+            })
+            .detach();
+        }
+        #[cfg(not(any(windows, target_os = "linux")))]
         drop(tx);
         cx.spawn_in(window, async move |this, cx| {
             while let Some(event) = rx.next().await {
@@ -1076,18 +1100,26 @@ fn webview_canvas_inner(handle: u64, shown: bool, focus: FocusHandle) -> impl In
             if !shown {
                 return;
             }
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             paint_webview(handle, focus, bounds, hitbox, window);
-            #[cfg(not(windows))]
+            #[cfg(not(any(windows, target_os = "linux")))]
             let _ = (handle, focus, bounds, hitbox);
         },
     )
     .size_full()
 }
 
-/// Webview `handle` at `bounds`: placed under a hole, with the mouse over
-/// `hitbox` (and while a button's held, from a press in it) sent to it.
-#[cfg(windows)]
+#[cfg(target_os = "linux")]
+thread_local! {
+    /// Each painted webview's focus, so keys typed in it go to its page.
+    static KEY_TARGETS: std::cell::RefCell<HashMap<u64, WeakFocusHandle>> =
+        std::cell::RefCell::default();
+}
+
+/// Webview `handle` at `bounds`: placed under a hole (Windows) or its frame
+/// painted (Linux), with the mouse over `hitbox` (and while a button's
+/// held, from a press in it) sent to it.
+#[cfg(any(windows, target_os = "linux"))]
 fn paint_webview(
     handle: u64,
     focus: FocusHandle,
@@ -1099,20 +1131,33 @@ fn paint_webview(
     let s = window.scale_factor();
     let px = move |v: Pixels| (f32::from(v) * s).round() as i32;
     let at = move |p: Point<Pixels>| (px(p.x), px(p.y));
-    webview::place(
-        handle,
-        windows::Win32::Foundation::RECT {
-            left: px(bounds.left()),
-            top: px(bounds.top()),
-            right: px(bounds.right()),
-            bottom: px(bounds.bottom()),
-        },
-    );
-    // Until the page is in the window, the hole would show the desktop.
-    if !webview::attached(handle) {
-        return;
+    #[cfg(windows)]
+    {
+        webview::place(
+            handle,
+            windows::Win32::Foundation::RECT {
+                left: px(bounds.left()),
+                top: px(bounds.top()),
+                right: px(bounds.right()),
+                bottom: px(bounds.bottom()),
+            },
+        );
+        // Until the page is in the window, the hole would show the desktop.
+        if !webview::attached(handle) {
+            return;
+        }
+        window.paint_quad(fill(bounds, gpui_windows::WEBVIEW_HOLE));
     }
-    window.paint_quad(fill(bounds, gpui_windows::WEBVIEW_HOLE));
+    #[cfg(target_os = "linux")]
+    {
+        let edges = (px(bounds.left()), px(bounds.top()), px(bounds.right()), px(bounds.bottom()));
+        webview::place(handle, edges, s);
+        KEY_TARGETS.with_borrow_mut(|t| t.insert(handle, focus.downgrade()));
+        if let Some(image) = webview::frame(handle, window) {
+            window.paint_image(bounds, bounds, Corners::default(), image, 0, false).ok();
+        }
+        window.set_cursor_style(webview::cursor(handle), &hitbox);
+    }
     let button = |b: MouseButton| match b {
         MouseButton::Left => Button::Left,
         MouseButton::Right => Button::Right,
@@ -1132,7 +1177,7 @@ fn paint_webview(
             } else {
                 Mouse::Leave
             };
-            webview::mouse(handle, input, at(e.position));
+            webview::mouse(handle, input, at(e.position), e.modifiers);
         }
     });
     window.on_mouse_event({
@@ -1148,14 +1193,14 @@ fn paint_webview(
                 2 => Mouse::Double(button(e.button)),
                 _ => Mouse::Down(button(e.button)),
             };
-            webview::mouse(handle, input, at(e.position));
+            webview::mouse(handle, input, at(e.position), e.modifiers);
         }
     });
     window.on_mouse_event({
         let hitbox = hitbox.clone();
         move |e: &MouseUpEvent, phase, window, _| {
             if phase == DispatchPhase::Bubble && hitbox.is_hovered(window) {
-                webview::mouse(handle, Mouse::Up(button(e.button)), at(e.position));
+                webview::mouse(handle, Mouse::Up(button(e.button)), at(e.position), e.modifiers);
             }
         }
     });
@@ -1172,13 +1217,13 @@ fn paint_webview(
         let at = at(e.position);
         // gpui turns a shifted wheel sideways; the page does that itself.
         if e.modifiers.shift && y == 0. {
-            return webview::mouse(handle, Mouse::Wheel(x.round() as i32), at);
+            return webview::mouse(handle, Mouse::Wheel(x.round() as i32), at, e.modifiers);
         }
         if y != 0. {
-            webview::mouse(handle, Mouse::Wheel(y.round() as i32), at);
+            webview::mouse(handle, Mouse::Wheel(y.round() as i32), at, e.modifiers);
         }
         if x != 0. {
-            webview::mouse(handle, Mouse::HWheel(-x.round() as i32), at);
+            webview::mouse(handle, Mouse::HWheel(-x.round() as i32), at, e.modifiers);
         }
     });
 }

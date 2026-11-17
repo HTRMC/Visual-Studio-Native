@@ -49,8 +49,14 @@ mod terminal;
 mod wasmhost;
 #[cfg(windows)]
 mod webview;
-/// Webviews are WebView2's; elsewhere they stay blank.
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+#[path = "workbench/webview_gtk.rs"]
+mod webview;
+#[cfg(any(windows, target_os = "linux"))]
+mod webview_page;
+/// Webviews are WebView2's on Windows and WebKitGTK's on Linux; elsewhere
+/// they stay blank.
+#[cfg(not(any(windows, target_os = "linux")))]
 mod webview {
     use std::path::PathBuf;
     pub enum Event {
@@ -58,6 +64,8 @@ mod webview {
         Key(String),
         Open(String),
         Error(String),
+        Redraw,
+        Find(u64, i32, i32),
     }
     pub fn create(_: u64, _: Vec<PathBuf>) {}
     pub fn set_html(_: u64, _: String) {}
@@ -887,6 +895,8 @@ fn zoom_level() -> f64 {
 
 /// Scales the whole window to window.zoomLevel.
 fn apply_zoom(window: &Window) {
+    #[cfg(not(windows))]
+    let _ = window;
     #[cfg(windows)]
     {
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -6743,6 +6753,7 @@ fn name_box(input: &Entity<InputState>) -> impl IntoElement + use<> {
 }
 
 /// Sends `path` to the Recycle Bin, as VS Code's explorer Delete does.
+#[cfg(windows)]
 fn recycle(path: &Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt as _;
     use windows::Win32::UI::Shell::{
@@ -6768,6 +6779,7 @@ fn recycle(path: &Path) -> std::io::Result<()> {
 /// `shell.showItemInFolder` does for VS Code: SHOpenFolderAndSelectItems
 /// reuses a window already on that folder, and takes paths with spaces that
 /// `explorer /select,` (quoted whole by Command) turns into Documents.
+#[cfg(windows)]
 fn reveal_path(path: &Path) {
     use std::{ffi::c_void, os::windows::ffi::OsStrExt as _, ptr::null_mut};
     #[link(name = "ole32")]
@@ -6833,6 +6845,34 @@ fn reveal_path(path: &Path) {
             }
         }
     });
+}
+
+/// Sends `path` to the desktop's trash (the freedesktop trash GIO keeps).
+#[cfg(not(windows))]
+fn recycle(path: &Path) -> std::io::Result<()> {
+    let out = std::process::Command::new("gio").arg("trash").arg(path).output()?;
+    match out.status.success() {
+        true => Ok(()),
+        false => Err(std::io::Error::other(String::from_utf8_lossy(&out.stderr).trim().to_string())),
+    }
+}
+
+/// Shows `path` selected in the file manager (freedesktop FileManager1's
+/// ShowItems, as Electron's `shell.showItemInFolder`), else opens its folder.
+#[cfg(not(windows))]
+fn reveal_path(path: &Path) {
+    let uri = lsp::path_uri(path);
+    let shown = std::process::Command::new("dbus-send")
+        .args(["--session", "--print-reply", "--dest=org.freedesktop.FileManager1"])
+        .args(["/org/freedesktop/FileManager1", "org.freedesktop.FileManager1.ShowItems"])
+        .arg(format!("array:string:{uri}"))
+        .arg("string:")
+        .status()
+        .is_ok_and(|s| s.success());
+    if !shown {
+        let dir = path.parent().unwrap_or(path);
+        std::process::Command::new("xdg-open").arg(dir).spawn().ok();
+    }
 }
 
 /// An explorer row's right-click menu, as VS Code's for a file or folder;
@@ -7890,8 +7930,15 @@ fn center_line(
     true
 }
 
+/// The kernel's release, as About shows it (VS Code's `os.release()`).
+#[cfg(not(windows))]
+fn os_version() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/osrelease").map_or_else(|_| "unknown".into(), |s| s.trim().into())
+}
+
 /// Windows' "major.minor.build", as About shows it. RtlGetVersion, since
 /// GetVersionEx reports 6.2 to apps without a compatibility manifest.
+#[cfg(windows)]
 fn os_version() -> String {
     #[repr(C)]
     struct OsVersionInfoW {

@@ -35,8 +35,10 @@ use windows::{
 };
 use windows_core::Interface as _;
 
+use super::webview_page::{PRELUDE, page_html, page_owns, parse_rgb, read_resource};
+
 /// Where `asWebviewUri` points (exthost.js's `cspSource` allows it).
-pub const RESOURCE_ORIGIN: &str = "https://file.vscode-resource.vscode-cdn.net";
+const RESOURCE_ORIGIN: &str = "https://file.vscode-resource.vscode-cdn.net";
 
 /// What a webview tells the workbench.
 pub enum Event {
@@ -440,12 +442,6 @@ pub fn set_sidebar(handle: u64) {
     }
 }
 
-fn parse_rgb(hex: &str) -> Option<(u8, u8, u8)> {
-    let hex = hex.strip_prefix('#')?;
-    let at = |i: usize| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok();
-    Some((at(0)?, at(2)?, at(4)?))
-}
-
 /// A key pressed with Ctrl or Alt, or a function key, as a gpui keystroke
 /// for vsn's keybindings. Clipboard, undo, select all and find stay the
 /// page's, as VS Code leaves them to its webviews.
@@ -487,14 +483,7 @@ fn shortcut(vk: u32, find: bool) -> Option<String> {
     if !(ctrl || alt || function) {
         return None;
     }
-    let page_owns = ctrl
-        && !alt
-        && match key.as_str() {
-            "f" => !shift && !find,
-            "c" | "v" | "x" | "z" | "y" | "a" => !shift || key == "z",
-            _ => false,
-        };
-    if page_owns {
+    if page_owns(ctrl, alt, shift, &key, find) {
         return None;
     }
     let mut keystroke = String::new();
@@ -531,12 +520,13 @@ fn serve(
         let html = STATE.with_borrow(|s| s.slots.get(&handle).map(|s| s.html.clone()));
         match (page, html) {
             ("index.html", Some(html)) => {
-                Some((200, "text/html; charset=utf-8", html.into_bytes()))
+                Some((200, "text/html; charset=utf-8", page_html(&html).into_bytes()))
             }
             _ => Some((404, "text/plain", Vec::new())),
         }
     } else if let Some(path) = uri.strip_prefix(RESOURCE_ORIGIN) {
-        Some(resource(handle, path))
+        let roots = STATE.with_borrow(|s| s.slots.get(&handle).map(|s| s.roots.clone()));
+        Some(read_resource(&roots.unwrap_or_default(), path))
     } else {
         None
     };
@@ -553,7 +543,7 @@ fn serve(
     let made = unsafe {
         env.CreateWebResourceResponse(
             stream.as_ref(),
-            status,
+            status.into(),
             *reason.as_ref().as_pcwstr(),
             *headers.as_ref().as_pcwstr(),
         )
@@ -563,72 +553,8 @@ fn serve(
     }
 }
 
-/// The file at `asWebviewUri` path `path` (`/c%3A/Users/...`), if it's
-/// under one of webview `handle`'s roots.
-fn resource(handle: u64, path: &str) -> (i32, &'static str, Vec<u8>) {
-    let path = PathBuf::from(decode(path.trim_start_matches('/')));
-    let norm = |p: &std::path::Path| p.to_string_lossy().replace('\\', "/").to_lowercase();
-    let file = norm(&path);
-    let under =
-        |root: &PathBuf| file.starts_with(&(norm(root).trim_end_matches('/').to_owned() + "/"));
-    let climbs = path
-        .components()
-        .any(|c| c == std::path::Component::ParentDir);
-    let allowed = !climbs
-        && STATE.with_borrow(|s| {
-            (s.slots.get(&handle)).is_some_and(|slot| slot.roots.iter().any(under))
-        });
-    let body = allowed.then(|| std::fs::read(&path).ok()).flatten();
-    match body {
-        Some(body) => (200, mime(&path), body),
-        None => (404, "text/plain", Vec::new()),
-    }
-}
 
-/// Undoes a URI path's percent-encoding.
-fn decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let hex = (bytes[i] == b'%')
-            .then(|| s.get(i + 1..i + 3))
-            .flatten()
-            .and_then(|h| u8::from_str_radix(h, 16).ok());
-        match hex {
-            Some(b) => (out.push(b), i += 3),
-            None => (out.push(bytes[i]), i += 1),
-        };
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
 
-fn mime(path: &std::path::Path) -> &'static str {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or_default();
-    match ext.to_ascii_lowercase().as_str() {
-        "html" | "htm" => "text/html; charset=utf-8",
-        "js" | "mjs" => "text/javascript; charset=utf-8",
-        "css" => "text/css; charset=utf-8",
-        "json" | "map" => "application/json",
-        "svg" => "image/svg+xml",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "ico" => "image/x-icon",
-        "woff" => "font/woff",
-        "woff2" => "font/woff2",
-        "ttf" => "font/ttf",
-        "otf" => "font/otf",
-        "wasm" => "application/wasm",
-        "xml" => "application/xml",
-        "txt" => "text/plain; charset=utf-8",
-        _ => "application/octet-stream",
-    }
-}
 
 /// Sets webview `handle`'s page, reloading it.
 pub fn set_html(handle: u64, html: String) {
@@ -681,64 +607,6 @@ fn load(handle: u64) {
         .ok();
 }
 
-const PRELUDE: &str = r#"(() => {
-  if (window.top !== window) return;
-  const post = (m) => window.chrome.webview.postMessage(m);
-  let acquired = false;
-  let state = $STATE;
-  const api = Object.freeze({
-    postMessage: (m) => post(m),
-    getState: () => state ?? undefined,
-    setState: (s) => { state = s; post({ $vsnState: s ?? null }); return s },
-  });
-  window.acquireVsCodeApi = () => {
-    if (acquired) throw new Error('An instance of the VS Code API has already been acquired');
-    acquired = true;
-    return api;
-  };
-  const theme = (t) => {
-    if (!t) return;
-    const apply = () => {
-      const b = document.body;
-      if (!b) return;
-      b.classList.remove('vscode-light', 'vscode-dark', 'vscode-high-contrast', 'vscode-high-contrast-light');
-      b.classList.add(t.kind);
-      b.dataset.vscodeThemeKind = t.kind;
-      b.dataset.vscodeThemeName = t.name || '';
-      const root = document.documentElement.style;
-      for (const [k, v] of Object.entries(t.vars || {})) root.setProperty(k, v);
-    };
-    if (document.body) apply(); else document.addEventListener('DOMContentLoaded', apply);
-  };
-  theme($THEME);
-  // VS Code's default webview styles, first in the head so the page's win.
-  const defaults = () => {
-    const s = document.createElement('style');
-    s.id = '_defaultStyles';
-    s.textContent = `
-      html { scrollbar-color: var(--vscode-scrollbarSlider-background) var(--vscode-editor-background); }
-      body { background-color: transparent; color: var(--vscode-editor-foreground); font-family: var(--vscode-font-family);
-        font-weight: var(--vscode-font-weight); font-size: var(--vscode-font-size); margin: 0; padding: 0 20px; }
-      img, video { max-width: 100%; max-height: 100%; }
-      a, a code { color: var(--vscode-textLink-foreground); }
-      a:hover { color: var(--vscode-textLink-activeForeground); }
-      code { font-family: var(--vscode-editor-font-family); color: var(--vscode-textPreformat-foreground);
-        background-color: var(--vscode-textPreformat-background); padding: 1px 3px; border-radius: 4px; }
-      pre code { padding: 0; }
-      blockquote { background: var(--vscode-textBlockQuote-background); border-color: var(--vscode-textBlockQuote-border); }
-      ::-webkit-scrollbar { width: 10px; height: 10px; }
-      ::-webkit-scrollbar-corner { background-color: var(--vscode-editor-background); }
-      ::-webkit-scrollbar-thumb { background-color: var(--vscode-scrollbarSlider-background); }
-      ::-webkit-scrollbar-thumb:hover { background-color: var(--vscode-scrollbarSlider-hoverBackground); }
-      ::-webkit-scrollbar-thumb:active { background-color: var(--vscode-scrollbarSlider-activeBackground); }`;
-    document.head.prepend(s);
-  };
-  if (document.head) defaults(); else document.addEventListener('DOMContentLoaded', defaults);
-  window.chrome.webview.addEventListener('message', (e) => {
-    if (e.data && e.data.__vsnTheme) return theme(e.data.__vsnTheme);
-    window.dispatchEvent(new MessageEvent('message', { data: e.data, origin: location.origin }));
-  });
-})();"#;
 
 /// Sends the page a message, once it has loaded.
 pub fn post(handle: u64, json: String) {
@@ -988,7 +856,7 @@ pub fn hide_others(keep: &[u64]) {
 
 /// Sends webview `handle` mouse input at `at`, in the window's physical
 /// pixels.
-pub fn mouse(handle: u64, input: Mouse, at: (i32, i32)) {
+pub fn mouse(handle: u64, input: Mouse, at: (i32, i32), _: gpui_kit::Modifiers) {
     let leave = matches!(input, Mouse::Leave);
     let Some((comp, bounds, cursor)) = STATE.with_borrow_mut(|s| {
         let slot = s.slots.get_mut(&handle)?;
@@ -1186,13 +1054,3 @@ pub fn dispose(handle: u64) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn decodes_resource_paths() {
-        assert_eq!(decode("c%3A/Users/a%20b/x.js"), "c:/Users/a b/x.js");
-        assert_eq!(decode("100%"), "100%");
-    }
-}

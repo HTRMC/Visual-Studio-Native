@@ -430,9 +430,11 @@ function createOutputChannel(name) {
 // ---- webviews ----------------------------------------------------------------
 
 // vsn shows each webview in WebView2, serving the extension's files from
-// this origin (see webview.rs).
-const RESOURCE_ORIGIN = 'file.vscode-resource.vscode-cdn.net';
-const CSP_SOURCE = 'https://*.vscode-cdn.net';
+// VS Code's origin (see webview.rs); WebKitGTK can't serve https, so
+// elsewhere they come from a scheme of vsn's own (webview_gtk.rs).
+const WEB_SCHEME = process.platform === 'win32' ? 'https' : 'vsn-resource';
+const RESOURCE_ORIGIN = process.platform === 'win32' ? 'file.vscode-resource.vscode-cdn.net' : 'file';
+const CSP_SOURCE = process.platform === 'win32' ? 'https://*.vscode-cdn.net' : 'vsn-resource:';
 
 let colorTheme = { kind: 2 };
 const themeChanged = new EventEmitter();
@@ -468,7 +470,7 @@ function makePanel(handle, viewType, title, options = {}) {
       send({ m: 'webviewPost', handle, message });
       return true;
     },
-    asWebviewUri: (uri) => (uri.scheme === 'file' ? new Uri('https', RESOURCE_ORIGIN, uri.path) : uri),
+    asWebviewUri: (uri) => (uri.scheme === 'file' ? new Uri(WEB_SCHEME, RESOURCE_ORIGIN, uri.path) : uri),
     cspSource: CSP_SOURCE,
   };
   let name = title;
