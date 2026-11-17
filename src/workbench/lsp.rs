@@ -814,9 +814,13 @@ fn notify(out: &mpsc::Sender<String>, method: &str, params: Value) {
     );
 }
 
-/// `path` as a `file://` URI, percent-encoded as VS Code does (drive colon aside).
+/// `path` as a `file://` URI in VS Code's form, `file:///c%3A/a%20b`: the drive letter lower case and
+/// all but unreserved characters encoded, as extensions' URIs compare.
 pub(super) fn path_uri(path: &Path) -> String {
-    let p = path.to_string_lossy().replace('\\', "/");
+    let mut p = path.to_string_lossy().replace('\\', "/");
+    if p.as_bytes().get(1) == Some(&b':') {
+        p[..1].make_ascii_lowercase();
+    }
     let mut uri = String::from(if p.starts_with('/') {
         "file://"
     } else {
@@ -824,7 +828,7 @@ pub(super) fn path_uri(path: &Path) -> String {
     });
     for b in p.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'.' | b'_' | b'~' | b':' => {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'.' | b'_' | b'~' => {
                 uri.push(b as char)
             }
             _ => uri.push_str(&format!("%{b:02X}")),
@@ -2489,7 +2493,7 @@ mod tests {
     #[cfg(windows)]
     fn converts_uris() {
         let path = Path::new(r"C:\a b\c#.zig");
-        assert_eq!(path_uri(path), "file:///C:/a%20b/c%23.zig");
+        assert_eq!(path_uri(path), "file:///c%3A/a%20b/c%23.zig");
         assert_eq!(uri_path(&path_uri(path)).unwrap(), path);
         assert_eq!(
             uri_path("file:///c%3A/x/y.ts").unwrap(),

@@ -65,6 +65,10 @@ mod webview {
     pub fn post(_: u64, _: String) {}
     pub fn set_theme(_: serde_json::Value) {}
     pub fn hide_others(_: &[u64]) {}
+    pub fn set_sidebar(_: u64) {}
+    pub fn set_find(_: u64, _: bool) {}
+    pub fn find(_: u64, _: &str, _: bool, _: bool) {}
+    pub fn stop_find(_: u64) {}
     pub fn focus(_: u64) {}
     pub fn dispose(_: u64) {}
 }
@@ -147,6 +151,9 @@ actions!(
         FocusNextTerminal,
         FocusPreviousTerminal,
         FindInTerminal,
+        FindInWebview,
+        WebviewFindNext,
+        WebviewFindPrevious,
         FindNextInTerminal,
         FindPreviousInTerminal,
         ToggleSizeToContentWidth,
@@ -367,6 +374,9 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         shifted("ctrl-shift-`", Box::new(NewTerminal), None),
         shifted("ctrl-shift-5", Box::new(SplitTerminal), Some("Terminal")),
         KeyBinding::new("ctrl-f", FindInTerminal, Some("Terminal")),
+        KeyBinding::new("ctrl-f", FindInWebview, Some("webviewFindWidgetEnabled")),
+        KeyBinding::new("f3", WebviewFindNext, Some("webviewFindWidgetEnabled")),
+        KeyBinding::new("shift-f3", WebviewFindPrevious, Some("webviewFindWidgetEnabled")),
         KeyBinding::new("f3", FindNextInTerminal, Some("Terminal || TerminalFind")),
         KeyBinding::new(
             "shift-f3",
@@ -523,8 +533,11 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
     let pass: Vec<_> = (list.iter())
         .filter(|b| {
             b.keystrokes().len() == 1
-                && b.predicate()
-                    .is_none_or(|p| !p.to_string().contains("Terminal"))
+                // A webview's own keys never reach the terminal either.
+                && b.predicate().is_none_or(|p| {
+                    let p = p.to_string();
+                    !p.contains("Terminal") && !p.contains("webviewFindWidgetEnabled")
+                })
         })
         .filter(|b| !SKIP_SHELL.contains(&b.action().name().rsplit("::").next().unwrap_or("")))
         .map(|b| b.keystrokes()[0].unparse())
@@ -4179,35 +4192,37 @@ impl Workbench {
                 View::Extensions,
             ),
         ];
-        // activityBarBadge: the Extensions icon counts the updates waiting.
-        let updates = self.update_count();
+        // activityBarBadge: a count over an icon.
+        let badge = |glyph: AnyElement, count: u64| match count {
+            0 => glyph,
+            _ => div()
+                .relative()
+                .child(glyph)
+                .child(
+                    div()
+                        .absolute()
+                        .right(px(-6.))
+                        .bottom(px(-5.))
+                        .min_w(px(16.))
+                        .h(px(16.))
+                        .px(px(4.))
+                        .rounded_full()
+                        .bg(c(0x0078D4))
+                        .text_color(c(0xFFFFFF))
+                        .text_size(px(9.))
+                        .line_height(px(16.))
+                        .flex()
+                        .justify_center()
+                        .child(count.to_string()),
+                )
+                .into_any_element(),
+        };
+        // The Extensions icon counts the updates waiting.
+        let updates = self.update_count() as u64;
         let mut top: Vec<_> = (builtin.into_iter())
             .map(|(id, ch, text, view)| {
-                let glyph = match view == View::Extensions && updates > 0 {
-                    true => div()
-                        .relative()
-                        .child(glyph(ch))
-                        .child(
-                            div()
-                                .absolute()
-                                .right(px(-6.))
-                                .bottom(px(-5.))
-                                .min_w(px(16.))
-                                .h(px(16.))
-                                .px(px(4.))
-                                .rounded_full()
-                                .bg(c(0x0078D4))
-                                .text_color(c(0xFFFFFF))
-                                .text_size(px(9.))
-                                .line_height(px(16.))
-                                .flex()
-                                .justify_center()
-                                .child(updates.to_string()),
-                        )
-                        .into_any_element(),
-                    false => glyph(ch),
-                };
-                item(id.into(), glyph, text.into(), Some(view), cx)
+                let count = if view == View::Extensions { updates } else { 0 };
+                item(id.into(), badge(glyph(ch), count), text.into(), Some(view), cx)
             })
             .collect();
         // Extensions' view containers, after the built-in ones as in VS Code.
@@ -4232,7 +4247,14 @@ impl Workbench {
                 Err(path) => img(path).size(px(24.)).into_any_element(),
             };
             let id = SharedString::from(format!("act-c-{}", c.id));
-            top.push(item(id, glyph, c.title.into(), Some(View::Ext(ix)), cx));
+            // Its views' badges, as VS Code adds them up.
+            let (count, tips) = self.container_badge(&c.id);
+            let title = match tips.is_empty() {
+                true => c.title,
+                false => format!("{} - {}", c.title, tips.join(", ")),
+            };
+            let glyph = badge(glyph, count);
+            top.push(item(id, glyph, title.into(), Some(View::Ext(ix)), cx));
         }
 
         let (gap, inset) = if m { (8., 3.) } else { (0., 0.) };
@@ -5820,7 +5842,7 @@ impl Workbench {
                         return d.child(self.render_preview(source));
                     }
                     if doc.webview.is_some() {
-                        return d.child(self.render_webview(doc));
+                        return d.child(self.render_webview(self.active, cx));
                     }
                     if !doc.binary {
                         let keys = exthost::editor_keys(&doc.path, doc.lang);
@@ -7439,6 +7461,9 @@ impl Render for Workbench {
                 }),
             )
             .on_action(cx.listener(|this, _: &InstallFromVsix, _, cx| this.install_from_vsix(cx)))
+            .on_action(cx.listener(|this, _: &FindInWebview, window, cx| this.find_in_webview(window, cx)))
+            .on_action(cx.listener(|this, _: &WebviewFindNext, _, cx| this.webview_find(false, cx)))
+            .on_action(cx.listener(|this, _: &WebviewFindPrevious, _, cx| this.webview_find(true, cx)))
             .on_action(cx.listener(|this, _: &SelectColorTheme, window, cx| {
                 this.select_color_theme(window, cx)
             }))
@@ -7731,6 +7756,17 @@ fn editor_language(id: &str) -> String {
 
 /// 22px collapsible pane header (bold, uppercase, 11px) with optional hover actions.
 fn section_header(id: impl Into<SharedString>, label: &str, open: bool) -> Stateful<Div> {
+    described_header(id, label, None, open)
+}
+
+/// A section header with a view's `description` after its title, as
+/// VS Code's.
+fn described_header(
+    id: impl Into<SharedString>,
+    label: &str,
+    description: Option<&str>,
+    open: bool,
+) -> Stateful<Div> {
     let id = id.into();
     h_flex()
         .group(SharedString::from(format!("{id}-hdr")))
@@ -7761,7 +7797,13 @@ fn section_header(id: impl Into<SharedString>, label: &str, open: bool) -> State
                         .whitespace_nowrap()
                         .text_ellipsis()
                         .child(label.to_uppercase()),
-                ),
+                )
+                .children(description.map(|d| {
+                    (div().ml(px(6.)).whitespace_nowrap().text_ellipsis())
+                        .font_weight(FontWeight::NORMAL)
+                        .text_color(col::fg_muted())
+                        .child(d.to_string())
+                })),
         )
 }
 
@@ -8209,6 +8251,9 @@ mod tests {
             Some("FocusPreviousTerminal")
         );
         assert_eq!(action("ctrl-s", "Workbench").as_deref(), Some("Save"));
+        let find = "Workbench webviewFindWidgetEnabled";
+        assert_eq!(action("ctrl-f", find).as_deref(), Some("FindInWebview"));
+        assert_eq!(action("f3", find).as_deref(), Some("WebviewFindNext"));
     }
 
     #[test]

@@ -46,31 +46,71 @@ class EventEmitter {
 // An event that never fires, for the ones vsn doesn't report yet.
 const never = new EventEmitter().event;
 
+// A URI component as VS Code's `vscode-uri` encodes it: all but unreserved
+// characters (and `/` in a path, `[]:` in an authority) percent-encoded,
+// so `toString()` matches the strings extensions' own copies make.
+const encodeComponent = (s, isPath, isAuthority) => {
+  let out = '';
+  for (const ch of s) {
+    if (/[A-Za-z0-9\-._~]/.test(ch) || (isPath && ch === '/') || (isAuthority && '[]:'.includes(ch))) out += ch;
+    else if ("!'()*".includes(ch)) out += '%' + ch.charCodeAt(0).toString(16).toUpperCase();
+    else out += encodeURIComponent(ch);
+  }
+  return out;
+};
+const percentDecode = (s) => s.replace(/(%[0-9A-Za-z][0-9A-Za-z])+/g, (m) => {
+  try { return decodeURIComponent(m); } catch { return m.length > 3 ? m.slice(0, 3) + percentDecode(m.slice(3)) : m; }
+});
+
 class Uri {
   constructor(scheme, authority, p, query, fragment) {
     Object.assign(this, { scheme, authority: authority || '', path: p || '', query: query || '', fragment: fragment || '' });
+    // As VS Code's: a file, http or https path is absolute.
+    if (['file', 'http', 'https'].includes(scheme) && !this.path.startsWith('/')) this.path = '/' + this.path;
   }
   static file(p) {
-    let s = p.replace(/\\/g, '/');
-    if (!s.startsWith('/')) s = '/' + s;
-    return new Uri('file', '', s);
+    let s = process.platform === 'win32' ? p.replace(/\\/g, '/') : p;
+    let authority = '';
+    // A UNC path's server is its authority.
+    if (s.startsWith('//')) {
+      const i = s.indexOf('/', 2);
+      [authority, s] = i === -1 ? [s.slice(2), '/'] : [s.slice(2, i), s.slice(i) || '/'];
+    }
+    return new Uri('file', authority, s);
   }
   static parse(s) {
-    const m = /^([a-zA-Z][\w+.-]*):(?:\/\/([^/?#]*))?([^?#]*)(?:\?([^#]*))?(?:#(.*))?$/.exec(s);
-    if (!m) return Uri.file(s);
-    return new Uri(m[1], m[2], decodeURIComponent(m[3]), m[4], m[5]);
+    const m = /^(([^:/?#]+?):)?(\/\/([^/?#]*))?([^?#]*)(\?([^#]*))?(#(.*))?/.exec(s);
+    if (!m || !m[2]) return Uri.file(s);
+    return new Uri(m[2], percentDecode(m[4] || ''), percentDecode(m[5] || ''), percentDecode(m[7] || ''), percentDecode(m[9] || ''));
   }
   static joinPath(uri, ...parts) { return uri.with({ path: path.posix.join(uri.path, ...parts) }); }
   static from(c) { return new Uri(c.scheme, c.authority, c.path, c.query, c.fragment); }
+  // ponytail: the drive letter is upper case, where VS Code's is lower,
+  // to match the paths vsn and Windows give.
   get fsPath() {
-    const p = /^\/[a-zA-Z]:/.test(this.path) ? this.path.slice(1) : this.path;
+    let p = this.path;
+    if (this.authority && p.length > 1 && this.scheme === 'file') p = `//${this.authority}${p}`;
+    else if (/^\/[a-zA-Z]:/.test(p)) p = p[1].toUpperCase() + p.slice(2);
     return process.platform === 'win32' ? p.replace(/\//g, '\\') : p;
   }
   with(c) { return Uri.from({ ...this, ...c }); }
-  toString() {
-    const q = this.query ? '?' + this.query : '';
-    const f = this.fragment ? '#' + this.fragment : '';
-    return `${this.scheme}://${this.authority}${encodeURI(this.path)}${q}${f}`;
+  // VS Code's form: `file:///c%3A/a%20b`, its drive letter lower case.
+  toString(skipEncoding = false) {
+    const enc = skipEncoding ? (s) => s.replace(/[#?]/g, encodeURIComponent) : encodeComponent;
+    let res = this.scheme ? this.scheme + ':' : '';
+    if (this.authority || this.scheme === 'file') res += '//';
+    if (this.authority) {
+      const a = this.authority.toLowerCase();
+      const i = a.lastIndexOf(':');
+      res += i === -1 ? enc(a, false, true) : enc(a.slice(0, i), false, true) + a.slice(i);
+    }
+    let p = this.path;
+    if (/^\/[A-Z]:/.test(p)) p = '/' + p[1].toLowerCase() + p.slice(2);
+    else if (/^[A-Z]:/.test(p)) p = p[0].toLowerCase() + p.slice(1);
+    res += enc(p, true, false);
+    if (this.query) res += '?' + enc(this.query, false, false);
+    if (this.fragment) res += '#' + (skipEncoding ? this.fragment : encodeComponent(this.fragment, false, false));
+    return res;
   }
   toJSON() { return { scheme: this.scheme, authority: this.authority, path: this.path, query: this.query, fragment: this.fragment, fsPath: this.fsPath }; }
 }
@@ -465,7 +505,7 @@ function panelGone(handle) {
 function createWebviewPanel(viewType, title, showOptions, options = {}) {
   const handle = ++nextPanel;
   const p = makePanel(handle, viewType, title, options);
-  send({ m: 'webviewPanel', handle, viewType, title: String(title), roots: webviewRoots(options) });
+  send({ m: 'webviewPanel', handle, viewType, title: String(title), roots: webviewRoots(options), find: !!options.enableFindWidget });
   return p.panel;
 }
 
@@ -500,11 +540,11 @@ async function resolveCustomEditor(msg) {
       }
       doc.isDirty = !!msg.dirty;
       p.document = doc;
-      send({ m: 'customKind', handle: msg.handle, text: true });
+      send({ m: 'customKind', handle: msg.handle, text: true, find: !!entry.options.webviewOptions?.enableFindWidget });
       await provider.resolveCustomTextEditor(doc, p.panel, token);
     } else {
       p.binary = true;
-      send({ m: 'customKind', handle: msg.handle, text: false });
+      send({ m: 'customKind', handle: msg.handle, text: false, find: !!entry.options.webviewOptions?.enableFindWidget });
       p.document = await provider.openCustomDocument(uri, { backupId: undefined, untitledDocumentData: undefined }, token);
       p.provider = provider;
       await provider.resolveCustomEditor(p.document, p.panel, token);
@@ -531,16 +571,18 @@ async function resolveWebviewView(msg) {
   const p = makePanel(msg.handle, msg.viewId, msg.title || '', entry.options.webviewOptions);
   const visibility = new EventEmitter();
   p.visibilityChanged = visibility;
-  let description, badge;
+  let title, description, badge;
+  const info = () => send({ m: 'webviewViewInfo', handle: msg.handle, title: title ?? null, description: description ?? null,
+    badge: badge ? { value: badge.value, tooltip: badge.tooltip || '' } : null });
   p.view = {
     viewType: msg.viewId,
     webview: p.panel.webview,
-    get title() { return p.panel.title; },
-    set title(t) { p.panel.title = t; },
+    get title() { return title; },
+    set title(t) { title = t === undefined ? t : String(t); info(); },
     get description() { return description; },
-    set description(d) { description = d; },
+    set description(d) { description = d; info(); },
     get badge() { return badge; },
-    set badge(b) { badge = b; },
+    set badge(b) { badge = b; info(); },
     get visible() { return p.visible; },
     onDidChangeVisibility: visibility.event,
     onDidDispose: p.disposed.event,
@@ -562,7 +604,7 @@ async function customFile(msg) {
     if (msg.m === 'customSave') await p.provider.saveCustomDocument(p.document, token);
     else if (msg.m === 'customSaveAs') await p.provider.saveCustomDocumentAs(p.document, Uri.file(msg.path), token);
     else await p.provider.revertCustomDocument(p.document, token);
-    send({ m: 'customDirty', handle: msg.handle, dirty: false, saved: msg.m !== 'customRevert' });
+    send({ m: 'customDirty', handle: msg.handle, dirty: false, saved: msg.m !== 'customRevert', savedAs: msg.m === 'customSaveAs' ? msg.path : null });
   } catch (err) {
     send({ m: 'error', text: `Saving '${p.document.uri.fsPath}' failed: ${errorText(err)}` });
   }

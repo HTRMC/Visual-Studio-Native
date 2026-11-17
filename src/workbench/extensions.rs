@@ -1411,6 +1411,16 @@ pub(crate) fn apply_theme(name: &str, cx: &mut App) -> bool {
         .into_iter()
         .find(|t| t.id == name || t.label == name);
     let converted = theme.as_ref().and_then(|t| Some((t.dark, convert(t)?)));
+    // Every color the theme sets, as webviews' `--vscode-*` variables.
+    // The built-in theme's are VS Code's Dark 2026's.
+    let colors = (theme.as_ref().zip(converted.as_ref()))
+        .and_then(|(t, _)| Some(theme_file(&t.path, 0)?.0))
+        .or_else(|| serde_json::from_str(include_str!("../../assets/themes/dark-2026-colors.json")).ok())
+        .unwrap_or_default();
+    *WEBVIEW_COLORS.write().unwrap() = (colors.into_iter())
+        .filter(|(_, v)| v.is_string())
+        .map(|(k, v)| (format!("--vscode-{}", k.replace('.', "-")), v))
+        .collect();
     let Some((dark, (config, colors))) = converted else {
         crate::theme::col::set(Colors::default());
         if let Some(builtin) = ThemeRegistry::global(cx)
@@ -1438,6 +1448,11 @@ pub(crate) fn apply_theme(name: &str, cx: &mut App) -> bool {
     Theme::change(mode, None, cx);
     true
 }
+
+/// The color theme's colors as webviews' CSS variables, `--vscode-` and
+/// the key with `-` for `.`.
+pub(crate) static WEBVIEW_COLORS: LazyLock<RwLock<Map<String, Value>>> =
+    LazyLock::new(Default::default);
 
 /// The configured color and file icon themes, shown.
 pub(crate) fn apply_themes(cx: &mut App) {

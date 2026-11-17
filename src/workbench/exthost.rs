@@ -1881,7 +1881,10 @@ impl Workbench {
                 .partition(|i| i.navigation);
             let hdr = SharedString::from(format!("view-{}", v.id));
             let id = v.id.clone();
-            let header = section_header(hdr.clone(), &v.name, open)
+            let made = self.ext.webview_views.get(&v.id);
+            let title = made.and_then(|w| w.title.clone()).unwrap_or_else(|| v.name.clone());
+            let description = made.and_then(|w| w.description.clone());
+            let header = described_header(hdr.clone(), &title, description.as_deref(), open)
                 .child(
                     h_flex()
                         .invisible()
@@ -1909,7 +1912,7 @@ impl Workbench {
                         .border_color(col::border())
                         .when(open && fill, |d| d.flex_1().min_h_0())
                         // A lone untitled view, as Cline's, has no header.
-                        .when(!(fill && v.name.is_empty()), |d| d.child(header))
+                        .when(!(fill && title.is_empty()), |d| d.child(header))
                         .when(open, |d| d.child(body))
                         .into_any_element(),
                 );
@@ -1963,10 +1966,17 @@ impl Workbench {
                 let roots = [v.dir.clone()].into_iter().chain(self.root.clone()).collect();
                 self.sync_webview_theme();
                 webview::create(handle, roots);
+                webview::set_sidebar(handle);
                 (self.ext).send(json!({
                     "m": "resolveWebviewView", "handle": handle, "viewId": v.id, "title": v.name,
                 }));
-                let w = super::custom_editors::ViewWebview { handle, focus: focus.clone() };
+                let w = super::custom_editors::ViewWebview {
+                    handle,
+                    focus: focus.clone(),
+                    title: None,
+                    description: None,
+                    badge: None,
+                };
                 self.ext.webview_views.insert(v.id.clone(), w);
                 (handle, focus)
             }
@@ -1983,6 +1993,19 @@ impl Workbench {
             .track_focus(&focus)
             .child(super::custom_editors::webview_canvas(handle, shown, focus))
             .into_any_element()
+    }
+
+    /// Container `id`'s badge: its webview views' counts added up, and
+    /// their tooltips.
+    pub(super) fn container_badge(&self, id: &str) -> (u64, Vec<String>) {
+        let badges = (ext_views(id).into_iter())
+            .filter_map(|v| self.ext.webview_views.get(&v.id)?.badge.clone());
+        badges.fold((0, Vec::new()), |(n, mut tips), (count, tip)| {
+            if !tip.is_empty() {
+                tips.push(tip);
+            }
+            (n + count, tips)
+        })
     }
 
     /// The webview views the side bar shows: its container's open ones.

@@ -47,6 +47,8 @@ pub enum Event {
     Error(String),
     /// A page went in the window, so the workbench redraws to show it.
     Redraw,
+    /// Find's active match (from 1; 0 or -1 for none) and match count changed.
+    Find(u64, i32, i32),
 }
 
 /// A mouse button, for [`mouse`].
@@ -95,6 +97,15 @@ struct Slot {
     bounds: Option<RECT>,
     /// The id of the injected script, replaced on each load.
     script: Option<String>,
+    /// In the side bar, so its background is the side bar's.
+    sidebar: bool,
+    /// `enableFindWidget`: Ctrl+F is vsn's find, not the page's.
+    find: bool,
+    /// The term and case sensitivity of the find running, so finding it
+    /// again steps to the next match.
+    finding: Option<(String, bool)>,
+    /// Find's match events are hooked up.
+    find_hooked: bool,
 }
 
 #[derive(Default)]
@@ -142,6 +153,10 @@ pub fn create(handle: u64, roots: Vec<PathBuf>) {
                 queue: Vec::new(),
                 bounds: None,
                 script: None,
+                sidebar: false,
+                find: false,
+                finding: None,
+                find_hooked: false,
             },
         );
         match &s.env {
@@ -242,17 +257,7 @@ fn setup(
     };
     unsafe {
         controller.SetIsVisible(false).ok();
-        if let Ok(c2) = controller.cast::<ICoreWebView2Controller2>() {
-            let bg = STATE.with_borrow(|s| s.theme["background"].as_str().map(parse_rgb));
-            let (r, g, b) = bg.flatten().unwrap_or((30, 30, 30));
-            c2.SetDefaultBackgroundColor(COREWEBVIEW2_COLOR {
-                A: 255,
-                R: r,
-                G: g,
-                B: b,
-            })
-            .ok();
-        }
+        set_background(handle, &controller);
         if let Ok(settings) = webview.Settings() {
             settings.SetAreDefaultContextMenusEnabled(true).ok();
             settings.SetAreDevToolsEnabled(true).ok();
@@ -341,7 +346,8 @@ fn setup(
         }
         let down = kind == COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN
             || kind == COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN;
-        if let Some(key) = down.then(|| shortcut(vk)).flatten() {
+        let find = STATE.with_borrow(|s| s.slots.get(&handle).is_some_and(|slot| slot.find));
+        if let Some(key) = down.then(|| shortcut(vk, find)).flatten() {
             emit(Event::Key(key));
         }
         Ok(())
@@ -391,6 +397,33 @@ fn page_origin(handle: u64) -> String {
     format!("https://webview-{handle}.localhost/")
 }
 
+/// Webview `handle`'s background, behind a page that has none: the
+/// theme's editor or, in the side bar, side bar background.
+fn set_background(handle: u64, controller: &ICoreWebView2Controller) {
+    let bg = STATE.with_borrow(|s| {
+        let sidebar = s.slots.get(&handle).is_some_and(|slot| slot.sidebar);
+        let key = if sidebar { "sidebarBackground" } else { "background" };
+        s.theme[key].as_str().and_then(parse_rgb)
+    });
+    let (r, g, b) = bg.unwrap_or((30, 30, 30));
+    if let Ok(c2) = controller.cast::<ICoreWebView2Controller2>() {
+        let color = COREWEBVIEW2_COLOR { A: 255, R: r, G: g, B: b };
+        unsafe { c2.SetDefaultBackgroundColor(color) }.ok();
+    }
+}
+
+/// Puts webview `handle` in the side bar, for its background.
+pub fn set_sidebar(handle: u64) {
+    let controller = STATE.with_borrow_mut(|s| {
+        let slot = s.slots.get_mut(&handle)?;
+        slot.sidebar = true;
+        slot.controller.clone()
+    });
+    if let Some(controller) = controller {
+        set_background(handle, &controller);
+    }
+}
+
 fn parse_rgb(hex: &str) -> Option<(u8, u8, u8)> {
     let hex = hex.strip_prefix('#')?;
     let at = |i: usize| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok();
@@ -400,7 +433,8 @@ fn parse_rgb(hex: &str) -> Option<(u8, u8, u8)> {
 /// A key pressed with Ctrl or Alt, or a function key, as a gpui keystroke
 /// for vsn's keybindings. Clipboard, undo, select all and find stay the
 /// page's, as VS Code leaves them to its webviews.
-fn shortcut(vk: u32) -> Option<String> {
+/// With `find` (`enableFindWidget`), Ctrl+F is vsn's too.
+fn shortcut(vk: u32, find: bool) -> Option<String> {
     let held = |k: VIRTUAL_KEY| unsafe { GetKeyState(k.0 as i32) } < 0;
     let (ctrl, alt, shift) = (held(VK_CONTROL), held(VK_MENU), held(VK_SHIFT));
     let win = held(VK_LWIN) || held(VK_RWIN);
@@ -440,7 +474,8 @@ fn shortcut(vk: u32) -> Option<String> {
     let page_owns = ctrl
         && !alt
         && match key.as_str() {
-            "c" | "v" | "x" | "z" | "y" | "a" | "f" => !shift || key == "z",
+            "f" => !shift && !find,
+            "c" | "v" | "x" | "z" | "y" | "a" => !shift || key == "z",
             _ => false,
         };
     if page_owns {
@@ -721,6 +756,12 @@ pub fn set_theme(theme: Value) {
     for webview in webviews {
         post_to(&webview, &msg);
     }
+    let controllers: Vec<(u64, ICoreWebView2Controller)> = STATE.with_borrow(|s| {
+        (s.slots.iter()).filter_map(|(h, slot)| Some((*h, slot.controller.clone()?))).collect()
+    });
+    for (handle, controller) in controllers {
+        set_background(handle, &controller);
+    }
 }
 
 /// Shows webview `handle` at `bounds`, or hides it, its visual going in
@@ -928,6 +969,83 @@ pub fn focus(handle: u64) {
     let controller = STATE.with_borrow(|s| s.slots.get(&handle)?.controller.clone());
     if let Some(controller) = controller {
         unsafe { controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC) }.ok();
+    }
+}
+
+/// Gives webview `handle` vsn's find widget (`enableFindWidget`).
+pub fn set_find(handle: u64, on: bool) {
+    STATE.with_borrow_mut(|s| s.slots.get_mut(&handle).map(|slot| slot.find = on));
+}
+
+/// Finds `term` in webview `handle`'s page, highlighting every match, or
+/// steps to the next (`back`: previous) match when it's the term already
+/// found. WebView2's own find bar stays hidden.
+pub fn find(handle: u64, term: &str, case: bool, back: bool) {
+    let Some((webview, env, again, hooked)) = STATE.with_borrow_mut(|s| {
+        let env = s.env.clone()?;
+        let slot = s.slots.get_mut(&handle)?;
+        let key = Some((term.to_string(), case));
+        let again = slot.finding == key;
+        slot.finding = key;
+        let hooked = std::mem::replace(&mut slot.find_hooked, true);
+        Some((slot.webview.clone()?, env, again, hooked))
+    }) else {
+        return;
+    };
+    let Ok(find) = webview.cast::<ICoreWebView2_28>().and_then(|w| unsafe { w.Find() }) else {
+        return;
+    };
+    if !hooked {
+        let report = move |find: Option<ICoreWebView2Find>| {
+            let (mut active, mut count) = (-1, 0);
+            if let Some(find) = find {
+                unsafe { find.ActiveMatchIndex(&mut active).ok() };
+                unsafe { find.MatchCount(&mut count).ok() };
+            }
+            emit(Event::Find(handle, active, count));
+        };
+        let changed = FindActiveMatchIndexChangedEventHandler::create(Box::new(move |f, _| {
+            report(f);
+            Ok(())
+        }));
+        let counted = FindMatchCountChangedEventHandler::create(Box::new(move |f, _| {
+            report(f);
+            Ok(())
+        }));
+        let mut token = 0;
+        unsafe {
+            find.add_ActiveMatchIndexChanged(&changed, &mut token).ok();
+            find.add_MatchCountChanged(&counted, &mut token).ok();
+        }
+    }
+    if again {
+        unsafe { if back { find.FindPrevious() } else { find.FindNext() } }.ok();
+        return;
+    }
+    let Ok(options) = env.cast::<ICoreWebView2Environment15>().and_then(|e| unsafe { e.CreateFindOptions() })
+    else {
+        return;
+    };
+    let term = CoTaskMemPWSTR::from(term);
+    unsafe {
+        options.SetFindTerm(*term.as_ref().as_pcwstr()).ok();
+        options.SetIsCaseSensitive(case).ok();
+        options.SetSuppressDefaultFindDialog(true).ok();
+        options.SetShouldHighlightAllMatches(true).ok();
+        let done = FindStartCompletedHandler::create(Box::new(|_| Ok(())));
+        find.Start(&options, &done).ok();
+    }
+}
+
+/// Ends find in webview `handle`'s page, clearing its highlights.
+pub fn stop_find(handle: u64) {
+    let webview = STATE.with_borrow_mut(|s| {
+        let slot = s.slots.get_mut(&handle)?;
+        slot.finding = None;
+        slot.webview.clone()
+    });
+    if let Some(find) = webview.and_then(|w| w.cast::<ICoreWebView2_28>().ok()).and_then(|w| unsafe { w.Find() }.ok()) {
+        unsafe { find.Stop() }.ok();
     }
 }
 

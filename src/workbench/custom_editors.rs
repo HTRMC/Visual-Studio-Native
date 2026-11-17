@@ -24,6 +24,8 @@ pub(super) struct DocWebview {
     pub panel: Option<String>,
     /// Closing once its save finishes.
     pub closing: bool,
+    /// `enableFindWidget`: Ctrl+F opens vsn's find over it.
+    pub find: bool,
     pub focus: FocusHandle,
 }
 
@@ -32,6 +34,11 @@ pub(super) struct DocWebview {
 pub(super) struct ViewWebview {
     pub handle: u64,
     pub focus: FocusHandle,
+    /// What the extension set: its `title`, `description` and `badge`
+    /// (count and tooltip).
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub badge: Option<(u64, String)>,
 }
 
 #[derive(Default)]
@@ -49,6 +56,12 @@ pub(super) struct Webviews {
     views: Vec<u64>,
     /// The theme the host and pages last got.
     theme: Value,
+    /// The find widget's box, and the webview it's open over.
+    find: Option<Entity<InputState>>,
+    finding: Option<u64>,
+    find_case: bool,
+    /// Find's active match (from 1; 0 or -1 for none) and match count.
+    find_count: (i32, i32),
 }
 
 /// A custom editor contributed for a file: its `viewType` and display name.
@@ -184,6 +197,12 @@ impl Workbench {
                     webview::Event::Redraw => cx.notify(),
                     webview::Event::Open(url) => cx.open_url(&url),
                     webview::Event::Error(err) => this.error(err, cx),
+                    webview::Event::Find(handle, active, count) => {
+                        if this.webviews.finding == Some(handle) {
+                            this.webviews.find_count = (active, count);
+                            cx.notify();
+                        }
+                    }
                 });
                 if done.is_err() {
                     return;
@@ -236,6 +255,7 @@ impl Workbench {
             text: !doc.binary,
             panel: None,
             closing: false,
+            find: false,
             focus: cx.focus_handle(),
         });
         let (lang, text, dirty) = (doc.lang, doc.editor.read(cx).value(), doc.dirty);
@@ -255,6 +275,8 @@ impl Workbench {
     }
 
     /// Editor `ix` closed: so does its webview.
+    // ponytail: a closed webview's find stays `finding`, harmlessly: its
+    // slot is gone, and the next Ctrl+F replaces it.
     pub(super) fn webview_closed(&self, doc: &Doc) {
         if let Some(w) = &doc.webview {
             webview::dispose(w.handle);
@@ -386,10 +408,11 @@ impl Workbench {
     pub(super) fn sync_webview_theme(&mut self) {
         let dark = col::editor().l < 0.5;
         let font = "\"Segoe WPC\", \"Segoe UI\", sans-serif";
-        let theme = json!({
+        let mut theme = json!({
             "kind": if dark { "vscode-dark" } else { "vscode-light" },
             "name": terminal::settings()["workbench.colorTheme"],
             "background": hex(col::editor()),
+            "sidebarBackground": hex(col::bg()),
             "vars": {
                 "--vscode-editor-background": hex(col::editor()),
                 "--vscode-editor-foreground": hex(col::fg()),
@@ -474,6 +497,10 @@ impl Workbench {
                 "--vscode-editor-font-size": "14px",
             },
         });
+        // The theme's own colors over vsn's, as VS Code gives every one.
+        if let Some(vars) = theme["vars"].as_object_mut() {
+            vars.extend(super::extensions::WEBVIEW_COLORS.read().unwrap().clone());
+        }
         if theme != self.webviews.theme {
             self.ext
                 .send(json!({ "m": "theme", "kind": if dark { 2 } else { 1 } }));
@@ -482,9 +509,141 @@ impl Workbench {
         }
     }
 
+    /// VS Code's webview find widget, over the active tab's webview when
+    /// it set `enableFindWidget`: finds as you type, highlighting every
+    /// match.
+    pub(super) fn find_in_webview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(handle) = (self.docs.get(self.active).and_then(|d| d.webview.as_ref()))
+            .filter(|w| w.find)
+            .map(|w| w.handle)
+        else {
+            return;
+        };
+        let input = match &self.webviews.find {
+            Some(input) => input.clone(),
+            None => {
+                let input = cx.new(|cx| InputState::new(window, cx).placeholder("Find"));
+                cx.subscribe(&input, |this, _, ev: &InputEvent, cx| match ev {
+                    InputEvent::Change => this.webview_find(false, cx),
+                    InputEvent::PressEnter { shift, .. } => this.webview_find(*shift, cx),
+                    _ => {}
+                })
+                .detach();
+                self.webviews.find = Some(input.clone());
+                input
+            }
+        };
+        if let Some(old) = self.webviews.finding.replace(handle).filter(|h| *h != handle) {
+            webview::stop_find(old);
+        }
+        input.update(cx, |s, cx| {
+            s.focus(window, cx);
+            s.select_all(window, cx);
+        });
+        self.webview_find(false, cx);
+    }
+
+    /// Finds the widget's text, or steps to the next (`back`: previous)
+    /// match when it's the text found already.
+    pub(super) fn webview_find(&mut self, back: bool, cx: &mut Context<Self>) {
+        let (Some(handle), Some(input)) = (self.webviews.finding, &self.webviews.find) else {
+            return;
+        };
+        let term = input.read(cx).value().to_string();
+        if term.is_empty() {
+            webview::stop_find(handle);
+            self.webviews.find_count = (-1, 0);
+            return cx.notify();
+        }
+        webview::find(handle, &term, self.webviews.find_case, back);
+    }
+
+    fn close_webview_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(handle) = self.webviews.finding.take() {
+            webview::stop_find(handle);
+            let doc = (self.docs.iter())
+                .find(|d| d.webview.as_ref().is_some_and(|w| w.handle == handle));
+            if let Some(w) = doc.and_then(|d| d.webview.as_ref()) {
+                window.focus(&w.focus, cx);
+                webview::focus(handle);
+            }
+        }
+        self.webviews.find_count = (-1, 0);
+        cx.notify();
+    }
+
+    fn render_webview_find(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let input = self.webviews.find.as_ref()?;
+        let (active, count) = self.webviews.find_count;
+        let empty = input.read(cx).value().is_empty();
+        let label = match (active, count) {
+            _ if empty => String::new(),
+            (_, 0) => "No results".into(),
+            // WebView2 counts matches from 1.
+            (a, n) if a >= 1 => format!("{a} of {n}"),
+            (_, n) => format!("? of {n}"),
+        };
+        type Act = fn(&mut Workbench, &mut Window, &mut Context<Workbench>);
+        let button = |id: &'static str, ch: char, text: &'static str, act: Act| {
+            action_button(id, ch)
+                .size(px(20.))
+                .tooltip(tip(text))
+                .on_click(cx.listener(move |this, _, w, cx| act(this, w, cx)))
+        };
+        let case = self.webviews.find_case;
+        let case = super::search::find_toggle("webview-find-case", icon::CASE_SENSITIVE, case)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.webviews.find_case ^= true;
+                // A new search, not the next match of the old one.
+                if let Some(h) = this.webviews.finding {
+                    webview::stop_find(h);
+                }
+                this.webview_find(false, cx);
+            }));
+        let prev: Act = |this, _, cx| this.webview_find(true, cx);
+        let next: Act = |this, _, cx| this.webview_find(false, cx);
+        Some(
+            h_flex()
+                .id("webview-find")
+                .key_context("WebviewFind")
+                .occlude()
+                .absolute()
+                .top_0()
+                .right(px(14.))
+                .h(px(33.))
+                .px(px(4.))
+                .gap(px(2.))
+                .bg(c(0x252526))
+                .shadow_md()
+                .text_size(px(13.))
+                .capture_action(cx.listener(|this, _: &input::Escape, window, cx| {
+                    cx.stop_propagation();
+                    this.close_webview_find(window, cx)
+                }))
+                .capture_action(cx.listener(|this, _: &FindInWebview, window, cx| {
+                    cx.stop_propagation();
+                    this.find_in_webview(window, cx)
+                }))
+                .child(
+                    div()
+                        .w(px(240.))
+                        .border_1()
+                        .border_color(col::accent())
+                        .bg(col::input())
+                        .child(Input::new(input).appearance(false).text_size(px(13.)).suffix(case)),
+                )
+                .child(div().min_w(px(68.)).px(px(4.)).text_size(px(12.)).child(label))
+                .child(button("webview-find-up", icon::ARROW_UP, "Previous Match (Shift+Enter)", prev))
+                .child(button("webview-find-down", icon::ARROW_DOWN, "Next Match (Enter)", next))
+                .child(button("webview-find-close", icon::CLOSE, "Close (Escape)", Self::close_webview_find))
+                .into_any_element(),
+        )
+    }
+
     /// The editor area of a webview tab: a hole gpui's renderer leaves
     /// for the webview under it, which gets the mouse while it's over it.
-    pub(super) fn render_webview(&self, doc: &Doc) -> AnyElement {
+    pub(super) fn render_webview(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+        let doc = &self.docs[ix];
         let w = doc.webview.as_ref().unwrap();
         let (handle, shown, focus) = (
             w.handle,
@@ -497,11 +656,19 @@ impl Workbench {
         if w.panel.is_none() {
             exthost::resource_keys(&mut keys, &doc.path);
         }
+        if w.find {
+            keys.add("webviewFindWidgetEnabled");
+        }
+        let find = (self.webviews.finding == Some(handle))
+            .then(|| self.render_webview_find(cx))
+            .flatten();
         div()
             .size_full()
+            .relative()
             .key_context(keys)
             .track_focus(&w.focus)
             .child(webview_canvas(handle, shown, focus))
+            .children(find)
             .into_any_element()
     }
 
@@ -617,6 +784,8 @@ impl Workbench {
                 self.sync_webview_theme();
                 webview::create(handle, roots(msg).unwrap_or_default());
                 let (view_type, title) = (text("viewType"), text("title"));
+                let find = msg["find"] == true;
+                webview::set_find(handle, find);
                 self.in_window(cx, move |this, window, cx| {
                     let path = PathBuf::from(format!("webview-panel-{handle}"));
                     this.push_doc(path, String::new(), Encoding::Utf8, true, false, window, cx);
@@ -627,10 +796,24 @@ impl Workbench {
                         text: false,
                         panel: Some(title),
                         closing: false,
+                        find,
                         focus: cx.focus_handle(),
                     });
                     this.activate(ix, window, cx);
                 });
+            }
+            "webviewViewInfo" => {
+                let handle = msg["handle"].as_u64();
+                let w = self.ext.webview_views.values_mut().find(|w| Some(w.handle) == handle);
+                if let Some(w) = w {
+                    let some = |k: &str| msg[k].as_str().map(str::to_string);
+                    w.title = some("title");
+                    w.description = some("description").filter(|d| !d.is_empty());
+                    w.badge = (msg["badge"]["value"].as_u64())
+                        .filter(|v| *v > 0)
+                        .map(|v| (v, msg["badge"]["tooltip"].as_str().unwrap_or_default().to_string()));
+                    cx.notify();
+                }
             }
             "webviewViewShow" => {
                 let id = text("viewId");
@@ -667,6 +850,8 @@ impl Workbench {
                     doc.binary = !text;
                     if let Some(w) = doc.webview.as_mut() {
                         w.text = text;
+                        w.find = msg["find"] == true;
+                        webview::set_find(w.handle, w.find);
                     }
                 }
             }
@@ -674,6 +859,22 @@ impl Workbench {
                 let Some(ix) = self.webview_doc(&msg["handle"]) else {
                     return true;
                 };
+                // Saved As: the tab opens the new file, in the same editor,
+                // as VS Code's.
+                if let Some(to) = msg["savedAs"].as_str().map(PathBuf::from) {
+                    let handle = msg["handle"].clone();
+                    self.in_window(cx, move |this, _, cx| {
+                        let Some(ix) = this.webview_doc(&handle) else { return };
+                        this.webview_closed(&this.docs[ix]);
+                        let Some(w) = this.docs[ix].webview.take() else { return };
+                        let doc = &mut this.docs[ix];
+                        doc.stamp = file_stamp(&to);
+                        doc.path = to;
+                        doc.dirty = false;
+                        this.attach_custom_editor(ix, w.view_type, cx);
+                    });
+                    return true;
+                }
                 let doc = &mut self.docs[ix];
                 doc.dirty = msg["dirty"] == true;
                 let close = !doc.dirty
