@@ -240,6 +240,7 @@ actions!(
         DeleteFilePermanently,
         FindInFolder,
         OpenSettingsJson,
+        OpenKeybindingsJson,
         OpenSettings,
         MarkdownShowPreview,
         MarkdownShowPreviewToSide,
@@ -260,6 +261,15 @@ thread_local! {
 /// Remembers the bindings gpui-kit's init made; call before binding vsn's.
 pub fn remember_kit_keys(cx: &App) {
     KIT_KEYS.set(cx.key_bindings().borrow().bindings().cloned().collect());
+}
+
+/// Binds every key again: gpui-kit's, vsn's, extensions' and the user's.
+pub(crate) fn rebind_keys(cx: &mut App) {
+    let mapper = cx.keyboard_mapper().clone();
+    cx.clear_key_bindings();
+    // Clearing took gpui-kit's too: inputs lost Backspace and the arrows.
+    cx.bind_keys(KIT_KEYS.with_borrow(|k| k.clone()));
+    cx.bind_keys(key_bindings(mapper.as_ref()));
 }
 
 pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
@@ -543,6 +553,9 @@ pub fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBinding> {
         KeyBinding::new("alt-right", FocusNextTerminal, split),
         KeyBinding::new("alt-down", FocusNextTerminal, split),
     ]);
+    // The user's last, over everything, as VS Code ranks keybindings.json.
+    let user = exthost::keybindings_path().and_then(|p| fs::read_to_string(p).ok());
+    list.extend(exthost::user_key_bindings(&user.unwrap_or_default(), mapper));
     list
 }
 
@@ -2474,9 +2487,9 @@ impl Workbench {
         let Some(dir) = path.parent() else { return };
         fs::create_dir_all(dir).ok();
         let (tx, mut rx) = futures::channel::mpsc::unbounded::<()>();
-        let file = path.clone();
+        let files = [path.clone(), path.with_file_name("keybindings.json")];
         let watcher = notify::recommended_watcher(move |ev: notify::Result<notify::Event>| {
-            if ev.is_ok_and(|ev| ev.paths.iter().any(|p| p == &file)) {
+            if ev.is_ok_and(|ev| ev.paths.iter().any(|p| files.contains(p))) {
                 tx.unbounded_send(()).ok();
             }
         });
@@ -2488,6 +2501,8 @@ impl Workbench {
             while rx.next().await.is_some() {
                 while rx.try_recv().is_ok() {}
                 let alive = this.update(cx, |this, cx| {
+                    // ponytail: either file's change rebinds every key; cheap.
+                    rebind_keys(cx);
                     this.in_window(cx, |this, window, cx| this.recheck_settings(window, cx))
                 });
                 if alive.is_err() {
@@ -7123,6 +7138,9 @@ impl Render for Workbench {
                     this.open_settings(window, cx)
                 }),
             )
+            .on_action(cx.listener(|this, _: &OpenKeybindingsJson, window, cx| {
+                this.open_keybindings(window, cx)
+            }))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
                 this.open_settings_ui("", window, cx)
             }))
@@ -7417,7 +7435,7 @@ impl Render for Workbench {
                     if (a.when.as_deref()).is_some_and(|w| !exthost::when_holds(w, &focus)) {
                         return cx.propagate();
                     }
-                    this.run_extension_command(a.id.clone(), a.args(), cx)
+                    this.run_any_command(a.id.clone(), a.args(), window, cx)
                 }),
             )
             .on_action(cx.listener(|this, _: &InstallFromVsix, _, cx| this.install_from_vsix(cx)))
@@ -8191,6 +8209,36 @@ mod tests {
             Some("FocusPreviousTerminal")
         );
         assert_eq!(action("ctrl-s", "Workbench").as_deref(), Some("Save"));
+    }
+
+    #[test]
+    fn user_keybindings_win_in_the_terminal() {
+        use crate::gpui::{DummyKeyboardMapper, KeyContext, Keymap, Keystroke};
+        let user = r#"[ // VS Code's keybindings.json, comments and all
+            { "key": "shift+enter", "command": "workbench.action.terminal.sendSequence",
+              "args": { "text": "\u001b\r" }, "when": "terminalFocus" },
+            { "key": "ctrl+s", "command": "-workbench.action.files.save" },
+        ]"#;
+        let mut list = super::key_bindings(&DummyKeyboardMapper);
+        list.extend(super::exthost::user_key_bindings(user, &DummyKeyboardMapper));
+        let keymap = Keymap::new(list);
+        let stack = [
+            KeyContext::parse("Root").unwrap(),
+            KeyContext::parse("Terminal terminalFocus").unwrap(),
+        ];
+        let keys = [Keystroke::parse("shift-enter").unwrap()];
+        let (b, _) = keymap.bindings_for_input(&keys, &stack);
+        let action = b.first().map(|b| b.action().as_any());
+        let run = action
+            .and_then(|a| a.downcast_ref::<super::exthost::RunExtensionCommand>())
+            .expect("shift-enter bound");
+        assert_eq!(run.id, "workbench.action.terminal.sendSequence");
+        assert_eq!(run.args()[0]["text"], "\u{1b}\r");
+        assert_eq!(run.when.as_deref(), Some("terminalFocus"));
+        // The removal entry binds nothing; Ctrl+S still saves.
+        let keys = [Keystroke::parse("ctrl-s").unwrap()];
+        let (b, _) = keymap.bindings_for_input(&keys, &[KeyContext::parse("Workbench").unwrap()]);
+        assert!(b.first().is_some_and(|b| b.action().name().ends_with("Save")));
     }
 
     #[test]

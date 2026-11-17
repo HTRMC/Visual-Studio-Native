@@ -514,8 +514,12 @@ Differences from VS Code still to close, smallest first within each area.
       (toasts and center, at VS Code's 8/36 insets) and dialogs now take
       its 8px corner.
 - [x] The palette lacks "Preferences: Open User Settings (JSON)".
-- [ ] The palette lacks "Preferences: Open Keyboard Shortcuts" and the
-      other Preferences commands (no keybindings editor or keybindings.json).
+- [x] No user keybindings.json; it's read beside settings.json (`key`,
+      `command`, `when`, `args`, applied live), "Preferences: Open Keyboard
+      Shortcuts (JSON)" opens it, and `workbench.action.terminal.sendSequence`
+      types its text.
+- [ ] The palette lacks "Preferences: Open Keyboard Shortcuts" (the
+      keybindings editor); keybindings.json's "-command" removals are skipped.
 - [x] The "files to exclude" box lacks VS Code's "Use Exclude Settings and
       Ignore Files" toggle (the search always honours .gitignore).
 - [x] Search and the explorer ignore the `files.exclude` and `search.exclude`

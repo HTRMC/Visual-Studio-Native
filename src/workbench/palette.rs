@@ -63,6 +63,7 @@ fn commands(focus: &[KeyContext]) -> Vec<(Cow<'static, str>, Box<dyn Action>)> {
                 id,
                 path: None,
                 when: None,
+                args: None,
             });
             (label.into(), action)
         });
@@ -335,6 +336,10 @@ fn builtin_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         (
             "Preferences: Open User Settings (JSON)",
             Box::new(OpenSettingsJson),
+        ),
+        (
+            "Preferences: Open Keyboard Shortcuts (JSON)",
+            Box::new(OpenKeybindingsJson),
         ),
         ("File: Exit", Box::new(Quit)),
         ("Close Window", Box::new(CloseWindow)),

@@ -507,12 +507,28 @@ impl Workbench {
     /// Open User Settings (JSON): the user settings.json, created empty if
     /// missing, as VS Code's does.
     pub(super) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(path) = super::terminal::settings_path() else {
+        self.open_user_file(super::terminal::settings_path(), "{}\n", window, cx)
+    }
+
+    /// Open Keyboard Shortcuts (JSON): the user keybindings.json, created
+    /// empty if missing.
+    pub(super) fn open_keybindings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_user_file(super::exthost::keybindings_path(), "[]\n", window, cx)
+    }
+
+    fn open_user_file(
+        &mut self,
+        path: Option<PathBuf>,
+        empty: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(path) = path else {
             return;
         };
         if !path.exists() {
             let made = (path.parent().map_or(Ok(()), fs::create_dir_all))
-                .and_then(|_| fs::write(&path, "{}\n"));
+                .and_then(|_| fs::write(&path, empty));
             if let Err(err) = made {
                 return self.error(format!("Unable to create '{}' ({err})", path.display()), cx);
             }

@@ -32,6 +32,8 @@ pub(crate) struct RunExtensionCommand {
     /// A keybinding's `when`: when it doesn't hold, the key goes on to the
     /// next binding.
     pub when: Option<String>,
+    /// A user keybinding's `args`, passed instead of the menu's Uri.
+    pub args: Option<Value>,
 }
 
 /// Equal whatever their `when`, so the palette finds a command's keybinding.
@@ -43,6 +45,9 @@ impl PartialEq for RunExtensionCommand {
 
 impl RunExtensionCommand {
     pub(super) fn args(&self) -> Vec<Value> {
+        if let Some(args) = &self.args {
+            return vec![args.clone()];
+        }
         uri_args(self.path.as_deref())
     }
 }
@@ -644,6 +649,7 @@ pub(super) fn editor_context_menu(menu: NativeMenu, path: &Path, window: &Window
             id,
             path,
             when: None,
+            args: None,
         };
         menu.menu(item.title, Box::new(action))
     })
@@ -665,23 +671,56 @@ pub(super) fn key_bindings(mapper: &dyn PlatformKeyboardMapper) -> Vec<KeyBindin
             ) else {
                 continue;
             };
-            let keys = (key.to_lowercase().split_whitespace())
-                .map(|chord| chord.replace('+', "-"))
-                .collect::<Vec<_>>()
-                .join(" ");
-            // Matching on the focused element, as VS Code's keybindings
-            // rank above its defaults; `when` is checked as the key comes.
-            let context = KeyBindingContextPredicate::parse("!vsn_anywhere").ok();
-            let action = Box::new(RunExtensionCommand {
-                id: id.into(),
-                path: None,
-                when: k["when"].as_str().map(str::to_string),
-            });
-            let context = context.map(Into::into);
-            list.extend(KeyBinding::load(&keys, action, context, false, None, mapper).ok());
+            list.extend(command_binding(key, id, k, mapper));
         }
     }
     list
+}
+
+/// A VS Code keybinding entry `k` binding `key` to command `id`.
+fn command_binding(
+    key: &str,
+    id: &str,
+    k: &Value,
+    mapper: &dyn PlatformKeyboardMapper,
+) -> Option<KeyBinding> {
+    let keys = (key.to_lowercase().split_whitespace())
+        .map(|chord| chord.replace('+', "-"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    // Matching on the focused element, as VS Code's keybindings
+    // rank above its defaults; `when` is checked as the key comes.
+    let context = KeyBindingContextPredicate::parse("!vsn_anywhere").ok();
+    let action = Box::new(RunExtensionCommand {
+        id: id.into(),
+        path: None,
+        when: k["when"].as_str().map(str::to_string),
+        args: (!k["args"].is_null()).then(|| k["args"].clone()),
+    });
+    let context = context.map(Into::into);
+    KeyBinding::load(&keys, action, context, false, None, mapper).ok()
+}
+
+/// The user's keybindings.json, beside settings.json.
+pub(super) fn keybindings_path() -> Option<PathBuf> {
+    Some(super::terminal::settings_path()?.with_file_name("keybindings.json"))
+}
+
+/// The user's keybindings.json, as VS Code's: `key`, `command`, `when` and
+/// `args`, ranked above the built-in and extensions' bindings.
+// ponytail: a "-command" entry (removing a default binding) is skipped.
+pub(super) fn user_key_bindings(
+    text: &str,
+    mapper: &dyn PlatformKeyboardMapper,
+) -> Vec<KeyBinding> {
+    let text = debug::strip_jsonc(text.trim_start_matches('\u{feff}'));
+    let list = serde_json::from_str::<Value>(&text).ok();
+    (list.as_ref().and_then(Value::as_array).into_iter().flatten())
+        .filter_map(|k| {
+            let id = k["command"].as_str().filter(|id| !id.starts_with('-'))?;
+            command_binding(k["key"].as_str()?, id, k, mapper)
+        })
+        .collect()
 }
 
 macro_rules! builtins {
@@ -752,6 +791,7 @@ const BUILTINS: &[Builtin] = builtins! {
     "workbench.action.openWorkspaceSettings" => OpenSettings,
     "vscode.openFolder" => OpenFolder,
     "workbench.action.openSettingsJson" => OpenSettingsJson,
+    "workbench.action.openGlobalKeybindingsFile" => OpenKeybindingsJson,
     "workbench.action.selectTheme" => SelectColorTheme,
     "workbench.action.selectIconTheme" => SelectIconTheme,
     "notifications.showList" => ShowNotifications,
@@ -1064,6 +1104,10 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if id == "workbench.action.terminal.sendSequence" {
+            let text = args.first().and_then(|a| a["text"].as_str()).unwrap_or("");
+            return self.send_sequence(text, cx);
+        }
         match builtin_action(&id) {
             Some(action) => window.dispatch_action(action, cx),
             None => self.run_extension_command(id, args, cx),
@@ -1108,11 +1152,7 @@ impl Workbench {
     /// activate again in a new one. Keybindings follow the installed set.
     pub(super) fn restart_extension_host(&mut self, cx: &mut Context<Self>) {
         SET_CONTEXT.lock().unwrap().clear();
-        let mapper = cx.keyboard_mapper().clone();
-        cx.clear_key_bindings();
-        // Clearing took gpui-kit's too: inputs lost Backspace and the arrows.
-        cx.bind_keys(super::KIT_KEYS.with_borrow(|k| k.clone()));
-        cx.bind_keys(super::key_bindings(mapper.as_ref()));
+        super::rebind_keys(cx);
         let js = self.ext.out.take().is_some();
         let wasm = self.ext.wasm.take().is_some();
         if js || wasm {

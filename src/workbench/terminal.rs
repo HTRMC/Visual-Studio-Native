@@ -1047,6 +1047,15 @@ impl Workbench {
         self.show_match(cx);
     }
 
+    /// workbench.action.terminal.sendSequence: types `text` into the
+    /// active terminal, unbracketed.
+    pub(super) fn send_sequence(&mut self, text: &str, cx: &mut Context<Self>) {
+        if let Some(t) = self.active_id().and_then(|id| self.terminal(id)) {
+            t.write(text.as_bytes());
+            cx.notify();
+        }
+    }
+
     fn active_id(&self) -> Option<u64> {
         self.terminals.list.get(self.terminals.active).map(|t| t.id)
     }
