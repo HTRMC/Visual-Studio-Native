@@ -618,26 +618,77 @@ pub(super) fn profiles() -> Vec<Profile> {
 }
 
 /// The installed WSL distros, as `wsl -l -q` lists them (in UTF-16), minus
-/// Docker's internal ones, which VS Code hides too. Asked once.
+/// Docker's internal ones, which VS Code hides too. Asked once, on its own
+/// thread: on some machines (WSL half-installed, its service stuck) `wsl.exe`
+/// never returns, and the first terminal is opened while the window first
+/// paints. The first call waits at most `WSL_WAIT`; past that WSL profiles
+/// are left out until the answer arrives.
 fn wsl_distros() -> &'static [String] {
-    static DISTROS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-    DISTROS.get_or_init(|| {
-        let mut wsl = std::process::Command::new("wsl.exe");
-        wsl.args(["-l", "-q"]);
-        #[cfg(windows)]
-        std::os::windows::process::CommandExt::creation_flags(&mut wsl, 0x0800_0000); // CREATE_NO_WINDOW
-        let Some(out) = wsl.output().ok().filter(|o| o.status.success()) else {
-            return Vec::new();
-        };
-        let utf16: Vec<u16> = (out.stdout.as_chunks().0.iter())
-            .map(|&b| u16::from_le_bytes(b))
-            .collect();
-        (String::from_utf16_lossy(&utf16).lines())
-            .map(|l| l.trim_matches(|c: char| c.is_whitespace() || c == '\0'))
-            .filter(|l| !l.is_empty() && !l.starts_with("docker-desktop"))
-            .map(Into::into)
-            .collect()
-    })
+    use std::sync::{Once, OnceLock};
+    use std::time::{Duration, Instant};
+    const WSL_WAIT: Duration = Duration::from_secs(2);
+    static DISTROS: OnceLock<Vec<String>> = OnceLock::new();
+    static ASKED: OnceLock<Instant> = OnceLock::new();
+    static START: Once = Once::new();
+    START.call_once(|| {
+        ASKED.set(Instant::now()).ok();
+        std::thread::spawn(|| {
+            DISTROS.set(list_wsl_distros()).ok();
+        });
+    });
+    let deadline = *ASKED.get().unwrap() + WSL_WAIT;
+    while DISTROS.get().is_none() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    DISTROS.get().map_or(&[], Vec::as_slice)
+}
+
+/// Runs `wsl -l -q`, killing it if it hasn't answered in 10 seconds.
+fn list_wsl_distros() -> Vec<String> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let mut wsl = std::process::Command::new("wsl.exe");
+    wsl.args(["-l", "-q"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::creation_flags(&mut wsl, 0x0800_0000); // CREATE_NO_WINDOW
+    let Ok(mut child) = wsl.spawn() else {
+        return Vec::new();
+    };
+    let mut stdout = child.stdout.take().unwrap();
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).ok();
+        bytes
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50))
+            }
+            _ => {
+                child.kill().ok();
+                child.wait().ok();
+                break None;
+            }
+        }
+    };
+    let bytes = reader.join().unwrap_or_default();
+    if !status.is_some_and(|s| s.success()) {
+        return Vec::new();
+    }
+    let utf16: Vec<u16> = (bytes.as_chunks().0.iter())
+        .map(|&b| u16::from_le_bytes(b))
+        .collect();
+    (String::from_utf16_lossy(&utf16).lines())
+        .map(|l| l.trim_matches(|c: char| c.is_whitespace() || c == '\0'))
+        .filter(|l| !l.is_empty() && !l.starts_with("docker-desktop"))
+        .map(Into::into)
+        .collect()
 }
 
 /// User settings, a subset of VS Code's `settings.json`.
