@@ -46,6 +46,7 @@ mod palette;
 mod search;
 mod settings_ui;
 mod terminal;
+pub mod update;
 mod wasmhost;
 #[cfg(windows)]
 mod webview;
@@ -135,6 +136,7 @@ actions!(
         ShowExtensions,
         CommandPalette,
         About,
+        CheckForUpdates,
         QuickOpen,
         OpenView,
         GoToLine,
@@ -1501,6 +1503,11 @@ pub struct Workbench {
     /// Every notification, newest first, as the bell's center lists them.
     /// Notifications, newest first.
     notes: Vec<(SharedString, Severity)>,
+    /// vsn's own buttons on a notification, by its message, the first one
+    /// primary: each one's title and what it does once clicked.
+    note_actions: HashMap<SharedString, Vec<(SharedString, NoteAction)>>,
+    /// The update check: what it found and its timer.
+    update: update::Update,
     /// The breadcrumb row, scrolled to show the file name.
     crumbs: ScrollHandle,
     /// The file and row width the breadcrumb and the tab strip were last
@@ -1627,6 +1634,8 @@ impl Workbench {
             palette: palette::Palette::new(window, cx),
             toasts: Vec::new(),
             notes: Vec::new(),
+            note_actions: HashMap::new(),
+            update: Default::default(),
             crumbs: ScrollHandle::new(),
             crumbs_at: Default::default(),
             tabs_scroll: ScrollHandle::new(),
@@ -6425,6 +6434,7 @@ impl Workbench {
         for (_, (id, _)) in std::mem::take(&mut self.ext.buttons) {
             self.ext.answer(id, serde_json::Value::Null);
         }
+        self.note_actions.clear();
         self.notes.clear();
         self.toasts.clear();
         self.unseen = 0;
@@ -6438,6 +6448,7 @@ impl Workbench {
         if let Some((id, _)) = self.ext.buttons.remove(message) {
             self.ext.answer(id, serde_json::Value::Null);
         }
+        self.note_actions.remove(message);
         let count = self.notes.len();
         self.notes.retain(|n| &n.0 != message);
         if self.notes.len() < count && !self.center {
@@ -6513,38 +6524,46 @@ impl Workbench {
             .when_some(self.ext.buttons.get(message), |d, (_, titles)| {
                 let buttons = titles.iter().enumerate().map(|(i, title)| {
                     let m = message.clone();
-                    let button = Button::new(SharedString::from(format!("{id}-button-{i}")))
-                        .small()
-                        .label(title.clone())
-                        .on_click(cx.listener(move |this, _, _, cx| {
+                    note_button(format!("{id}-button-{i}"), i == 0, title.clone().into(), cx).on_click(
+                        cx.listener(move |this, _, _, cx| {
                             if let Some((q, _)) = this.ext.buttons.remove(&m) {
                                 this.ext.answer(q, serde_json::json!(i));
                             }
                             this.clear_note(&m, cx);
                             this.center &= !this.notes.is_empty();
-                        }));
-                    match i {
-                        0 => {
-                            let blue = ButtonCustomVariant::new(cx)
-                                .color(c(0x0078D4))
-                                .hover(c(0x026EC1))
-                                .active(c(0x026EC1))
-                                .foreground(c(0xFFFFFF));
-                            button.custom(blue).bg(c(0x0078D4))
-                        }
-                        // button.secondaryBackground
-                        _ => button.bg(c(0x313131)),
-                    }
+                        }),
+                    )
                 });
-                d.child(
-                    h_flex()
-                        .justify_end()
-                        .gap(px(8.))
-                        .px(px(8.))
-                        .pb(px(8.))
-                        .children(buttons),
-                )
+                d.child(note_buttons().children(buttons))
             })
+            // vsn's own buttons, such as the update's.
+            .when_some(self.note_actions.get(message), |d, actions| {
+                let buttons = actions.iter().enumerate().map(|(i, (title, act))| {
+                    let (m, act) = (message.clone(), act.clone());
+                    note_button(format!("{id}-action-{i}"), i == 0, title.clone(), cx).on_click(
+                        cx.listener(move |this, _, window, cx| {
+                            this.clear_note(&m, cx);
+                            this.center &= !this.notes.is_empty();
+                            act(this, window, cx);
+                        }),
+                    )
+                });
+                d.child(note_buttons().children(buttons))
+            })
+    }
+
+    /// A notification with vsn's own buttons, the first one primary.
+    fn note_with(
+        &mut self,
+        message: impl Into<SharedString>,
+        severity: Severity,
+        actions: Vec<(SharedString, NoteAction)>,
+        cx: &mut Context<Self>,
+    ) {
+        let message = message.into();
+        self.note(message.clone(), severity, cx);
+        self.note_actions.insert(message, actions);
+        cx.notify();
     }
 
     /// VS Code's notification center, opened from the bell.
@@ -6676,6 +6695,30 @@ fn md_escape(text: &str) -> String {
         out.push(ch);
     }
     out
+}
+
+/// What one of vsn's own notification buttons does.
+type NoteAction = std::rc::Rc<dyn Fn(&mut Workbench, &mut Window, &mut Context<Workbench>)>;
+
+/// A notification's button: the first one blue (button.background), the
+/// rest button.secondaryBackground, as in VS Code.
+fn note_button(id: String, primary: bool, title: SharedString, cx: &App) -> Button {
+    let button = Button::new(SharedString::from(id)).small().label(title);
+    if !primary {
+        return button.bg(c(0x313131));
+    }
+    // The custom variant dims its colour, so bg sets it too.
+    let blue = ButtonCustomVariant::new(cx)
+        .color(c(0x0078D4))
+        .hover(c(0x026EC1))
+        .active(c(0x026EC1))
+        .foreground(c(0xFFFFFF));
+    button.custom(blue).bg(c(0x0078D4))
+}
+
+/// The row a notification's buttons sit in, right-aligned under it.
+fn note_buttons() -> Div {
+    h_flex().justify_end().gap(px(8.)).px(px(8.)).pb(px(8.))
 }
 
 /// A notification's severity; settings.json errors offer Open Settings.
@@ -7300,6 +7343,7 @@ impl Render for Workbench {
                 this.open_palette(">", window, cx)
             }))
             .on_action(cx.listener(|this, _: &About, window, cx| this.about(window, cx)))
+            .on_action(cx.listener(|this, _: &CheckForUpdates, _, cx| this.check_for_updates(true, cx)))
             .on_action(cx.listener(Self::new_text_file))
             .on_action(cx.listener(Self::revert_file))
             .on_action(
@@ -8241,6 +8285,8 @@ fn app_menu(
             .separator()
             .menu("View License", noop())
             .menu("Toggle Developer Tools", noop())
+            .separator()
+            .menu("Check for Updates...", Box::new(CheckForUpdates))
             .separator()
             .menu("About", Box::new(About)),
     }

@@ -69,6 +69,7 @@ fn main() {
                 wb.update(cx, |wb, cx| {
                     wb.restore_session(window, cx);
                     wb.check_extension_updates(cx);
+                    wb.start_update_checks(cx);
                     files
                         .into_iter()
                         .for_each(|f| wb.open_recent(f, window, cx))
@@ -78,4 +79,6 @@ fn main() {
             .expect("open window");
             cx.activate(true);
         });
+    // After the last window: a setup Update Now downloaded runs now.
+    workbench::update::launch_pending();
 }

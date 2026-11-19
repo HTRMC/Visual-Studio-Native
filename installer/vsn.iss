@@ -67,8 +67,16 @@ Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environmen
 
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
+; vsn's Update Now runs this setup silently with /update=1 once it has quit;
+; start it again, as VS Code's update does.
+Filename: "{app}\{#AppExe}"; Flags: nowait runasoriginaluser; Check: IsUpdate
 
 [Code]
+function IsUpdate: Boolean;
+begin
+  Result := ExpandConstant('{param:update|0}') = '1';
+end;
+
 function PathKey(var Root: Integer): String;
 begin
   if IsAdminInstallMode then begin

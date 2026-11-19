@@ -176,6 +176,17 @@ fn builtin() -> Map<String, Value> {
             "default": "copyPaste",
             "description": "Controls how terminal reacts to right click.",
         },
+        "update.mode": {
+            "type": "string",
+            "enum": ["default", "manual", "none"],
+            "enumDescriptions": [
+                "Check for updates automatically and download them in the background.",
+                "Only check for updates from Help > Check for Updates....",
+                "Never check for updates.",
+            ],
+            "default": "default",
+            "markdownDescription": "Configure whether you receive automatic updates. Updates come from the GitHub releases.",
+        },
         "terminal.integrated.middleClickBehavior": {
             "type": "string",
             "enum": ["default", "paste"],

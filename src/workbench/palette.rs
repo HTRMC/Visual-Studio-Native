@@ -138,6 +138,7 @@ fn builtin_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ),
         ("View: Open View", Box::new(OpenView)),
         ("Help: About", Box::new(About)),
+        ("Help: Check for Updates...", Box::new(CheckForUpdates)),
         (
             "Notifications: Show Notifications",
             Box::new(ShowNotifications),
