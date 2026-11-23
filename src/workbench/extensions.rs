@@ -14,6 +14,7 @@ use std::{
         LazyLock, Mutex, RwLock, RwLockReadGuard,
         atomic::{AtomicUsize, Ordering},
     },
+    time::{Duration, Instant},
 };
 
 use serde_json::{Map, Value, json};
@@ -94,7 +95,7 @@ impl Extension {
     }
 
     /// A path in the extension, from its manifest; None outside it.
-    fn file(&self, rel: &Value) -> Option<PathBuf> {
+    pub(super) fn file(&self, rel: &Value) -> Option<PathBuf> {
         let rel = Path::new(rel.as_str()?);
         let path = self.dir.join(rel);
         (rel.components())
@@ -150,20 +151,26 @@ fn remove_whole(root: &Path, dir: &Path) -> std::io::Result<()> {
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
     let trash = root.join(format!(".trash-{}-{n}", std::process::id()));
     // A server just told to exit, or a virus scan, lets go in a moment.
-    let mut tries = 0;
-    loop {
-        match fs::rename(dir, &trash) {
-            Ok(()) => break,
-            Err(_) if tries < 5 => {
-                tries += 1;
-                std::thread::sleep(std::time::Duration::from_millis(200));
-            }
-            Err(e) => return Err(e),
-        }
-    }
+    rename_patiently(dir, &trash, Duration::from_secs(1))?;
     // What's left of it, if anything, goes at the next start.
     fs::remove_dir_all(&trash).ok();
     Ok(())
+}
+
+/// Renames `from` to `to`, trying again for up to `patience` while Windows
+/// denies it: a virus scanner reading a file just unpacked (a language
+/// server's executable) holds the folder for seconds. VS Code retries an
+/// extension's install rename the same way, for two minutes.
+fn rename_patiently(from: &Path, to: &Path, patience: Duration) -> std::io::Result<()> {
+    let start = Instant::now();
+    loop {
+        match fs::rename(from, to) {
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && start.elapsed() < patience => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            done => return done,
+        }
+    }
 }
 
 /// At startup, before [`reload`]: removes what installs and updates left
@@ -228,6 +235,7 @@ pub(crate) fn reload() {
     list.sort_by_key(|e| e.name().to_lowercase());
     *LANGS.write().unwrap() = languages_of(&list);
     *INSTALLED.write().unwrap() = list;
+    super::textmate::invalidate();
 }
 
 /// Installs the .vsix at `vsix` (replacing another version of it) and
@@ -279,8 +287,10 @@ pub(crate) fn install_vsix(vsix: &Path) -> Result<String, String> {
                 obsolete.insert(name);
             }
         }
-        fs::rename(&unpacked, &dest).map_err(|e| e.to_string())?;
+        // Before the new one is in: the old ones go at the next start even
+        // if it never gets there.
         write_obsolete(&obsolete);
+        rename_patiently(&unpacked, &dest, Duration::from_secs(120)).map_err(|e| e.to_string())?;
         let name = manifest["displayName"]
             .as_str()
             .or(manifest["name"].as_str());
@@ -1145,7 +1155,7 @@ fn theme_file(path: &Path, depth: usize) -> Option<(Map<String, Value>, Vec<Valu
 }
 
 /// "#RGB", "#RGBA", "#RRGGBB" or "#RRGGBBAA" as 0xRRGGBBAA.
-fn hex(s: &str) -> Option<u32> {
+pub(super) fn hex(s: &str) -> Option<u32> {
     let s = s.strip_prefix('#')?;
     let full: String = match s.len() {
         3 | 4 => s.chars().flat_map(|c| [c, c]).collect(),
@@ -1158,7 +1168,7 @@ fn hex(s: &str) -> Option<u32> {
 
 /// The gpui-component syntax names, with the TextMate scopes that color
 /// them, most specific first.
-const SYNTAX: &[(&str, &[&str])] = &[
+pub(super) const SYNTAX: &[(&str, &[&str])] = &[
     ("attribute", &["entity.other.attribute-name"]),
     (
         "boolean",
@@ -1498,6 +1508,14 @@ pub(crate) fn apply_theme(name: &str, cx: &mut App) -> bool {
         .filter(|(_, v)| v.is_string())
         .map(|(k, v)| (format!("--vscode-{}", k.replace('.', "-")), v))
         .collect();
+    // Extension grammars' tokens take the theme's own token rules.
+    let rules = theme.as_ref().zip(converted.as_ref()).and_then(|(t, _)| {
+        let (colors, rules) = theme_file(&t.path, 0)?;
+        Some((t.id.clone(), t.dark, colors, rules))
+    });
+    super::textmate::set_theme(
+        (rules.as_ref()).map(|(id, dark, colors, rules)| (id.as_str(), *dark, colors, rules.as_slice())),
+    );
     let Some((dark, (config, colors))) = converted else {
         crate::theme::col::set(Colors::default());
         if let Some(builtin) = ThemeRegistry::global(cx)
@@ -2845,6 +2863,26 @@ impl Workbench {
 
 #[cfg(test)]
 mod tests {
+    /// A file held open (as a virus scan holds a new server's .exe) blocks
+    /// renaming its folder on Windows; the install's rename waits it out.
+    #[cfg(windows)]
+    #[test]
+    fn install_rename_waits_for_a_held_file() {
+        let base = std::env::temp_dir().join(format!("vsn-rename-{}", std::process::id()));
+        let (from, to) = (base.join("from"), base.join("to"));
+        std::fs::create_dir_all(&from).unwrap();
+        let held = std::fs::File::create(from.join("server.exe")).unwrap();
+        assert!(std::fs::rename(&from, &to).is_err(), "held file should block");
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            drop(held);
+        });
+        super::rename_patiently(&from, &to, std::time::Duration::from_secs(5)).unwrap();
+        release.join().unwrap();
+        assert!(to.join("server.exe").exists());
+        std::fs::remove_dir_all(base).ok();
+    }
+
     use serde_json::Value;
 
     use super::{

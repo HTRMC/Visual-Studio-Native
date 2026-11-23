@@ -65,3 +65,8 @@ comment; on a gpui-kit update, copy the new version over and re-apply them.
   plain indent (so `///` continues as `/// `).
 - **gpui-base 0.8.0** (`src/text/node.rs`): a markdown image whose URL is an
   absolute file path loads from disk, for extension READMEs' images.
+- **gpui-base 0.8.0** (`src/input/base/mode.rs`): the code editor keeps
+  gpui-component's tree-sitter factory as a fallback
+  (`default_highlighter_factory`) instead of letting it fill the only slot,
+  so an application factory (vsn's extension TextMate grammars) is asked
+  first and returns None for the languages tree-sitter should keep.

@@ -1,6 +1,6 @@
 [package]
 name = "vsn"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 
 [dependencies]
@@ -10,6 +10,12 @@ dirs = "6"
 futures = "0.3"
 gpui-kit = { version = "0.8", features = ["tree-sitter-languages"] }
 ignore = "0.4"
+# The minimap's bitmap and Linux webviews' frames, as gpui takes images.
+image = { version = "0.25", default-features = false }
+# The image preview's width and height, from the file's header.
+imagesize = "0.14"
+# Extensions' TextMate grammars, tokenized as vscode-textmate does (pure Rust).
+irosashi = { version = "0.3.1", default-features = false }
 lsp-types = "0.97"
 notify = "8"
 portable-pty = "0.9.0"
@@ -44,7 +50,6 @@ windows-core = "0.62"
 # On Linux, in WebKitGTK, drawn offscreen and painted by gpui.
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
-image = { version = "0.25", default-features = false }
 javascriptcore-rs = "1.1"
 soup3 = "0.5"
 webkit2gtk = { version = "2.0", features = ["v2_40"] }

@@ -49,6 +49,11 @@ Differences from VS Code still to close, smallest first within each area.
 - [x] Ctrl+F starts find with the terminal's one-line selection.
 - [x] Find re-searches output that arrives while it's open.
 - [x] Switching terminals with find open searches the newly active one.
+- [x] Block elements, shades, box drawing and Powerline symbols came from the
+      font, with gaps between cells; they're drawn as VS Code's custom glyphs
+      (`terminal.integrated.customGlyphs`). Shells get `COLORTERM=truecolor`.
+- [ ] Custom glyphs: VS Code's exact line widths and dash spacing unchecked;
+      the Powerline extras past U+E0BF and sextants come from the font.
 - [x] Rename a terminal (Terminal: Rename..., or Rename... on a tab).
 - [x] Rename's input starts with the old name selected, so typing replaces it.
 - [x] With one terminal, the panel's title bar shows its icon and name.
@@ -135,6 +140,8 @@ Differences from VS Code still to close, smallest first within each area.
       text is hashed only when its length is back to the saved one).
 - [ ] Large files: search results don't follow their edits.
 - [x] The folder and editors are saved as they change, not only on a clean quit.
+- [x] Images opened as the binary placeholder; they open in VS Code's image preview (fit to the editor, click/Alt+click/Ctrl+wheel zoom, size and zoom in the status bar).
+- [ ] Image preview: the status bar's zoom toggles Whole Image and 100% rather than listing levels; no zoom cursors, transparency checkerboard or pixelated zoom; an image changed on disk isn't redrawn; no copy-image.
 - [ ] Markdown preview: Ctrl+K V and the title button split the editor rather
       than opening a second group; no scroll sync, relative images or links.
 - [x] A toast stays while the mouse is over it.
@@ -578,7 +585,9 @@ Differences from VS Code still to close, smallest first within each area.
       sticky scroll (scope headers with line numbers, click to go there),
       `editor.minimap.enabled` / `editor.stickyScroll.enabled`, View: Toggle
       Minimap / Toggle Sticky Scroll.
-- [ ] Minimap draws blocks, not characters, shows its slider always, and
+- [x] Minimap drew colored blocks; it draws the characters' shapes on whole
+      device pixels, as VS Code's (`editor.minimap.renderCharacters`).
+- [ ] Minimap: characters outside ASCII are a smudge; shows its slider always, and
       sits left of the scrollbar; sticky headers come from fold ranges
       (comments skipped by their first characters), don't slide up as a
       scope ends and have no hover highlight.
@@ -647,6 +656,9 @@ See EXTENSIONS.md for the plan; phases 1–3 are in, phase 4 has diagnostics, ho
 - [ ] Extension indentation patterns with lookaround (JS regex) are skipped; the editor's regex has none.
 - [ ] A line matching the decrease-indent pattern outdents only on Enter, not as it's typed (gpui-base).
 - [x] JS extensions run in a Node host: commands in the palette and keys, messages, status bar items, configuration defaults, activation events, restart on crash.
+- [x] Installing or updating an extension with a server executable (rust-analyzer) could fail with "Access is denied" while a virus scan read the new files; the move into place retries for two minutes, as VS Code's does.
+- [x] Extensions' TextMate grammars (`contributes.grammars`) were ignored, so a language only an extension knows (WGSL) had no highlighting; they're tokenized as VS Code does and colored by the theme's token rules.
+- [ ] Extensions' plist (`.tmLanguage`) and YAML grammars are skipped; JSON ones work.
 - [x] Extension keybindings took effect only after a restart; they're rebound on install, uninstall and enable.
 - [x] Extension keybindings with a `when` clause were skipped; focus keys, `editorLangId` and the platform are matched now.
 - [x] Extension keybindings' `when` with `<`, `>`, `=~` or `in` were skipped; they're checked in full as the key comes.

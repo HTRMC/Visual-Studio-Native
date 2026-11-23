@@ -98,7 +98,7 @@ there.
 | `languages` (ids, extensions, `configuration`) | 1 | Comment, bracket and indent rules |
 | `commands`, `menus`, `keybindings` | 2 | Palette, menus and keys show extension commands |
 | `configuration` | 2 | Defaults and the settings schema |
-| `grammars` (TextMate) | later | Needs a TextMate engine (new dependency); tree-sitter covers built-ins |
+| `grammars` (TextMate) | done | Tokenized by irosashi (vscode-textmate in Rust) and colored by the theme's `tokenColors`, for languages tree-sitter doesn't cover; plist/YAML grammars are skipped |
 | `views`, `viewsContainers` | 3+ | Tree views from `TreeDataProvider` |
 | `debuggers` | 3+ | The DAP client exists; adapters come from extensions |
 

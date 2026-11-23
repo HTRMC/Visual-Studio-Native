@@ -46,6 +46,8 @@ mod palette;
 mod search;
 mod settings_ui;
 mod terminal;
+mod image_preview;
+mod textmate;
 pub mod update;
 mod wasmhost;
 #[cfg(windows)]
@@ -704,6 +706,9 @@ struct Doc {
     stamp: Option<(SystemTime, u64)>,
     /// The file is gone from disk: the tab is struck through, as VS Code's.
     deleted: bool,
+    /// VS Code's image preview instead of the editor (the doc is `binary`,
+    /// so text commands pass it by).
+    image: Option<image_preview::ImageView>,
     /// Pinned: its tab sits with the other pinned ones at the front and the
     /// bulk Close commands leave it open.
     pinned: bool,
@@ -1781,6 +1786,16 @@ impl Workbench {
             self.activate(ix, window, cx);
             return;
         }
+        let custom = with.clone().unwrap_or_else(|| custom_editors::editor_for(&path));
+        // Images open in the preview, as VS Code's built-in Media Preview
+        // does, unless an extension's editor or Reopen With asks otherwise.
+        if with.is_none() && custom.is_none() && image_preview::is_image(&path) && path.is_file() {
+            let view = image_preview::ImageView::open(&path);
+            self.push_doc(path, String::new(), Encoding::Utf8, true, false, window, cx);
+            self.docs.last_mut().unwrap().image = Some(view);
+            cx.notify();
+            return;
+        }
         let Ok(bytes) = fs::read(&path) else {
             return;
         };
@@ -1795,7 +1810,6 @@ impl Workbench {
         });
         let binary = decoded.is_none();
         let (text, encoding) = decoded.unwrap_or_default();
-        let custom = with.unwrap_or_else(|| custom_editors::editor_for(&path));
         self.push_doc(path, text, encoding, binary, false, window, cx);
         if let Some(view_type) = custom {
             self.attach_custom_editor(self.docs.len() - 1, view_type, cx);
@@ -1846,6 +1860,7 @@ impl Workbench {
             uri: None,
             stamp,
             deleted: false,
+            image: None,
             pinned: false,
         });
         self.activate(self.docs.len() - 1, window, cx);
@@ -1976,11 +1991,14 @@ impl Workbench {
             false => editor_language(lang),
         };
         let editor = cx.new(|cx| {
-            EditorState::new(window, cx)
+            let mut editor = EditorState::new(window, cx)
                 .language(lang)
                 .searchable(true)
                 .soft_wrap(wrap)
-                .tab_size(indent)
+                .tab_size(indent);
+            // Extensions' TextMate grammars, for languages tree-sitter lacks.
+            editor.set_highlighter_factory(textmate::factory(), cx);
+            editor
         });
         editor.update(cx, |e, cx| e.set_value(text, window, cx));
         self.attach_breakpoints(path, &editor, cx);
@@ -5896,6 +5914,31 @@ impl Workbench {
                     if doc.webview.is_some() {
                         return d.child(self.render_webview(self.active, cx));
                     }
+                    if let Some(view) = &doc.image {
+                        let ix = self.active;
+                        // Click zooms in, Alt+click out, Ctrl+wheel either way.
+                        let preview = view
+                            .render(&doc.path, ix)
+                            .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
+                                let dir = if e.modifiers().alt { -1 } else { 1 };
+                                if let Some(v) = this.docs.get_mut(ix).and_then(|d| d.image.as_mut()) {
+                                    v.step(dir);
+                                    cx.notify();
+                                }
+                            }))
+                            .on_scroll_wheel(cx.listener(move |this, e: &ScrollWheelEvent, window, cx| {
+                                if !e.modifiers.secondary() {
+                                    return;
+                                }
+                                let dy = f32::from(e.delta.pixel_delta(window.line_height()).y);
+                                if let Some(v) = this.docs.get_mut(ix).and_then(|d| d.image.as_mut()) && dy != 0. {
+                                    v.step(if dy > 0. { 1 } else { -1 });
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                }
+                            }));
+                        return d.child(preview);
+                    }
                     if !doc.binary {
                         let keys = exthost::editor_keys(&doc.path, doc.lang);
                         let code = div().size_full().key_context(keys).child(self.render_code(self.active, cx));
@@ -6193,6 +6236,27 @@ impl Workbench {
                     .child(lang)
                     .into_any_element(),
             ]);
+        }
+        // The image preview's size and zoom, as VS Code's Media Preview shows.
+        if let Some(view) = self.docs.get(self.active).and_then(|d| d.image.as_ref()) {
+            let ix = self.active;
+            right.extend(view.size_label().map(|size| {
+                item(m, "sb-img-size", "Image Size").cursor_default().child(size).into_any_element()
+            }));
+            right.push(item(m, "sb-img-bytes", "Image Binary Size").cursor_default().child(view.bytes_label()).into_any_element());
+            right.push(
+                item(m, "sb-img-zoom", "Select Zoom Level")
+                    .child(view.zoom_label())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        // ponytail: VS Code picks a level from a list; this
+                        // toggles Whole Image and 100%.
+                        if let Some(v) = this.docs.get_mut(ix).and_then(|d| d.image.as_mut()) {
+                            v.zoom = if v.zoom.is_none() { Some(1.) } else { None };
+                            cx.notify();
+                        }
+                    }))
+                    .into_any_element(),
+            );
         }
         // VS Code's notificationsStatus tooltips.
         let bell_tip: SharedString = match (self.center, self.notes.len(), self.unseen) {

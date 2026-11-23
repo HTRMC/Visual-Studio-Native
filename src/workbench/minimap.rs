@@ -10,9 +10,233 @@ use super::*;
 /// editor.stickyScroll.maxLineCount
 const STICKY_MAX: usize = 5;
 pub(super) const MINIMAP_WIDTH: f32 = 100.;
-/// A line's height and a character's width in the minimap.
-const ROW: f32 = 2.;
-const COL: f32 = 1.;
+/// VS Code's minimap scale at this pixel density: a character is this many
+/// device pixels wide and twice that tall, on whole pixels so none are
+/// squeezed or gapped (1 below 2x, else 2, for `editor.minimap.scale` 1).
+fn minimap_scale(dpr: f32) -> usize {
+    if dpr >= 2. { 2 } else { 1 }
+}
+
+/// Printable ASCII's shapes ('!' to '~'), each 2x4 cells of brightness, left
+/// to right then down: Consolas drawn large and averaged down, brightest
+/// cell 255, as VS Code's minimap prebakes its character data.
+#[rustfmt::skip]
+const GLYPHS: [[u8; 8]; 94] = [
+    [51, 52, 70, 72, 51, 51, 0, 0], // '!'
+    [101, 101, 28, 28, 0, 0, 0, 0], // '"'
+    [54, 55, 182, 193, 174, 166, 0, 0], // '#'
+    [86, 135, 184, 134, 177, 172, 37, 0], // '$'
+    [166, 87, 155, 117, 119, 243, 0, 0], // '%'
+    [108, 89, 222, 148, 182, 255, 0, 0], // '&'
+    [51, 54, 14, 15, 0, 0, 0, 0], // "'"
+    [21, 86, 141, 4, 138, 12, 11, 82], // '('
+    [87, 24, 4, 145, 9, 136, 78, 11], // ')'
+    [77, 82, 108, 113, 0, 0, 0, 0], // '*'
+    [0, 0, 131, 135, 72, 76, 0, 0], // '+'
+    [0, 0, 0, 0, 60, 75, 73, 21], // ','
+    [0, 0, 56, 58, 14, 14, 0, 0], // '-'
+    [0, 0, 0, 0, 65, 60, 0, 0], // '.'
+    [0, 84, 36, 98, 134, 1, 35, 0], // '/'
+    [87, 93, 202, 225, 174, 150, 0, 0], // '0'
+    [86, 54, 59, 117, 114, 173, 0, 0], // '1'
+    [88, 89, 4, 156, 188, 124, 0, 0], // '2'
+    [79, 87, 50, 171, 88, 146, 0, 0], // '3'
+    [17, 102, 140, 148, 128, 201, 0, 0], // '4'
+    [104, 76, 142, 99, 85, 144, 0, 0], // '5'
+    [61, 80, 194, 116, 152, 156, 0, 0], // '6'
+    [105, 128, 5, 144, 114, 25, 0, 0], // '7'
+    [90, 97, 185, 185, 171, 169, 0, 0], // '8'
+    [91, 86, 179, 198, 84, 121, 0, 0], // '9'
+    [0, 0, 52, 54, 52, 54, 0, 0], // ':'
+    [0, 0, 52, 54, 53, 81, 70, 24], // ';'
+    [0, 4, 103, 84, 71, 88, 0, 0], // '<'
+    [0, 0, 91, 93, 91, 93, 0, 0], // '='
+    [4, 0, 82, 105, 85, 72, 0, 0], // '>'
+    [59, 89, 61, 129, 88, 14, 0, 0], // '?'
+    [85, 113, 205, 231, 231, 203, 114, 52], // '@'
+    [57, 61, 142, 151, 188, 194, 0, 0], // 'A'
+    [115, 95, 192, 187, 177, 157, 0, 0], // 'B'
+    [80, 103, 156, 0, 160, 102, 0, 0], // 'C'
+    [126, 86, 144, 155, 189, 148, 0, 0], // 'D'
+    [106, 84, 184, 80, 167, 84, 0, 0], // 'E'
+    [105, 84, 184, 76, 131, 0, 0, 0], // 'F'
+    [83, 106, 155, 119, 160, 181, 0, 0], // 'G'
+    [66, 66, 205, 207, 128, 128, 0, 0], // 'H'
+    [98, 101, 70, 75, 129, 133, 0, 0], // 'I'
+    [81, 98, 0, 147, 89, 133, 0, 0], // 'J'
+    [66, 76, 242, 62, 140, 144, 0, 0], // 'K'
+    [67, 0, 147, 0, 162, 93, 0, 0], // 'L'
+    [96, 99, 240, 237, 125, 128, 0, 0], // 'M'
+    [106, 61, 235, 177, 119, 225, 0, 0], // 'N'
+    [92, 101, 151, 153, 167, 159, 0, 0], // 'O'
+    [114, 94, 183, 173, 138, 4, 0, 0], // 'P'
+    [93, 102, 151, 153, 176, 165, 15, 135], // 'Q'
+    [113, 89, 190, 164, 128, 143, 0, 0], // 'R'
+    [94, 80, 151, 87, 103, 163, 0, 0], // 'S'
+    [117, 119, 70, 75, 62, 67, 0, 0], // 'T'
+    [66, 66, 144, 144, 161, 155, 0, 0], // 'U'
+    [74, 69, 158, 146, 126, 117, 0, 0], // 'V'
+    [62, 58, 191, 189, 203, 211, 0, 0], // 'W'
+    [77, 75, 144, 142, 151, 155, 0, 0], // 'X'
+    [79, 74, 150, 143, 62, 67, 0, 0], // 'Y'
+    [102, 131, 48, 116, 204, 110, 0, 0], // 'Z'
+    [106, 56, 134, 0, 134, 0, 94, 56], // '['
+    [84, 0, 94, 40, 0, 134, 0, 35], // '\\'
+    [55, 108, 0, 136, 0, 136, 55, 96], // ']'
+    [47, 50, 85, 94, 0, 0, 0, 0], // '^'
+    [0, 0, 0, 0, 0, 0, 117, 117], // '_'
+    [66, 8, 0, 0, 0, 0, 0, 0], // '`'
+    [0, 0, 108, 194, 183, 183, 0, 0], // 'a'
+    [89, 0, 196, 170, 167, 147, 0, 0], // 'b'
+    [0, 0, 145, 84, 148, 83, 0, 0], // 'c'
+    [0, 89, 150, 190, 162, 177, 0, 0], // 'd'
+    [0, 0, 181, 192, 172, 113, 0, 0], // 'e'
+    [50, 117, 194, 108, 113, 14, 0, 0], // 'f'
+    [0, 0, 156, 200, 224, 159, 134, 127], // 'g'
+    [89, 0, 196, 165, 125, 125, 0, 0], // 'h'
+    [42, 44, 105, 87, 110, 147, 0, 0], // 'i'
+    [0, 86, 81, 152, 0, 143, 96, 83], // 'j'
+    [89, 0, 185, 120, 148, 139, 0, 0], // 'k'
+    [91, 60, 47, 96, 110, 147, 0, 0], // 'l'
+    [0, 0, 227, 215, 170, 174, 0, 0], // 'm'
+    [0, 0, 181, 165, 125, 125, 0, 0], // 'n'
+    [0, 0, 157, 166, 160, 154, 0, 0], // 'o'
+    [0, 0, 182, 170, 189, 147, 89, 0], // 'p'
+    [0, 0, 151, 178, 163, 197, 0, 89], // 'q'
+    [0, 0, 172, 145, 126, 0, 0, 0], // 'r'
+    [0, 0, 172, 92, 95, 177, 0, 0], // 's'
+    [63, 0, 210, 88, 115, 92, 0, 0], // 't'
+    [0, 0, 129, 129, 159, 177, 0, 0], // 'u'
+    [0, 0, 143, 137, 119, 115, 0, 0], // 'v'
+    [0, 0, 160, 161, 198, 205, 0, 0], // 'w'
+    [0, 0, 144, 140, 142, 146, 0, 0], // 'x'
+    [0, 0, 143, 137, 127, 129, 138, 9], // 'y'
+    [0, 0, 93, 176, 178, 96, 0, 0], // 'z'
+    [43, 91, 151, 22, 103, 35, 34, 88], // '{'
+    [64, 69, 64, 69, 64, 69, 40, 43], // '|'
+    [89, 46, 20, 155, 28, 106, 85, 37], // '}'
+    [0, 0, 123, 67, 25, 82, 0, 0], // '~'
+];
+
+/// A character outside ASCII: a middling smudge.
+const OTHER: [u8; 8] = [90, 90, 128, 128, 128, 128, 0, 0];
+
+/// The minimap's pixels: the background, characters blended over it.
+struct Bitmap {
+    width: usize,
+    height: usize,
+    dpr: f32,
+    /// BGRA, gpui's image order.
+    bytes: Vec<u8>,
+    /// Each glyph at this scale: `cw` x `ch` device pixels of brightness.
+    glyphs: Vec<Vec<u8>>,
+    other: Vec<u8>,
+    cw: usize,
+    ch: usize,
+    bg: Rgba,
+}
+
+impl Bitmap {
+    fn new(area: Size<Pixels>, dpr: f32, scale_by: usize, bg: Hsla) -> Self {
+        let width = (f32::from(area.width) * dpr).ceil().max(0.) as usize;
+        let height = (f32::from(area.height) * dpr).ceil().max(0.) as usize;
+        let bg = bg.to_rgb();
+        let pixel = [bg.b, bg.g, bg.r, 1.].map(|c| (c * 255.).round() as u8);
+        let (cw, ch) = (scale_by, 2 * scale_by);
+        Self {
+            width,
+            height,
+            dpr,
+            bytes: pixel.repeat(width * height),
+            glyphs: GLYPHS.iter().map(|g| scale(g, cw, ch)).collect(),
+            other: scale(&OTHER, cw, ch),
+            cw,
+            ch,
+            bg,
+        }
+    }
+
+    /// Character `c` with its top left at device pixel (`x0`, `y0`).
+    fn char(&mut self, x0: isize, y0: isize, c: char, color: Hsla) {
+        let glyph = match c as u32 {
+            33..=126 => &self.glyphs[c as usize - 33],
+            _ => &self.other,
+        };
+        let fg = color.to_rgb();
+        for gy in 0..self.ch {
+            for gx in 0..self.cw {
+                let (px, py) = (x0 + gx as isize, y0 + gy as isize);
+                let alpha = glyph[gy * self.cw + gx] as f32 / 255. * fg.a;
+                if alpha == 0. || px < 0 || py < 0 || px as usize >= self.width || py as usize >= self.height {
+                    continue;
+                }
+                let at = (py as usize * self.width + px as usize) * 4;
+                let mix = |f: f32, b: f32| ((b + (f - b) * alpha) * 255.).round() as u8;
+                self.bytes[at] = mix(fg.b, self.bg.b);
+                self.bytes[at + 1] = mix(fg.g, self.bg.g);
+                self.bytes[at + 2] = mix(fg.r, self.bg.r);
+            }
+        }
+    }
+
+    /// Paints it over `bounds`, reusing the image `owner` last painted when
+    /// nothing changed: each new one is a new texture.
+    fn paint(self, owner: EntityId, bounds: Bounds<Pixels>, window: &mut Window) {
+        type Last = std::collections::HashMap<EntityId, (u64, std::sync::Arc<RenderImage>)>;
+        thread_local! {
+            static LAST: std::cell::RefCell<Last> = Default::default();
+        }
+        if self.width == 0 || self.height == 0 {
+            return;
+        }
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (self.width, self.height, &self.bytes).hash(&mut h);
+            h.finish()
+        };
+        let (width, height, dpr) = (self.width, self.height, self.dpr);
+        let image = LAST.with_borrow_mut(|last| {
+            if let Some((k, image)) = last.get(&owner)
+                && *k == key
+            {
+                return Some(image.clone());
+            }
+            let buffer = image::RgbaImage::from_raw(width as u32, height as u32, self.bytes)?;
+            let image = std::sync::Arc::new(RenderImage::new(vec![image::Frame::new(buffer)]));
+            if let Some((_, old)) = last.insert(owner, (key, image.clone())) {
+                window.drop_image(old).ok();
+            }
+            Some(image)
+        });
+        let Some(image) = image else { return };
+        let area = Bounds::new(bounds.origin, size(px(width as f32 / dpr), px(height as f32 / dpr)));
+        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            window.paint_image(area, area, Corners::default(), image, 0, false).ok();
+        });
+    }
+}
+
+/// A 2x4 glyph resampled to `cw` x `ch`, each pixel its source cells' mean.
+fn scale(glyph: &[u8; 8], cw: usize, ch: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(cw * ch);
+    for ty in 0..ch {
+        for tx in 0..cw {
+            let (x0, y0) = (tx * 2 / cw, ty * 4 / ch);
+            let (x1, y1) = (((tx + 1) * 2 / cw).max(x0 + 1), ((ty + 1) * 4 / ch).max(y0 + 1));
+            let (mut sum, mut n) = (0u32, 0u32);
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    sum += glyph[y * 2 + x] as u32;
+                    n += 1;
+                }
+            }
+            // Softened to 12/15, as VS Code does its prebaked data.
+            out.push((sum / n * 12 / 15) as u8);
+        }
+    }
+    out
+}
 
 /// Sticky scroll: the lines opening the scopes around the viewport's top,
 /// outermost first. `line_at(i)` is the buffer line on the viewport's row i.
@@ -200,12 +424,16 @@ pub(super) fn minimap(editor: Entity<EditorState>, drag: Rc<Cell<Option<(Pixels,
         move |bounds, hitbox, window, cx| {
             let e = editor.read(cx);
             let Some(lh) = e.line_height() else { return };
+            // A line's height and a character's width, in pixels.
+            let dpr = window.scale_factor();
+            let s = minimap_scale(dpr);
+            let (row_h, col_w) = (2. * s as f32 / dpr, s as f32 / dpr);
             let map = e.display_map();
             let count = map.visual_row_count();
             let (top, view) = rows(e, lh);
             // How far the minimap scrolls per editor row, as VS Code
             // scrolls it: in step with the editor, end to end.
-            let content = count as f32 * ROW;
+            let content = count as f32 * row_h;
             let height = bounds.size.height / px(1.);
             let max_top = (count as f32 - 1.).max(1.);
             let shift = (content - height).max(0.) / max_top;
@@ -214,8 +442,8 @@ pub(super) fn minimap(editor: Entity<EditorState>, drag: Rc<Cell<Option<(Pixels,
             let fg = style.foreground;
 
             window.paint_quad(fill(bounds, style.background));
-            let first = (offset / ROW) as usize;
-            let last = (first + (height / ROW) as usize + 1).min(count);
+            let first = (offset / row_h) as usize;
+            let last = (first + (height / row_h) as usize + 1).min(count);
             let text = e.text();
             let lines: Vec<(usize, usize)> = (first..last)
                 .map(|row| (row, map.visual_row_to_display_row(row)))
@@ -229,59 +457,47 @@ pub(super) fn minimap(editor: Entity<EditorState>, drag: Rc<Cell<Option<(Pixels,
                 let range = text.line_start_offset(a)..text.line_end_offset(b);
                 let styles = e.syntax_styles(&range);
                 let mut styles = styles.iter().peekable();
-                let max_cols = (bounds.size.width / px(COL)) as usize;
-                window.with_content_mask(Some(ContentMask { bounds }), |window| {
-                    for &(row, line) in &lines {
-                        let y = bounds.top() + px(row as f32 * ROW - offset);
-                        let start = text.line_start_offset(line);
-                        let mut col = 0;
-                        let mut run: Option<(usize, usize, Hsla)> = None; // start col, len, color
-                        let flush = |run: &mut Option<(usize, usize, Hsla)>, window: &mut Window| {
-                            if let Some((c0, n, color)) = run.take() {
-                                let at = point(bounds.left() + px(c0 as f32 * COL), y);
-                                window.paint_quad(fill(Bounds::new(at, size(px(n as f32 * COL), px(ROW))), color.opacity(0.6)));
-                            }
-                        };
-                        for (i, ch) in text.slice_line(line).to_string().char_indices() {
-                            if col >= max_cols {
-                                break;
-                            }
-                            let at = start + i;
-                            while styles.peek().is_some_and(|(r, _)| r.end <= at) {
-                                styles.next();
-                            }
-                            if ch.is_whitespace() {
-                                flush(&mut run, window);
-                                col += if ch == '\t' { 4 - col % 4 } else { 1 };
-                                continue;
-                            }
-                            let color = (styles.peek())
-                                .filter(|(r, _)| r.start <= at)
-                                .and_then(|(_, s)| s.color)
-                                .unwrap_or(fg);
-                            match &mut run {
-                                Some((_, n, c)) if *c == color => *n += 1,
-                                _ => {
-                                    flush(&mut run, window);
-                                    run = Some((col, 1, color));
-                                }
-                            }
-                            col += 1;
+                let max_cols = (bounds.size.width / px(col_w)) as usize;
+                // Character shapes in one bitmap of device pixels, as VS
+                // Code's minimap renders characters.
+                let mut map = Bitmap::new(bounds.size, dpr, s, style.background);
+                let shift_px = (offset * dpr).round() as isize;
+                for &(row, line) in &lines {
+                    let y = (row * 2 * s) as isize - shift_px;
+                    let start = text.line_start_offset(line);
+                    let mut col = 0;
+                    for (i, ch) in text.slice_line(line).to_string().char_indices() {
+                        if col >= max_cols {
+                            break;
                         }
-                        flush(&mut run, window);
+                        let at = start + i;
+                        while styles.peek().is_some_and(|(r, _)| r.end <= at) {
+                            styles.next();
+                        }
+                        if ch.is_whitespace() {
+                            col += if ch == '\t' { 4 - col % 4 } else { 1 };
+                            continue;
+                        }
+                        let color = (styles.peek())
+                            .filter(|(r, _)| r.start <= at)
+                            .and_then(|(_, s)| s.color)
+                            .unwrap_or(fg);
+                        map.char((col * s) as isize, y, ch, color);
+                        col += 1;
                     }
-                });
+                }
+                map.paint(editor.entity_id(), bounds, window);
             }
 
             // minimapSlider.background, always shown.
             let slider = Bounds::new(
-                point(bounds.left(), bounds.top() + px(top * ROW - offset)),
-                size(bounds.size.width, px(view * ROW)),
+                point(bounds.left(), bounds.top() + px(top * row_h - offset)),
+                size(bounds.size.width, px(view * row_h)),
             );
             window.paint_quad(fill(slider, ca(0x79797933)));
 
             // Editor rows a pixel of slider movement scrolls.
-            let per_px = 1. / (ROW - shift).max(0.1);
+            let per_px = 1. / (row_h - shift).max(0.1);
             let down = (editor.clone(), drag.clone(), hitbox.clone());
             window.on_mouse_event(move |ev: &MouseDownEvent, phase, window, cx| {
                 let (editor, drag, hitbox) = &down;
@@ -292,7 +508,7 @@ pub(super) fn minimap(editor: Entity<EditorState>, drag: Rc<Cell<Option<(Pixels,
                 let mut top = top;
                 // Outside the slider, the clicked line comes to the middle.
                 if !slider.contains(&ev.position) {
-                    let row = (ev.position.y - bounds.top()) / px(1.) / ROW + offset / ROW;
+                    let row = (ev.position.y - bounds.top()) / px(1.) / row_h + offset / row_h;
                     top = row - view / 2.;
                     editor.update(cx, |e, cx| scroll_to(e, top, lh, cx));
                 }

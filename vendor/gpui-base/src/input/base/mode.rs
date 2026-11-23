@@ -46,6 +46,9 @@ pub(crate) enum LayoutMode {
         folding: bool,
         highlighter: Rc<RefCell<Option<Box<dyn InputHighlighter>>>>,
         highlighter_factory: Option<InputHighlighterFactory>,
+        /// vsn: the UI crate's own adapter (tree-sitter), for the languages
+        /// the application's factory leaves to it.
+        default_highlighter_factory: Option<InputHighlighterFactory>,
         diagnostics: DiagnosticSet,
         /// Automatic delimiter ranges, adjusted with document edits.
         auto_closed_pairs: super::auto_close::AutoClosedPairs,
@@ -80,6 +83,7 @@ impl LayoutMode {
             language: Box::new(language),
             highlighter: Rc::new(RefCell::new(None)),
             highlighter_factory: None,
+            default_highlighter_factory: None,
             line_number: true,
             indent_guides: true,
             folding: true,
@@ -282,13 +286,19 @@ impl LayoutMode {
                 language,
                 highlighter,
                 highlighter_factory,
+                default_highlighter_factory,
                 folding,
                 ..
             } => {
                 if !update.force && highlighter.borrow().is_some() {
                     return;
                 }
-                if !ensure_highlighter(highlighter, highlighter_factory.as_ref(), language) {
+                if !ensure_highlighter(
+                    highlighter,
+                    highlighter_factory.as_ref(),
+                    default_highlighter_factory.as_ref(),
+                    language,
+                ) {
                     return;
                 }
 
@@ -316,13 +326,19 @@ impl LayoutMode {
             language,
             highlighter,
             highlighter_factory,
+            default_highlighter_factory,
             folding,
             ..
         } = &self
         else {
             return;
         };
-        if !ensure_highlighter(highlighter, highlighter_factory.as_ref(), language) {
+        if !ensure_highlighter(
+                    highlighter,
+                    highlighter_factory.as_ref(),
+                    default_highlighter_factory.as_ref(),
+                    language,
+                ) {
             return;
         }
         M::drive_highlighter_batch(highlighter, edits, *folding, window, cx);
@@ -365,12 +381,14 @@ impl LayoutMode {
 
     pub(super) fn ensure_highlighter_factory(&mut self, factory: InputHighlighterFactory) {
         if let LayoutMode::CodeEditor {
-            highlighter_factory,
+            default_highlighter_factory,
             ..
         } = self
         {
-            if highlighter_factory.is_none() {
-                *highlighter_factory = Some(factory);
+            // vsn: kept beside an application factory rather than dropped, so
+            // the application can highlight only the languages it adds.
+            if default_highlighter_factory.is_none() {
+                *default_highlighter_factory = Some(factory);
             }
         }
     }
@@ -381,13 +399,15 @@ impl LayoutMode {
 fn ensure_highlighter(
     highlighter: &RefCell<Option<Box<dyn InputHighlighter>>>,
     highlighter_factory: Option<&InputHighlighterFactory>,
+    default_highlighter_factory: Option<&InputHighlighterFactory>,
     language: &EditorLanguage,
 ) -> bool {
     let mut highlighter = highlighter.borrow_mut();
-    if highlighter.is_none()
-        && let Some(factory) = highlighter_factory
-    {
-        *highlighter = factory(&language.name());
+    if highlighter.is_none() {
+        // vsn: the application's factory first, then the default one.
+        let name = language.name();
+        *highlighter = (highlighter_factory.and_then(|f| f(&name)))
+            .or_else(|| default_highlighter_factory.and_then(|f| f(&name)));
     }
     highlighter.is_some()
 }
@@ -455,6 +475,7 @@ mod tests {
             language: Box::default(),
             highlighter: Default::default(),
             highlighter_factory: None,
+            default_highlighter_factory: None,
             diagnostics: DiagnosticSet::new(&Rope::new()),
             auto_closed_pairs: Default::default(),
             auto_close: false,

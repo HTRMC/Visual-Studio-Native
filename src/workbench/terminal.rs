@@ -16,6 +16,8 @@ use gpui_kit::component::{
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 use super::*;
+
+mod glyphs;
 use crate::theme::{c, ca, tip};
 
 const FONT: &str = "Consolas";
@@ -941,6 +943,8 @@ impl Workbench {
             .map_err(|e| e.to_string())?;
         let mut cmd = CommandBuilder::new(&profile.program);
         cmd.args(&profile.args);
+        // As VS Code tells its shells: 24-bit color works here.
+        cmd.env("COLORTERM", "truecolor");
         for (k, v) in &profile.env {
             cmd.env(k, v);
         }
@@ -2517,7 +2521,10 @@ impl Workbench {
             .copied()
             .collect();
         let hover = t.hover;
-        let lines = (0..rows.get()).map(|row| {
+        // Block characters VS Code draws itself (terminal.integrated.
+        // customGlyphs), so they meet their neighbors with no gaps.
+        let mut custom: Vec<(u16, u16, char, Hsla)> = Vec::new();
+        let lines: Vec<_> = (0..rows.get()).map(|row| {
             let mut text = String::new();
             let mut runs: Vec<TextRun> = Vec::new();
             for col in 0..cols.get() {
@@ -2527,7 +2534,7 @@ impl Workbench {
                 if cell.is_wide_continuation() {
                     continue;
                 }
-                let s = if cell.has_contents() {
+                let mut s = if cell.has_contents() {
                     cell.contents()
                 } else {
                     " "
@@ -2575,6 +2582,11 @@ impl Workbench {
                     }),
                     strikethrough: None,
                 };
+                if let Some(ch) = s.chars().next().filter(|&ch| glyphs::is_custom(ch)) {
+                    custom.push((row, col, ch, fg));
+                    s = " ";
+                }
+                let run = TextRun { len: s.len(), ..run };
                 text.push_str(s);
                 match runs.last_mut() {
                     Some(last)
@@ -2592,7 +2604,22 @@ impl Workbench {
             div()
                 .h(px(line_h))
                 .child(StyledText::new(text).with_runs(runs))
-        });
+        }).collect();
+        let cell_w = t.cell_w;
+        let custom = canvas(
+            |_, _, _| {},
+            move |b, _, window, _| {
+                for (row, col, ch, color) in custom {
+                    let x = b.left() + px(PAD_L + col as f32 * cell_w);
+                    let y = b.top() + px(row as f32 * line_h);
+                    glyphs::paint(ch, Bounds::new(point(x, y), gpui_kit::size(px(cell_w), px(line_h))), color, window);
+                }
+            },
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full();
 
         let (row, col) = screen.cursor_position();
         let focused = t.focus.is_focused(window);
@@ -2814,6 +2841,7 @@ impl Workbench {
                         false => d.w_full(),
                     })
                     .child(v_flex().pl(px(PAD_L)).children(lines))
+                    .child(custom)
                     .children(cursor),
             )
             .child(ruler)
