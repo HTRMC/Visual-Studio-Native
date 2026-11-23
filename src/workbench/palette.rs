@@ -569,6 +569,8 @@ pub(super) struct Palette {
     /// Do Not Disturb: warnings only reach the center, not a toast. Kept
     /// here to be saved with the histories.
     pub(super) dnd: bool,
+    /// Activity bar items hidden from its context menu, by id.
+    pub(super) hidden_activity: Vec<String>,
 }
 
 impl Palette {
@@ -594,6 +596,8 @@ impl Palette {
             folders: serde_json::from_value(state["folders"].clone()).unwrap_or_default(),
             opened: serde_json::from_value(state["files"].clone()).unwrap_or_default(),
             dnd: state["doNotDisturb"].as_bool().unwrap_or_default(),
+            hidden_activity: serde_json::from_value(state["hiddenActivity"].clone())
+                .unwrap_or_default(),
             defs: None,
             ws_defs: None,
             ws_ask: None,
@@ -694,6 +698,7 @@ impl Palette {
             "commands": self.recent,
             "editors": self.editors,
             "doNotDisturb": self.dnd,
+            "hiddenActivity": self.hidden_activity,
             "folders": self.folders,
             "files": self.opened,
         });

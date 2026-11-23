@@ -4289,12 +4289,18 @@ impl Workbench {
         };
         // The Extensions icon counts the updates waiting.
         let updates = self.update_count() as u64;
-        let mut top: Vec<_> = (builtin.into_iter())
-            .map(|(id, ch, text, view)| {
+        // Right-click lists every item to hide or show again, as in VS Code.
+        let hidden = self.palette.hidden_activity.clone();
+        let shown = |id: &str| !hidden.iter().any(|h| h == id);
+        let mut all: Vec<(String, String)> = Vec::new();
+        let mut top: Vec<_> = Vec::new();
+        for (id, ch, text, view) in builtin {
+            all.push((id.into(), text.split(" (").next().unwrap_or(text).into()));
+            if shown(id) {
                 let count = if view == View::Extensions { updates } else { 0 };
-                item(id.into(), badge(glyph(ch), count), text.into(), Some(view), cx)
-            })
-            .collect();
+                top.push(item(id.into(), badge(glyph(ch), count), text.into(), Some(view), cx));
+            }
+        }
         // Extensions' view containers, after the built-in ones as in VS Code.
         // An image icon is drawn as a mask in the item's color, like a codicon.
         // ponytail: a PNG icon keeps its own colors.
@@ -4316,7 +4322,12 @@ impl Workbench {
                 }
                 Err(path) => img(path).size(px(24.)).into_any_element(),
             };
-            let id = SharedString::from(format!("act-c-{}", c.id));
+            let id = format!("act-c-{}", c.id);
+            all.push((id.clone(), c.title.clone()));
+            if !shown(&id) {
+                continue;
+            }
+            let id = SharedString::from(id);
             // Its views' badges, as VS Code adds them up.
             let (count, tips) = self.container_badge(&c.id);
             let title = match tips.is_empty() {
@@ -4336,7 +4347,30 @@ impl Workbench {
             .justify_between()
             .bg(col::bg())
             .when(!m, |d| d.border_r_1().border_color(col::border()))
-            .child(v_flex().pt(px(inset)).gap(px(gap)).children(top))
+            .child(
+                v_flex()
+                    .id("act-top")
+                    .flex_1()
+                    .pt(px(inset))
+                    .gap(px(gap))
+                    .children(top)
+                    .context_menu({
+                        let (wb, hidden) = (cx.weak_entity(), hidden.clone());
+                        move |menu, _, _| {
+                            all.iter().fold(menu, |menu, (id, title)| {
+                                let (wb, id) = (wb.clone(), id.clone());
+                                menu.item(
+                                    PopupMenuItem::new(title.clone())
+                                        .checked(!hidden.contains(&id))
+                                        .on_click(move |_, _, cx| {
+                                            wb.update(cx, |this, cx| this.toggle_activity(&id, cx))
+                                                .ok();
+                                        }),
+                                )
+                            })
+                        }
+                    }),
+            )
             .child(
                 v_flex()
                     .pb(px(inset))
@@ -4373,6 +4407,19 @@ impl Workbench {
             .pb(px(4.))
             .child(card(bar, col::bg(), r, false))
             .into_any_element()
+    }
+
+    /// Hides or shows an activity bar item by id.
+    fn toggle_activity(&mut self, id: &str, cx: &mut Context<Self>) {
+        let hidden = &mut self.palette.hidden_activity;
+        match hidden.iter().position(|h| h == id) {
+            Some(i) => {
+                hidden.remove(i);
+            }
+            None => hidden.push(id.into()),
+        }
+        self.palette.save(cx);
+        cx.notify();
     }
 
     // ---- side bar ----------------------------------------------------------
