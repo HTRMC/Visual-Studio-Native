@@ -189,6 +189,12 @@ fn wants(ext: &Extension, event: &str, root: Option<&Path>) -> bool {
             ext.contributes("commands")
                 .any(|c| c["command"].as_str() == Some(cmd))
         })
+        // As VS Code does since 1.74 for the languages it contributes
+        // (wgsl-analyzer lists only `workspaceContains` events).
+        || event.strip_prefix("onLanguage:").is_some_and(|lang| {
+            ext.contributes("languages")
+                .any(|l| l["id"].as_str() == Some(lang))
+        })
         || event.strip_prefix("onView:").is_some_and(|view| {
             (ext.manifest["contributes"]["views"].as_object().into_iter())
                 .flat_map(|containers| containers.values())

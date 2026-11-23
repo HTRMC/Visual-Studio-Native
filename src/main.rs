@@ -46,6 +46,7 @@ fn main() {
             ThemeRegistry::global_mut(cx)
                 .load_themes_from_str(include_str!("../assets/themes/dark-2026.json"))
                 .expect("load theme");
+            workbench::extensions::sweep();
             workbench::extensions::reload();
             workbench::extensions::apply_themes(cx);
 

@@ -118,6 +118,72 @@ fn disabled_path() -> Option<PathBuf> {
     Some(root()?.join(".disabled"))
 }
 
+/// The folders of replaced versions Windows still held open (their language
+/// server running) when they were replaced, one per line, as VS Code's
+/// `.obsolete`: skipped, and removed at the next start.
+fn obsolete_path() -> Option<PathBuf> {
+    Some(root()?.join(".obsolete"))
+}
+
+fn obsolete() -> HashSet<String> {
+    (obsolete_path().and_then(|p| fs::read_to_string(p).ok()))
+        .map(|s| s.lines().filter(|l| !l.is_empty()).map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+fn write_obsolete(names: &HashSet<String>) {
+    let Some(path) = obsolete_path() else { return };
+    let mut names: Vec<&str> = names.iter().map(String::as_str).collect();
+    names.sort();
+    match names.is_empty() {
+        true => fs::remove_file(path).ok(),
+        false => fs::write(path, names.join("\n")).ok(),
+    };
+}
+
+/// Removes extension folder `dir`, moving it aside first: a rename can't
+/// half-happen, as a delete can when a file inside is open, which once left
+/// rust-analyzer's server folder with no package.json, installed by no one.
+/// Fails, leaving `dir` whole, while Windows holds a file in it open.
+fn remove_whole(root: &Path, dir: &Path) -> std::io::Result<()> {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let trash = root.join(format!(".trash-{}-{n}", std::process::id()));
+    // A server just told to exit, or a virus scan, lets go in a moment.
+    let mut tries = 0;
+    loop {
+        match fs::rename(dir, &trash) {
+            Ok(()) => break,
+            Err(_) if tries < 5 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    // What's left of it, if anything, goes at the next start.
+    fs::remove_dir_all(&trash).ok();
+    Ok(())
+}
+
+/// At startup, before [`reload`]: removes what installs and updates left
+/// behind, the replaced versions marked obsolete among them.
+pub(crate) fn sweep() {
+    let Some(root) = root() else { return };
+    let mut obsolete = obsolete();
+    for e in fs::read_dir(&root).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        // (Not `.install-`/`.download-`: another vsn may be installing.)
+        if name.starts_with(".trash-") {
+            fs::remove_dir_all(e.path()).ok();
+        } else if obsolete.contains(&name) && remove_whole(&root, &e.path()).is_ok() {
+            obsolete.remove(&name);
+        }
+    }
+    obsolete.retain(|name| root.join(name).exists());
+    write_obsolete(&obsolete);
+}
+
 static INSTALLED: LazyLock<RwLock<Vec<Extension>>> = LazyLock::new(Default::default);
 
 /// Every installed extension, by name.
@@ -131,6 +197,7 @@ pub(crate) fn reload() {
         .and_then(|p| fs::read_to_string(p).ok())
         .map(|s| s.lines().map(str::to_string).collect())
         .unwrap_or_default();
+    let obsolete = obsolete();
     let read = |path: PathBuf| -> Option<Value> {
         let text = fs::read_to_string(path).ok()?;
         serde_json::from_str(&strip_jsonc(text.trim_start_matches('\u{feff}'))).ok()
@@ -139,6 +206,7 @@ pub(crate) fn reload() {
         .flatten()
         .flatten()
         .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+        .filter(|e| !obsolete.contains(&*e.file_name().to_string_lossy()))
         .filter_map(|e| {
             let dir = e.path();
             let manifest = read(dir.join("package.json"))?;
@@ -194,16 +262,25 @@ pub(crate) fn install_vsix(vsix: &Path) -> Result<String, String> {
         };
         let id = format!("{}.{}", part("publisher")?, part("name")?).to_lowercase();
         let dest = root.join(format!("{id}-{}", part("version")?));
+        // The versions it replaces. One whose server still runs from it
+        // stays, whole, beside the new one until the next start.
+        let mut obsolete = obsolete();
         for e in fs::read_dir(&root).into_iter().flatten().flatten() {
-            if e.file_name()
-                .to_string_lossy()
-                .to_lowercase()
-                .starts_with(&format!("{id}-"))
-            {
-                fs::remove_dir_all(e.path()).map_err(|e| e.to_string())?;
+            let name = e.file_name().to_string_lossy().into_owned();
+            if !name.to_lowercase().starts_with(&format!("{id}-")) {
+                continue;
+            }
+            if let Err(err) = remove_whole(&root, &e.path()) {
+                if e.path() == dest {
+                    return Err(format!(
+                        "{err}. Its files are in use; restart vsn and install it again."
+                    ));
+                }
+                obsolete.insert(name);
             }
         }
         fs::rename(&unpacked, &dest).map_err(|e| e.to_string())?;
+        write_obsolete(&obsolete);
         let name = manifest["displayName"]
             .as_str()
             .or(manifest["name"].as_str());
